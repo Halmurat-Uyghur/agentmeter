@@ -3,7 +3,7 @@
 // "*" means some contributing records did not report the field.
 
 import { addMetrics } from "./store";
-import type { Counts, Health, Metric, RangeState, Snapshot, ViewOptions } from "./types";
+import type { Counts, Currency, Health, Metric, RangeState, Snapshot, ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
@@ -13,6 +13,25 @@ export const STREAMING_NOTE =
 
 export const COST_NOTE =
   "Cost is an estimate: Copilot's own logged AI credits × $0.01, GitHub's published rate. It matches GitHub's per-model token prices, but it is not an invoice.";
+
+/** "USD", "CAD", … — the code estimated cost is shown in. */
+export function currencyCode(view: ViewOptions): string {
+  return view.currency?.code ?? "USD";
+}
+
+/** "USD (est.)", "CAD (est.)". */
+export function costLabel(view: ViewOptions): string {
+  return `${currencyCode(view)} (est.)`;
+}
+
+/** The cost note plus, when converting, the rate used (or why it is not converted yet). */
+export function costNotes(view: ViewOptions): string[] {
+  const out = [COST_NOTE];
+  const c = view.currency;
+  if (c) out.push(`Shown in ${c.code} at 1 USD = ${c.rate} ${c.code}, the European Central Bank reference rate of ${c.date} (via frankfurter.dev). Targets are in ${c.code}.`);
+  else if (view.currencyPending) out.push(`No ${view.currencyPending} exchange rate yet, so cost is shown in USD and targets are not compared until it arrives.`);
+  return out;
+}
 
 export const DEFAULT_VIEW: ViewOptions = { unit: "tokens" };
 
@@ -48,17 +67,27 @@ export function usd(m: Metric): number | undefined {
   return m.reported === 0 ? undefined : m.sum / 1e11;
 }
 
-/** "$12.34", "$0.032", "$123"; "—" when unreported, "*" when partial. */
-export function formatUsd(m: Metric): string {
+/** "$12.34", "$0.032", "$123" (or "CA$17.36" with a currency); "—" when unreported, "*" when partial. */
+export function formatUsd(m: Metric, cur?: Currency): string {
   const v = usd(m);
   if (v === undefined) return DASH;
-  return m.missing > 0 ? money(v) + "*" : money(v);
+  return m.missing > 0 ? money(v, cur) + "*" : money(v, cur);
 }
 
-export function money(v: number): string {
-  if (v >= 100) return "$" + Math.round(v).toLocaleString("en-US");
-  if (v >= 1 || v === 0) return "$" + v.toFixed(2);
-  return "$" + v.toFixed(3);
+/** Formats a USD amount, converted to `cur` when given. */
+export function money(v: number, cur?: Currency): string {
+  if (!cur || cur.code === "USD") {
+    if (v >= 100) return "$" + Math.round(v).toLocaleString("en-US");
+    if (v >= 1 || v === 0) return "$" + v.toFixed(2);
+    return "$" + v.toFixed(3);
+  }
+  const x = v * cur.rate;
+  const digits = x >= 100 ? 0 : x >= 1 || x === 0 ? 2 : 3;
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: cur.code, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(x);
+  } catch {
+    return `${x.toFixed(digits)} ${cur.code}`;
+  }
 }
 
 /** Usable range bounds: finite, non-negative, min ≤ max; anything else is dropped. */
@@ -80,11 +109,11 @@ export function rangeState(spent: number | undefined, range: ViewOptions["range"
   return "in";
 }
 
-export function formatRange(range: ViewOptions["range"]): string {
+export function formatRange(range: ViewOptions["range"], cur?: Currency): string {
   if (!range) return DASH;
-  if (range.min !== undefined && range.max !== undefined) return `${money(range.min)}–${money(range.max)}`;
-  if (range.min !== undefined) return `at least ${money(range.min)}`;
-  return `up to ${money(range.max!)}`;
+  if (range.min !== undefined && range.max !== undefined) return `${money(range.min, cur)}–${money(range.max, cur)}`;
+  if (range.min !== undefined) return `at least ${money(range.min, cur)}`;
+  return `up to ${money(range.max!, cur)}`;
 }
 
 export const RANGE_LABEL: Record<RangeState, string> = {
@@ -130,9 +159,9 @@ export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_
   if (view.unit === "cost") {
     const cur = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
     const name = MONTH_ABBR[new Date(cur?.monthStartMs ?? s.dayStartMs).getMonth()]!;
-    let n = cur?.totals ? formatUsd(cur.totals.nanoAiu) : DASH;
+    let n = cur?.totals ? formatUsd(cur.totals.nanoAiu, view.currency) : DASH;
     if (s.health.partial) n = star(n);
-    return `${icon} Local ${name}: ${n}${state === "none" ? "" : ` / ${formatRange(view.range)}`}`;
+    return `${icon} Local ${name}: ${n}${state === "none" ? "" : ` / ${formatRange(view.range, view.currency)}`}`;
   }
   if (!s.today) return `${icon} Local today: ${DASH}`;
   let n = formatCount(addMetrics(s.today.input, s.today.output));
@@ -242,13 +271,13 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
 
   const thisMonth = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
   if (view.unit === "cost" || view.range) {
-    const spent = thisMonth?.totals ? formatUsd(thisMonth.totals.nanoAiu) : DASH;
+    const spent = thisMonth?.totals ? formatUsd(thisMonth.totals.nanoAiu, view.currency) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
     if (view.range) {
       const state = currentRangeState(s, view);
-      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}: ${RANGE_LABEL[state]}`);
+      lines.push(`Target ${escapeMarkdown(formatRange(view.range, view.currency))}: ${RANGE_LABEL[state]}`);
     }
-    parts.push(lines.join("  \n"), escapeMarkdown(COST_NOTE));
+    parts.push(lines.join("  \n"), ...costNotes(view).map(escapeMarkdown));
   }
 
   parts.push(...healthLines(s.health));

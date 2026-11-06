@@ -169,10 +169,21 @@ export interface MonthView {
 }
 
 /** How figures are shown (D22, D23); from settings, never from the logs. */
+/** A display currency: `rate` units of `code` per 1 USD, as of `date` (YYYY-MM-DD). */
+export interface Currency {
+  code: string;
+  rate: number;
+  date: string;
+}
+
 export interface ViewOptions {
   unit: "tokens" | "cost";
-  /** self-set monthly target in USD; either bound may be absent */
+  /** self-set monthly target, held in USD; either bound may be absent */
   range?: { min?: number; max?: number };
+  /** display currency for estimated cost; absent = USD */
+  currency?: Currency;
+  /** a non-USD currency was chosen but no rate is known yet; figures stay in USD */
+  currencyPending?: string;
 }
 
 export type RangeState = "none" | "under" | "in" | "over";

@@ -4,7 +4,9 @@
 // Navigation (month, tokens/cost) uses command: links limited to an allowlist
 // by the webview (D20); the panel itself never runs code.
 import {
-  COST_NOTE,
+  costLabel,
+  costNotes,
+  currencyCode,
   DEFAULT_VIEW,
   formatAiu,
   formatCount,
@@ -110,7 +112,7 @@ function tokens(c: Counts): Metric {
 
 /** The headline figure of `c` in the chosen unit. */
 function headline(c: Counts, view: ViewOptions): string {
-  return view.unit === "cost" ? formatUsd(c.nanoAiu) : formatCount(tokens(c));
+  return view.unit === "cost" ? formatUsd(c.nanoAiu, view.currency) : formatCount(tokens(c));
 }
 
 function headlineMetric(c: Counts, view: ViewOptions): Metric {
@@ -125,7 +127,7 @@ function headlineValue(c: Counts | undefined, view: ViewOptions): number | undef
 }
 
 function unitWord(view: ViewOptions): string {
-  return view.unit === "cost" ? "estimated USD" : "input + output tokens";
+  return view.unit === "cost" ? `estimated ${currencyCode(view)}` : "input + output tokens";
 }
 
 function titleAttr(note: string | undefined): string {
@@ -206,7 +208,7 @@ function topBar(s: Snapshot | undefined, view: ViewOptions): string {
   const when = s
     ? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`
     : "Reading Copilot session logs…";
-  const costNote = view.unit === "cost" ? `<p>${escapeHtml(COST_NOTE)}</p>` : "";
+  const costNote = view.unit === "cost" ? costNotes(view).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
   return `<header class="top">
   <div><h1>Copilot Usage <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
@@ -231,7 +233,7 @@ function navBar(s: Snapshot, view: ViewOptions): string {
   const unit = (u: ViewOptions["unit"], label: string) =>
     view.unit === u
       ? `<span class="seg on">${label}</span>`
-      : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? "estimated USD" : "tokens"}`);
+      : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? `estimated ${currencyCode(view)}` : "tokens"}`);
   const f = s.filter;
   const chip = (kind: "project" | "tool", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter">${escapeHtml(label)}: <b>${escapeHtml(value)}</b> ✕</a>`;
@@ -240,7 +242,7 @@ function navBar(s: Snapshot, view: ViewOptions): string {
     : "";
   return `${filters}<nav class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month")}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month")}${back}${pick}</div>
-  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", "USD (est.)")}</div>
+  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel(view)))}</div>
 </nav>`;
 }
 
@@ -253,8 +255,8 @@ function targetKpi(s: Snapshot, view: ViewOptions): string {
   const spentMetric = cur?.totals?.nanoAiu;
   const spent = spentMetric ? usd(spentMetric) : undefined;
   const state = rangeState(spent, view.range);
-  const name = `Target ${formatRange(view.range)}`;
-  const sub = `${MONTHS[new Date(cur?.monthStartMs ?? s.dayStartMs).getMonth()]} so far ${spentMetric ? withStar(formatUsd(spentMetric), s.health.partial) : money(0)} (est.)`;
+  const name = `Target ${formatRange(view.range, view.currency)}`;
+  const sub = `${MONTHS[new Date(cur?.monthStartMs ?? s.dayStartMs).getMonth()]} so far ${spentMetric ? withStar(formatUsd(spentMetric, view.currency), s.health.partial) : money(0, view.currency)} (est.)`;
   const big = state === "under" ? "Under" : state === "over" ? "Over" : "In range";
   return `<div class="kpi k4 st-${state}" title="${escapeHtml(RANGE_LABEL[state])}"><div><div class="name">${escapeHtml(name)}</div><div class="sub">${escapeHtml(sub)}</div></div><div class="big">${escapeHtml(big)}</div></div>`;
 }
@@ -281,7 +283,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
     const t = headlineMetric(mt, view);
     if (t.reported > 0) {
       const avg = { sum: t.sum / active, reported: t.reported, missing: t.missing };
-      const avgText = view.unit === "cost" ? formatUsd(avg) : formatCount({ ...avg, sum: Math.round(avg.sum) });
+      const avgText = view.unit === "cost" ? formatUsd(avg, view.currency) : formatCount({ ...avg, sum: Math.round(avg.sum) });
       monthSub += ` · ${avgText} per active day`;
     }
   }
@@ -303,7 +305,7 @@ ${fourth}
 </section>`;
 }
 
-const TILE_FIELDS: [string, keyof Counts, (m: Metric) => string][] = [
+const TILE_FIELDS: [string, keyof Counts, (m: Metric, view: ViewOptions) => string][] = [
   ["Input", "input", formatCount],
   ["Output", "output", formatCount],
   ["Cache read", "cacheRead", formatCount],
@@ -311,15 +313,16 @@ const TILE_FIELDS: [string, keyof Counts, (m: Metric) => string][] = [
   ["Reasoning", "reasoning", formatCount],
   ["Model time", "durationMs", formatDuration],
   ["AIU (as logged)", "nanoAiu", formatAiu],
-  ["USD (est.)", "nanoAiu", formatUsd],
+  ["$cost", "nanoAiu", (m, view) => formatUsd(m, view.currency)],
 ];
 
-function tilesBox(title: string, badge: string, c: Counts | undefined, health: Health, footReasons: boolean): string {
+function tilesBox(title: string, badge: string, c: Counts | undefined, health: Health, footReasons: boolean, view: ViewOptions): string {
   const tiles: string[] = [];
   const notes: string[] = [];
-  for (const [label, key, fmt] of TILE_FIELDS) {
+  for (const [field, key, fmt] of TILE_FIELDS) {
+    const label = field === "$cost" ? costLabel(view) : field;
     const m = c ? (c[key] as Metric) : undefined;
-    const text = m ? withStar(fmt(m), health.partial) : DASH;
+    const text = m ? withStar(fmt(m, view), health.partial) : DASH;
     const note = m ? partialNote(m) : undefined;
     if (note) notes.push(`${label}: ${note}.`);
     tiles.push(`<div class="tile"${titleAttr(note)}><span class="k">${escapeHtml(label)}</span><span class="v">${val(text)}</span></div>`);
@@ -359,14 +362,14 @@ function modelTable(s: Snapshot, view: ViewOptions): string {
       const cell = (x: string, note?: string) =>
         `<td class="num${x === DASH ? " muted" : ""}"${titleAttr(note)}>${val(withStar(x, partial))}</td>`;
       const perCall = usd(c.nanoAiu);
-      const perCallText = perCall === undefined || c.records === 0 ? DASH : money(perCall / c.records);
-      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${share > 0 ? `<span class="bar f-${fam}" style="width:${share}%"></span>` : ""}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num${view.unit === "tokens" ? " sum" : ""}"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}"${titleAttr(partialNote(c.nanoAiu))}>${val(withStar(formatUsd(c.nanoAiu), partial))}</td>${cell(perCallText)}<td class="num">${c.records}</td></tr>`;
+      const perCallText = perCall === undefined || c.records === 0 ? DASH : money(perCall / c.records, view.currency);
+      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${share > 0 ? `<span class="bar f-${fam}" style="width:${share}%"></span>` : ""}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num${view.unit === "tokens" ? " sum" : ""}"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}"${titleAttr(partialNote(c.nanoAiu))}>${val(withStar(formatUsd(c.nanoAiu, view.currency), partial))}</td>${cell(perCallText)}<td class="num">${c.records}</td></tr>`;
     });
   const empty = pastMonth ? `No per-call records in ${monthTitle(s.month!.monthStartMs)}.` : "No per-call records dated today.";
   const body = rows.length
-    ? foldedTable("<th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Calls</th>", rows.map((html) => ({ html })))
+    ? foldedTable("<th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>${escapeHtml(costLabel(view))}</th><th>Per call</th><th>Calls</th>", rows.map((html) => ({ html })))
     : `<p class="muted">${escapeHtml(empty)}</p>`;
-  return `<section class="box"><h2>${escapeHtml(scope)} by model<small>${plural(models.length, "model")}</small></h2>${body}<div class="fine">Bar = share of ${pastMonth ? "the month's" : "today's"} ${unitWord(view)}. Per call = estimated USD per model call. "—" means the log did not report the value; it is never shown as 0.</div></section>`;
+  return `<section class="box"><h2>${escapeHtml(scope)} by model<small>${plural(models.length, "model")}</small></h2>${body}<div class="fine">Bar = share of ${pastMonth ? "the month's" : "today's"} ${unitWord(view)}. Per call = estimated ${escapeHtml(currencyCode(view))} per model call. "—" means the log did not report the value; it is never shown as 0.</div></section>`;
 }
 
 function calendar(s: Snapshot, view: ViewOptions): string {
@@ -381,8 +384,8 @@ function calendar(s: Snapshot, view: ViewOptions): string {
   const max = Math.max(0, ...values.map((v) => v ?? 0));
   const todayNum = new Date(s.dayStartMs).getDate();
   const sameMonth = new Date(s.dayStartMs).getMonth() === mo && new Date(s.dayStartMs).getFullYear() === y;
-  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
-  const word = view.unit === "cost" ? "estimated USD" : "tokens";
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m, view.currency) : formatCount(m));
+  const word = view.unit === "cost" ? `estimated ${currencyCode(view)}` : "tokens";
 
   const cells: string[] = DOW.map((d) => `<div class="dow">${d}</div>`);
   for (let i = 0; i < lead; i++) cells.push(`<div class="d pad"></div>`);
@@ -404,10 +407,10 @@ function calendar(s: Snapshot, view: ViewOptions): string {
   const swatches = [0, 1, 2, 3, 4]
     .map((l) => `<b class="${l ? `h${l}` : ""}"></b>`)
     .join("");
-  const heading = view.unit === "cost" ? "Daily USD (est.)" : "Daily tokens";
+  const heading = view.unit === "cost" ? `Daily ${costLabel(view)}` : "Daily tokens";
   const sub = view.unit === "cost" ? "logged AI credits × $0.01" : "input + output";
   const so = s.month?.isCurrent === false ? "Month total" : "Month so far";
-  return `<section class="box"><h2>${heading} — ${MONTHS[mo]} ${y}<small>${escapeHtml(sub)}</small></h2><div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw">${swatches}</span>More</span><span>${so}: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatUsd(mt.nanoAiu), s.health.partial) : DASH)}</b> USD (est.)</span></div></section>`;
+  return `<section class="box"><h2>${heading} — ${MONTHS[mo]} ${y}<small>${escapeHtml(sub)}</small></h2><div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw">${swatches}</span>More</span><span>${so}: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatUsd(mt.nanoAiu, view.currency), s.health.partial) : DASH)}</b> ${escapeHtml(costLabel(view))}</span></div></section>`;
 }
 
 /** Monthly bars over the history window; each bar opens that month (D21). */
@@ -420,7 +423,7 @@ function trend(s: Snapshot, view: ViewOptions): string {
   const top = Math.max(0, ...values.map((v) => v ?? 0), range?.max ?? 0, range?.min ?? 0);
   const scale = top > 0 ? top * 1.08 : 1;
   const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
-  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m, view.currency) : formatCount(m));
 
   const cols = hist.map((h, i) => {
     const v = values[i];
@@ -431,7 +434,7 @@ function trend(s: Snapshot, view: ViewOptions): string {
     const label = MONTHS[d.getMonth()]!.slice(0, 3) + (d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : "");
     const sel = h.monthStartMs === viewed ? " sel" : "";
     const bar = v !== undefined && v > 0 ? `<span class="fill st-${state}" style="height:${pct(v)}%"></span>` : "";
-    const title = `${monthTitle(h.monthStartMs)}: ${text}${view.unit === "cost" ? " USD (est.)" : " tokens"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
+    const title = `${monthTitle(h.monthStartMs)}: ${text}${view.unit === "cost" ? ` ${costLabel(view)}` : " tokens"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
     return `<a class="col${sel}" href="${escapeHtml(commandHref("copilotUsageMonitor.selectMonth", monthKey(h.monthStartMs)))}" title="${escapeHtml(title)}"><span class="v">${val(text)}</span><span class="track">${bar}</span><span class="m">${escapeHtml(label)}</span></a>`;
   });
 
@@ -439,11 +442,11 @@ function trend(s: Snapshot, view: ViewOptions): string {
   if (range) {
     const lo = range.min ?? 0;
     const hi = range.max ?? scale;
-    band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}`)}"></span>`;
+    band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range, view.currency)}`)}"></span>`;
   }
   const legend = range
-    ? `<span class="lg"><b class="st-under"></b>Under <b class="st-in"></b>In range <b class="st-over"></b>Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range))}</span>`
-    : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : "Switch to USD (est.) to compare against a target."}</span>`;
+    ? `<span class="lg"><b class="st-under"></b>Under <b class="st-in"></b>In range <b class="st-over"></b>Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range, view.currency))}</span>`
+    : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : `Switch to ${costLabel(view)} to compare against a target.`}</span>`;
   const filtered = s.filter ? " · filtered" : "";
   return `<section class="box"><h2>Monthly trend<small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h2><div class="trend"><div class="plot">${band}${cols.join("")}</div></div><div class="scale">${legend}</div></section>`;
 }
@@ -465,9 +468,9 @@ function dailyTrend(s: Snapshot, view: ViewOptions): string {
   const top = Math.max(0, ...active);
   const scale = top > 0 ? top * 1.08 : 1;
   const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
-  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
-  const fmtNum = (n: number) => (view.unit === "cost" ? money(n) : formatCount({ sum: Math.round(n), reported: 1, missing: 0 }));
-  const word = view.unit === "cost" ? " USD (est.)" : " tokens";
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m, view.currency) : formatCount(m));
+  const fmtNum = (n: number) => (view.unit === "cost" ? money(n, view.currency) : formatCount({ sum: Math.round(n), reported: 1, missing: 0 }));
+  const word = view.unit === "cost" ? ` ${costLabel(view)}` : " tokens";
   const todayStart = s.dayStartMs;
 
   let peakIdx = -1;
@@ -525,10 +528,10 @@ function projectsBox(s: Snapshot, view: ViewOptions): string {
     const on = g.name === active;
     const href = filterHref("project", on ? "" : g.name);
     const name = g.name === NO_PROJECT ? `<span class="muted">${escapeHtml(g.name)}</span>` : escapeHtml(g.label ?? g.name);
-    return { keep, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>` };
+    return { keep, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu, view.currency), partial))}</td></tr>` };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
-  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read.${escapeHtml(note)}</div></section>`;
+  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>${escapeHtml(costLabel(view))}</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read.${escapeHtml(note)}</div></section>`;
 }
 
 /** Per-tool table for the viewed month; each row filters to calls that used that tool (D26). */
@@ -545,7 +548,7 @@ function toolsBox(s: Snapshot, view: ViewOptions): string {
     const on = t.name === active;
     const href = filterHref("tool", on ? "" : t.name);
     const kind = t.builtIn ? `<span class="tag">built-in</span>` : `<span class="tag add">added</span>`;
-    return { keep: on, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a></td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td></tr>` };
+    return { keep: on, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a></td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu, view.currency), partial))}</td></tr>` };
   });
   let addedNote = "Only built-in tools were used.";
   if (added.length) {
@@ -563,7 +566,7 @@ function toolsBox(s: Snapshot, view: ViewOptions): string {
     addedNote = `${plural(added.length, "added tool")} from ${plural(sorted.length, "server or plugin", "servers or plugins")}: ${shown.join(", ")}${more}.`;
   }
   const note = s.filter?.project ? ` Only project ${projectLabel(s, s.filter.project)}.` : "";
-  return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · ${plural(list.length, "tool")} · click to filter</small></h2>${foldedTable("<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
+  return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · ${plural(list.length, "tool")} · click to filter</small></h2>${foldedTable("<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>${escapeHtml(costLabel(view))}</th>", rows)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / ${escapeHtml(currencyCode(view))} = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
 }
 
 function sessionsBox(s: Snapshot, view: ViewOptions): string {
@@ -576,7 +579,7 @@ function sessionsBox(s: Snapshot, view: ViewOptions): string {
   const monthUsd = s.month?.totals ? usd(s.month.totals.nanoAiu) : undefined;
   const rows = list.map((x) => {
     const cost = usd(x.nanoAiu);
-    const perCall = cost === undefined ? DASH : money(cost / x.calls);
+    const perCall = cost === undefined ? DASH : money(cost / x.calls, view.currency);
     const share = cost !== undefined && monthUsd ? Math.round((100 * cost) / monthUsd) : 0;
     const flagged = x.growth !== undefined && x.growth >= GROWTH_FLAG;
     const growth = x.growth === undefined ? DASH : `${x.growth.toFixed(1)}×`;
@@ -587,13 +590,13 @@ function sessionsBox(s: Snapshot, view: ViewOptions): string {
     const model = x.topModel
       ? `<span class="chipm f-${modelFamily(x.topModel)}" title="${escapeHtml(x.topModel)}">${escapeHtml(x.topModel)}</span>`
       : `<span class="muted">${DASH}</span>`;
-    return `<tr><td><span class="num" title="${escapeHtml(x.sessionId)}">${escapeHtml(shortId(x.sessionId))}</span>${share > 0 ? `<span class="bar f-other" style="width:${share}%"></span>` : ""}</td><td>${escapeHtml(dates)}</td><td>${model}</td><td class="num">${x.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td><td class="num">${escapeHtml(perCall)}</td><td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${escapeHtml(growth)}${flagged ? " ▲" : ""}</td></tr>`;
+    return `<tr><td><span class="num" title="${escapeHtml(x.sessionId)}">${escapeHtml(shortId(x.sessionId))}</span>${share > 0 ? `<span class="bar f-other" style="width:${share}%"></span>` : ""}</td><td>${escapeHtml(dates)}</td><td>${model}</td><td class="num">${x.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu, view.currency), partial))}</td><td class="num">${escapeHtml(perCall)}</td><td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${escapeHtml(growth)}${flagged ? " ▲" : ""}</td></tr>`;
   });
   const anyFlag = list.some((x) => x.growth !== undefined && x.growth >= GROWTH_FLAG);
   const tip = anyFlag
     ? `<p><b>▲</b> Later calls in this session cost ${GROWTH_FLAG}× or more than its first ones: the context kept growing. Starting a fresh session for a new task is usually cheaper.</p>`
     : "";
-  return `<section class="box"><h2>Costliest sessions<small>${escapeHtml(scope)} · top ${list.length}</small></h2><div class="tablewrap"><table><thead><tr><th>Session</th><th>Dates</th><th>Main model</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Growth</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine">${tip}<p>Bar = share of the month's estimated USD. Growth = cost of the last 5 calls ÷ the first 5.</p></div></section>`;
+  return `<section class="box"><h2>Costliest sessions<small>${escapeHtml(scope)} · top ${list.length}</small></h2><div class="tablewrap"><table><thead><tr><th>Session</th><th>Dates</th><th>Main model</th><th>Calls</th><th>Tokens</th><th>${escapeHtml(costLabel(view))}</th><th>Per call</th><th>Growth</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine">${tip}<p>Bar = share of the month's estimated cost. Growth = cost of the last 5 calls ÷ the first 5.</p></div></section>`;
 }
 
 function healthBox(s: Snapshot): string {
@@ -636,8 +639,8 @@ ${trend(s, view)}
 ${dailyTrend(s, view)}
 <div class="cols">
 <div>
-${tilesBox("Today in detail", "9 metrics", s.today, s.health, true)}
-${tilesBox("Current session", badge, s.current?.totals, s.health, false)}
+${tilesBox("Today in detail", "9 metrics", s.today, s.health, true, view)}
+${tilesBox("Current session", badge, s.current?.totals, s.health, false, view)}
 </div>
 <div>
 ${modelTable(s, view)}

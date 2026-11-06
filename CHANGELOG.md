@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- **Display currency** (`copilotUsageMonitor.currency`, default `USD`, or **Copilot Usage: Choose Currency…**): show estimated cost in CAD, EUR, GBP and other currencies at the daily European Central Bank USD reference rate from frankfurter.dev, refreshed every 6 hours. The request carries only the currency code; with USD no request is made. Monthly targets are read in the chosen currency. The privacy gates now allow exactly this one fetch, pinned to one file and one URL.
 - **Daily trend** section under the monthly trend: one bar per day of the viewed month (tokens or USD est.), a dashed average-per-active-day line, the peak day highlighted and today outlined. Days still to come show as empty slots. Follows the project or tool filter, like the calendar.
 
 ## 0.3.2 - 2026-11-06

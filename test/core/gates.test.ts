@@ -1,6 +1,7 @@
 // Privacy and packaging gates (plan §2, Task 9). These scan the source tree
 // and the built bundle; they fail the build if a network, persistence or
-// telemetry API appears anywhere.
+// telemetry API appears anywhere, except the single opt-in exchange-rate
+// fetch, which is pinned to one file and one URL.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { LOCAL_BANNER } from "../../src/core/format";
 
 const ROOT = join(__dirname, "..", "..");
+const RATE_FILE = join(ROOT, "src", "vscode", "exchangeRate.ts");
 
 function files(dir: string, ext: RegExp): string[] {
   const out: string[] = [];
@@ -45,15 +47,26 @@ describe("gates", () => {
     execFileSync("node", ["esbuild.mjs"], { cwd: ROOT, stdio: "ignore" });
   });
 
-  it("forbidden APIs: none in src/", () => {
+  it("forbidden APIs: none in src/ (fetch only in the opt-in exchange-rate file)", () => {
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
-      expect(offences(readFileSync(f, "utf8")), f).toEqual([]);
+      const found = offences(readFileSync(f, "utf8"));
+      expect(found, f).toEqual(f === RATE_FILE ? ["fetch("] : []);
     }
   });
 
-  it("forbidden APIs: none in the bundle", () => {
+  it("the exchange-rate file calls fetch once, only on the pinned rate URL", () => {
+    const src = readFileSync(RATE_FILE, "utf8");
+    expect(src.split("fetch(").length - 1).toBe(1);
+    expect(src).toContain("fetch(`${RATE_URL}?base=USD&symbols=${code}`");
+    expect(src.match(/https?:\/\/[^\s"'`]+/g)).toEqual(["https://api.frankfurter.dev/v1/latest"]);
+  });
+
+  it("forbidden APIs: none in the bundle beyond the one rate fetch", () => {
     const bundle = readFileSync(join(ROOT, "dist", "extension.js"), "utf8");
-    expect(offences(bundle)).toEqual([]);
+    const found = offences(bundle);
+    expect(found).toEqual(["fetch("]);
+    expect(bundle.split("fetch(").length - 1).toBe(1);
+    expect(bundle.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => !u.includes("github.com"))).toEqual(["https://api.frankfurter.dev"]);
   });
 
   it("gate patterns actually match (self-test)", () => {

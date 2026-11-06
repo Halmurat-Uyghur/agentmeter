@@ -300,4 +300,13 @@ describe("renderPanelHtml", () => {
     const html = renderPanelHtml(snap(), "x");
     expect(html).not.toContain(CANARY);
   });
+  it("cost view in CAD: every cost label and figure is converted", () => {
+    const cad = { code: "CAD", rate: 1.4, date: "2026-11-06" };
+    const t = text(renderPanelHtml(snap(), "x", { unit: "cost", currency: cad, range: { min: 10, max: 50 } }));
+    expect(t).toContain("CAD (est.)");
+    expect(t).toContain("1 USD = 1.4 CAD");
+    expect(t).toContain("CA$14.00–CA$70.00");
+    expect(t).not.toContain("USD (est.)");
+    expect(t.replace(/\$0\.01/g, "")).not.toMatch(/(?<![A-Z])\$\d/);
+  });
 });
