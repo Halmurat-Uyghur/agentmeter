@@ -40,6 +40,7 @@ interface FileState {
   malformed: number;
   unrecognized: number;
   overlong: number;
+  overlongOther: number;
   /** activity / usage lines over the whole file (since the last reset) */
   activity: number;
   usage: number;
@@ -237,6 +238,7 @@ export class UsageMonitor {
         malformed: 0,
         unrecognized: 0,
         overlong: 0,
+        overlongOther: 0,
         activity: 0,
         usage: 0,
         windowActivity: 0,
@@ -253,7 +255,7 @@ export class UsageMonitor {
       return { added: 0, changed: true };
     }
     const changed =
-      r.reset || r.error !== f.error || r.usageLines.length > 0 || r.activity > 0 || r.suspect > 0 || r.overlong > 0;
+      r.reset || r.error !== f.error || r.usageLines.length > 0 || r.activity > 0 || r.suspect > 0 || r.overlong > 0 || r.overlongOther > 0;
     if (r.error !== undefined && f.error === undefined)
       this.log.error("read", r.error);
     f.error = r.error;
@@ -261,7 +263,7 @@ export class UsageMonitor {
     // as history (like a first read) so old activity never looks like new.
     if (r.reset) {
       this.store.resetFile(path);
-      f.malformed = f.unrecognized = f.overlong = 0;
+      f.malformed = f.unrecognized = f.overlong = f.overlongOther = 0;
       delete f.project;
       f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
@@ -286,6 +288,7 @@ export class UsageMonitor {
     }
     f.unrecognized += r.suspect;
     f.overlong += r.overlong;
+    f.overlongOther += r.overlongOther;
     f.activity += r.activity;
     f.usage += usage;
     if (inWindow) {
@@ -304,6 +307,7 @@ export class UsageMonitor {
     let malformed = 0;
     let unrecognized = 0;
     let overlong = 0;
+    let overlongOther = 0;
     let unreadableFiles = 0;
     let silentLive = false;
     let sessionsWithoutUsage = 0;
@@ -311,6 +315,7 @@ export class UsageMonitor {
       malformed += f.malformed;
       unrecognized += f.unrecognized;
       overlong += f.overlong;
+      overlongOther += f.overlongOther;
       if (f.error !== undefined) unreadableFiles++;
       if (f.activity === 0 || f.usage > 0) continue;
       const live = this.candidates.get(f.folderId)?.live === true;
@@ -338,6 +343,7 @@ export class UsageMonitor {
       unrecognized,
       malformed,
       overlong,
+      overlongOther,
       unreadableFiles,
       sessionsWithoutUsage,
     };

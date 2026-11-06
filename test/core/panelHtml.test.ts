@@ -38,6 +38,7 @@ function health(o: Partial<Health> = {}): Health {
     unrecognized: 0,
     malformed: 0,
     overlong: 0,
+    overlongOther: 0,
     unreadableFiles: 0,
     sessionsWithoutUsage: 0,
     ...o,
@@ -138,6 +139,13 @@ describe("month helpers", () => {
 });
 
 describe("renderPanelHtml", () => {
+  it("over-long non-usage lines are listed but not flagged as partial", () => {
+    const t = text(renderPanelHtml(snap({ health: health({ overlongOther: 37 }) }), "x"));
+    expect(t).toMatch(/Over-long lines skipped \(not usage\)\s+37/);
+    expect(t).not.toContain("Totals may be incomplete");
+    expect(t).not.toContain("Partial data");
+  });
+
   it("is static, locked down and carries the banner", () => {
     const html = renderPanelHtml(snap(), "vscode-webview://abc");
     expect(html).not.toMatch(/<script/i);

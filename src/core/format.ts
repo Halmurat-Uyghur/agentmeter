@@ -184,7 +184,7 @@ function healthLines(h: Health): string[] {
     if (h.malformed > 0)
       reasons.push(`- ${h.malformed} malformed line(s) were skipped.`);
     if (h.overlong > 0)
-      reasons.push(`- ${h.overlong} over-long line(s) were skipped.`);
+      reasons.push(`- ${h.overlong} over-long line(s) that may be usage were skipped.`);
     out.push(reasons.join("\n"));
   }
   if (h.sessionsWithoutUsage > 0) {

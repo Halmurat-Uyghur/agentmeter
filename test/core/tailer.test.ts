@@ -66,6 +66,7 @@ describe("LineTailer", () => {
       activity: 0,
       suspect: 0,
       overlong: 0,
+      overlongOther: 0,
       reset: false,
     });
   });
@@ -216,6 +217,77 @@ describe("LineTailer", () => {
     expect(r2.overlong).toBe(0);
     expect(r2.suspect).toBe(0);
     expect(r2.usageLines).toEqual([usage(1)]);
+  });
+
+  describe("over-long lines are sorted by their type", () => {
+    // A large non-usage event (tool output, a pasted file) padded past the limit.
+    const big = (type: string, n = 5000) =>
+      `{"type":"${type}","data":{"text":"${"z".repeat(n)}"}}`;
+
+    it("a known non-usage type is skipped without risking totals", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 256 });
+      await writeFile(file, big("tool.execution_complete") + "\n" + usage(1) + "\n");
+      const r = await t.read();
+      expect(r.overlong).toBe(0);
+      expect(r.overlongOther).toBe(1);
+      expect(r.usageLines).toEqual([usage(1)]);
+    });
+
+    it("same result when the long line arrives whole in one chunk", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 1 << 20 });
+      await writeFile(file, big("user.message") + "\n" + usage(1) + "\n");
+      const r = await t.read();
+      expect(r.overlong).toBe(0);
+      expect(r.overlongOther).toBe(1);
+      expect(r.usageLines).toEqual([usage(1)]);
+    });
+
+    it("same result when the long line grows across reads", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024 });
+      const line = big("tool.execution_complete");
+      let overlong = 0;
+      let other = 0;
+      for (let i = 0; i < line.length; i += 700) {
+        await appendFile(file, line.slice(i, i + 700));
+        const r = await t.read();
+        overlong += r.overlong;
+        other += r.overlongOther;
+      }
+      await appendFile(file, "\n");
+      const r = await t.read();
+      overlong += r.overlong;
+      other += r.overlongOther;
+      expect(overlong).toBe(0);
+      expect(other).toBe(1);
+    });
+
+    it("an over-long usage record still counts as possibly lost usage", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 256 });
+      await writeFile(file, big("session.usage_record") + "\n");
+      const r = await t.read();
+      expect(r.overlong).toBe(1);
+      expect(r.overlongOther).toBe(0);
+    });
+
+    it("a line whose type is not first, or is re-spaced, counts as possibly lost usage", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 256 });
+      await writeFile(
+        file,
+        `{"id":"x","type":"tool.execution_complete","p":"${"z".repeat(5000)}"}\n` +
+          `{ "type": "tool.execution_complete","p":"${"z".repeat(5000)}"}\n`,
+      );
+      const r = await t.read();
+      expect(r.overlong).toBe(2);
+      expect(r.overlongOther).toBe(0);
+    });
+
+    it("an escaped quote in the type name is not trusted", async () => {
+      const t = new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 256 });
+      await writeFile(file, `{"type":"a\\"b","p":"${"z".repeat(5000)}"}\n`);
+      const r = await t.read();
+      expect(r.overlong).toBe(1);
+      expect(r.overlongOther).toBe(0);
+    });
   });
 
   it("activity counted, not decoded", async () => {

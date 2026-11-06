@@ -50,6 +50,35 @@ export function classifyLine(
   return "skip";
 }
 
+const TYPE_PREFIX = Buffer.from(`{"type":"`);
+const USAGE_TYPE_BYTES = Buffer.from(USAGE_TYPE);
+/** How far past `{"type":"` to look for the closing quote of the type name. */
+const MAX_TYPE_NAME_BYTES = 128;
+/** Bytes of a line's start that isKnownNonUsage needs to see. */
+export const TYPE_HEAD_BYTES = TYPE_PREFIX.length + MAX_TYPE_NAME_BYTES + 1;
+
+/**
+ * True only when the line provably is not a usage record: it opens with
+ * `{"type":"<name>"`, the name has no escapes, and it is not the usage type.
+ * Used for lines too long to read, so it looks at the first bytes only.
+ * Anything it can't be sure of (keys reordered or re-spaced, an escaped or
+ * very long name) is false, so a skipped line that might be usage still counts.
+ */
+export function isKnownNonUsage(buf: Buffer, start: number, end: number): boolean {
+  if (!startsWith(buf, start, end, TYPE_PREFIX)) return false;
+  const from = start + TYPE_PREFIX.length;
+  const stop = Math.min(end, from + MAX_TYPE_NAME_BYTES + 1);
+  for (let i = from; i < stop; i++) {
+    const b = buf[i];
+    if (b === 0x5c) return false; // backslash: an escape we won't interpret
+    if (b === 0x22) {
+      if (i === from) return false;
+      return buf.compare(USAGE_TYPE_BYTES, 0, USAGE_TYPE_BYTES.length, from, i) !== 0;
+    }
+  }
+  return false;
+}
+
 type Obj = Record<string, unknown>;
 
 function isObject(v: unknown): v is Obj {

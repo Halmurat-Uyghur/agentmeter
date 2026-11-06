@@ -73,7 +73,10 @@ export interface Health {
   partial: boolean;
   unrecognized: number;
   malformed: number;
+  /** over-long lines that may have been usage records; feeds `partial` */
   overlong: number;
+  /** over-long lines whose type shows they are not usage; informational only */
+  overlongOther: number;
   unreadableFiles: number;
   sessionsWithoutUsage: number;
 }

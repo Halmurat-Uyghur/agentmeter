@@ -57,6 +57,7 @@ function health(o: Partial<Health> = {}): Health {
     unrecognized: 0,
     malformed: 0,
     overlong: 0,
+    overlongOther: 0,
     unreadableFiles: 0,
     sessionsWithoutUsage: 0,
     ...o,
