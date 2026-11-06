@@ -1,0 +1,15 @@
+{
+  // Compiles the integration tests (and what they import) to out/ for Mocha in the extension host.
+  // "node16" emits CommonJS because package.json has no "type": "module".
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "node16",
+    "moduleResolution": "node16",
+    "types": ["node", "vscode", "mocha"],
+    "noEmit": false,
+    "outDir": "out",
+    "rootDir": ".",
+    "sourceMap": true
+  },
+  "include": ["test/integration/**/*.ts"]
+}

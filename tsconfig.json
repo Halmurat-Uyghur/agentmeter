@@ -1,0 +1,19 @@
+{
+  // Type-check only: src/ is bundled by esbuild (esbuild.mjs); test/core runs under Vitest.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "types": ["node", "vscode"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/core/**/*.ts", "test/fixtures/**/*.ts", "vitest.config.ts"]
+}

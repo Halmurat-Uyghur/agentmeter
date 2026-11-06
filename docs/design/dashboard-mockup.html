@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<title>Copilot Usage (Local)</title>
+<!--
+  Design mockup for Task 8a (docs/plans/copilot-usage-monitor-plan.md).
+  Target output of renderPanelHtml(): no <script>, no external resources, all data synthetic.
+  Layout and visual language adapted from the pvjagtap "Copilot Usage Dashboard" extension
+  (stat cards, model chips, calendar heatmap); copy and figures follow this project's §2 rules.
+-->
+<style>
+:root {
+  --bg: #f5f0e8; --card: #ffffff; --fg: #2d2a26; --muted: #6b645d; --border: #e0d8cc;
+  --accent: #2563eb; --accent-bg: rgba(37,99,235,.07); --accent-border: rgba(37,99,235,.3);
+  --ok: #15803d; --warn: #b45309; --warn-bg: #fffbeb; --warn-border: #fde68a;
+  --heat-0: #ece6dc; --heat-1: #c7dcf7; --heat-2: #8db8ef; --heat-3: #4b8be3; --heat-4: #1d5fc4;
+  --heat-fg-dark: #ffffff;
+  --m-claude-bg: #faf5ff; --m-claude-fg: #6d28d9; --m-claude-bd: #ddd0fb;
+  --m-gpt-bg: #f0fdf4;    --m-gpt-fg: #15803d;    --m-gpt-bd: #b7ebc8;
+  --m-gemini-bg: #fefce8; --m-gemini-fg: #a16207; --m-gemini-bd: #fde68a;
+  --m-other-bg: #f4f4f5;  --m-other-fg: #52525b;  --m-other-bd: #d4d4d8;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+/* Dark tokens: VS Code webviews set body.vscode-dark / body.vscode-high-contrast; browsers use prefers-color-scheme. */
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body:not(.vscode-light) { color-scheme: dark; } }
+body.vscode-dark, body.vscode-high-contrast { color-scheme: dark; }
+body.vscode-dark, body.vscode-high-contrast,
+:root[data-theme="dark"] body {
+    --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #9aa4af; --border: #30363d;
+    --accent: #58a6ff; --accent-bg: rgba(88,166,255,.08); --accent-border: rgba(88,166,255,.35);
+    --ok: #3fb950; --warn: #d29922; --warn-bg: #2d1f0d; --warn-border: #4a3319;
+    --heat-0: #1f252d; --heat-1: #0f3a6b; --heat-2: #1757a3; --heat-3: #2f7ad6; --heat-4: #6aa9f5;
+    --heat-fg-dark: #0d1117;
+    --m-claude-bg: #1e1a2e; --m-claude-fg: #c4a5fd; --m-claude-bd: #4c3a7a;
+    --m-gpt-bg: #142619;    --m-gpt-fg: #86efac;    --m-gpt-bd: #22543a;
+    --m-gemini-bg: #2a2614; --m-gemini-fg: #fde68a; --m-gemini-bd: #5c4a12;
+    --m-other-bg: #22262c;  --m-other-fg: #c9d1d9;  --m-other-bd: #3a414a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body:not(.vscode-light) {
+    --bg: #0d1117; --card: #161b22; --fg: #e6edf3; --muted: #9aa4af; --border: #30363d;
+    --accent: #58a6ff; --accent-bg: rgba(88,166,255,.08); --accent-border: rgba(88,166,255,.35);
+    --ok: #3fb950; --warn: #d29922; --warn-bg: #2d1f0d; --warn-border: #4a3319;
+    --heat-0: #1f252d; --heat-1: #0f3a6b; --heat-2: #1757a3; --heat-3: #2f7ad6; --heat-4: #6aa9f5;
+    --heat-fg-dark: #0d1117;
+    --m-claude-bg: #1e1a2e; --m-claude-fg: #c4a5fd; --m-claude-bd: #4c3a7a;
+    --m-gpt-bg: #142619;    --m-gpt-fg: #86efac;    --m-gpt-bd: #22543a;
+    --m-gemini-bg: #2a2614; --m-gemini-fg: #fde68a; --m-gemini-bd: #5c4a12;
+    --m-other-bg: #22262c;  --m-other-fg: #c9d1d9;  --m-other-bd: #3a414a;
+  }
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; padding: 20px 16px 32px; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); }
+.wrap { max-width: 1240px; margin: 0 auto; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+
+/* Top bar */
+.topbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 10px 16px; margin-bottom: 12px; }
+h1 { margin: 0; font-size: 20px; letter-spacing: -.2px; }
+h1 .local { font-size: 11px; vertical-align: middle; margin-left: 6px; padding: 2px 8px; border-radius: 10px; color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); font-weight: 700; letter-spacing: .4px; text-transform: uppercase; }
+.subtitle { margin-top: 3px; font-size: 12px; color: var(--muted); font-weight: 500; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); white-space: nowrap; }
+.chip.ok { color: var(--ok); }
+.chip.warn { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-border); }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; }
+
+/* Banner */
+.banner { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--card); border-radius: 8px; padding: 9px 12px; margin-bottom: 16px; font-size: 12px; }
+.banner p { margin: 0; }
+.banner p + p { margin-top: 2px; color: var(--muted); }
+
+/* KPI cards */
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
+.kpi { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--kpi, var(--accent)); border-radius: 10px; padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 12px; min-width: 0; }
+.kpi .label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+.kpi .sub { grid-row: 2; font-size: 11px; color: var(--muted); margin-top: 3px; }
+.kpi .value { grid-column: 2; grid-row: 1 / span 2; align-self: center; font-size: 24px; font-weight: 700; letter-spacing: -.3px; white-space: nowrap; }
+.kpi.k-today { --kpi: #2563eb; } .kpi.k-session { --kpi: #7c3aed; } .kpi.k-month { --kpi: #0f766e; } .kpi.k-aiu { --kpi: #b45309; }
+
+/* Cards and grid */
+.grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 16px; margin-bottom: 16px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.card + .card { margin-top: 16px; }
+.head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; }
+.badge { margin-left: auto; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 10px; color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); white-space: nowrap; }
+
+/* Metric tiles */
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.tile { border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; }
+.tile .l { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
+.tile .v { font-size: 17px; font-weight: 700; }
+
+/* Tables */
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 8px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+tr:last-child td { border-bottom: 0; }
+td.total { font-weight: 700; }
+.model { display: inline-block; font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--bd); background: var(--bg-m); color: var(--fg-m); }
+.m-claude { --bd: var(--m-claude-bd); --bg-m: var(--m-claude-bg); --fg-m: var(--m-claude-fg); }
+.m-gpt    { --bd: var(--m-gpt-bd);    --bg-m: var(--m-gpt-bg);    --fg-m: var(--m-gpt-fg); }
+.m-gemini { --bd: var(--m-gemini-bd); --bg-m: var(--m-gemini-bg); --fg-m: var(--m-gemini-fg); }
+.m-other  { --bd: var(--m-other-bd);  --bg-m: var(--m-other-bg);  --fg-m: var(--m-other-fg); }
+.share { display: block; height: 3px; border-radius: 2px; background: var(--accent); opacity: .55; margin-top: 4px; }
+.star { color: var(--warn); font-weight: 700; }
+
+/* Calendar heatmap */
+.cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+.dow { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); text-align: center; padding-bottom: 2px; }
+.day { aspect-ratio: 1.35; border-radius: 6px; background: var(--heat-0); display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 0; font-size: 12px; font-weight: 700; }
+.day small { font-family: var(--mono); font-size: 10px; font-weight: 500; opacity: .85; }
+.day.blank { background: transparent; }
+.day.future { background: transparent; border: 1px dashed var(--border); color: var(--muted); font-weight: 500; }
+.day.h1 { background: var(--heat-1); } .day.h2 { background: var(--heat-2); }
+.day.h3 { background: var(--heat-3); color: var(--heat-fg-dark); } .day.h4 { background: var(--heat-4); color: var(--heat-fg-dark); }
+.day.today { outline: 2px solid var(--fg); outline-offset: 1px; }
+.legend { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 11px; color: var(--muted); }
+.legend .sw { display: inline-flex; gap: 3px; vertical-align: middle; margin: 0 4px; }
+.legend .sw i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* Health / notes */
+.health { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.kv { border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; display: flex; justify-content: space-between; gap: 8px; }
+.kv .l { color: var(--muted); }
+ul.notes { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+ul.notes li + li { margin-top: 3px; }
+.foot { margin-top: 10px; font-size: 11px; color: var(--muted); }
+
+@media (max-width: 1100px) {
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .health { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .kpis, .tiles, .health { grid-template-columns: minmax(0, 1fr); }
+  .kpi .value { font-size: 21px; }
+  .day small { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="topbar">
+    <div>
+      <h1>Copilot Usage <span class="local">Local</span></h1>
+      <div class="subtitle">Updated 14:32:05 · Thursday, November 5, 2026 · day starts at local midnight</div>
+    </div>
+    <div class="chips">
+      <span class="chip ok"><span class="dot"></span>Current session live</span>
+      <span class="chip warn" title="1 log could not be read; totals marked * may be incomplete."><span class="dot"></span>Partial data</span>
+      <span class="chip">Folder: COPILOT_HOME</span>
+    </div>
+  </header>
+
+  <section class="banner">
+    <p>Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.</p>
+    <p>Updates when Copilot finishes each model call, not token by token.</p>
+  </section>
+
+  <section class="kpis">
+    <div class="kpi k-today">
+      <div class="label">Today</div>
+      <div class="sub">input + output tokens · 64 calls</div>
+      <div class="value num">1.3M<span class="star">*</span></div>
+    </div>
+    <div class="kpi k-session">
+      <div class="label">Current session</div>
+      <div class="sub">3f2a91c0 · live · 38 calls</div>
+      <div class="value num">702.4K</div>
+    </div>
+    <div class="kpi k-month">
+      <div class="label">November</div>
+      <div class="sub">4 active days · 1.1M per active day</div>
+      <div class="value num">4.5M<span class="star">*</span></div>
+    </div>
+    <div class="kpi k-aiu">
+      <div class="label">AIU (as logged)</div>
+      <div class="sub">today · November 1,388.20</div>
+      <div class="value num">412.37</div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <div>
+      <section class="card">
+        <div class="head"><span class="title">Today in detail</span><span class="badge">8 metrics</span></div>
+        <div class="tiles">
+          <div class="tile"><span class="l">Input</span><span class="v num">1.1M</span></div>
+          <div class="tile"><span class="l">Output</span><span class="v num">186.0K</span></div>
+          <div class="tile"><span class="l">Cache read</span><span class="v num">3.4M</span></div>
+          <div class="tile"><span class="l">Cache write</span><span class="v num">96.2K</span></div>
+          <div class="tile" title="Reported by 63 of 64 records"><span class="l">Reasoning</span><span class="v num">41.0K<span class="star">*</span></span></div>
+          <div class="tile"><span class="l">Model time</span><span class="v num">18m 22s</span></div>
+          <div class="tile"><span class="l">AIU (as logged)</span><span class="v num">412.37</span></div>
+          <div class="tile"><span class="l">Calls</span><span class="v num">64</span></div>
+        </div>
+        <div class="foot"><span class="star">*</span> Reasoning: reported by 63 of 64 records. One log could not be read.</div>
+      </section>
+
+      <section class="card">
+        <div class="head"><span class="title">Current session</span><span class="badge">3f2a91c0 · live</span></div>
+        <div class="tiles">
+          <div class="tile"><span class="l">Input</span><span class="v num">604.1K</span></div>
+          <div class="tile"><span class="l">Output</span><span class="v num">98.3K</span></div>
+          <div class="tile"><span class="l">Cache read</span><span class="v num">2.1M</span></div>
+          <div class="tile"><span class="l">Cache write</span><span class="v num">51.7K</span></div>
+          <div class="tile"><span class="l">Reasoning</span><span class="v num">22.4K</span></div>
+          <div class="tile"><span class="l">Model time</span><span class="v num">10m 05s</span></div>
+          <div class="tile"><span class="l">AIU (as logged)</span><span class="v num">231.84</span></div>
+          <div class="tile"><span class="l">Calls</span><span class="v num">38</span></div>
+        </div>
+      </section>
+    </div>
+
+    <div>
+      <section class="card">
+        <div class="head"><span class="title">Today by model</span><span class="badge">4 models</span></div>
+        <div class="scroll">
+          <table>
+            <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>AIU</th><th>Calls</th></tr></thead>
+            <tbody>
+              <tr><td><span class="model m-claude">claude-sonnet-4.6</span><span class="share" style="width:57%"></span></td><td class="num">640.0K</td><td class="num">98.0K</td><td class="num">2.1M</td><td class="num total">738.0K</td><td class="num">238.10</td><td class="num">31</td></tr>
+              <tr><td><span class="model m-gpt">gpt-5.5</span><span class="share" style="width:35%"></span></td><td class="num">380.0K</td><td class="num">71.0K</td><td class="num">1.1M</td><td class="num total">451.0K</td><td class="num">151.02</td><td class="num">24</td></tr>
+              <tr><td><span class="model m-claude">claude-haiku-4.5</span><span class="share" style="width:9%"></span></td><td class="num">96.0K</td><td class="num">17.0K</td><td class="num">210.0K</td><td class="num total">113.0K</td><td class="num">23.25</td><td class="num">8</td></tr>
+              <tr><td><span class="model m-other">(unknown model)</span></td><td class="num">4.2K</td><td class="num muted">—</td><td class="num muted">—</td><td class="num total">4.2K<span class="star">*</span></td><td class="num muted">—</td><td class="num">1</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="foot">Bar = share of today's tokens. "—" means the log did not report the value; it is never shown as 0.</div>
+      </section>
+
+      <section class="card">
+        <div class="head"><span class="title">Daily tokens — November 2026</span><span class="badge">input + output</span></div>
+        <div class="cal">
+          <div class="dow">Mon</div><div class="dow">Tue</div><div class="dow">Wed</div><div class="dow">Thu</div><div class="dow">Fri</div><div class="dow">Sat</div><div class="dow">Sun</div>
+          <div class="day blank"></div><div class="day blank"></div><div class="day blank"></div><div class="day blank"></div><div class="day blank"></div><div class="day blank"></div>
+          <div class="day" title="No usage records">1<small>—</small></div>
+          <div class="day h1" title="412.6K tokens">2<small>412.6K</small></div>
+          <div class="day h4" title="1.9M tokens">3<small>1.9M</small></div>
+          <div class="day h2" title="860.3K tokens">4<small>860.3K</small></div>
+          <div class="day h3 today" title="1.3M* tokens (partial)">5<small>1.3M*</small></div>
+          <div class="day future">6</div><div class="day future">7</div><div class="day future">8</div>
+          <div class="day future">9</div><div class="day future">10</div><div class="day future">11</div><div class="day future">12</div><div class="day future">13</div><div class="day future">14</div><div class="day future">15</div>
+          <div class="day future">16</div><div class="day future">17</div><div class="day future">18</div><div class="day future">19</div><div class="day future">20</div><div class="day future">21</div><div class="day future">22</div>
+          <div class="day future">23</div><div class="day future">24</div><div class="day future">25</div><div class="day future">26</div><div class="day future">27</div><div class="day future">28</div><div class="day future">29</div>
+          <div class="day future">30</div>
+        </div>
+        <div class="legend">
+          <span>Less<span class="sw"><i style="background:var(--heat-0)"></i><i style="background:var(--heat-1)"></i><i style="background:var(--heat-2)"></i><i style="background:var(--heat-3)"></i><i style="background:var(--heat-4)"></i></span>More</span>
+          <span>Month so far: <b class="num">4.5M*</b> tokens · <b class="num">1,388.20</b> AIU (as logged)</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="head"><span class="title">Data health</span><span class="badge">read-only · nothing leaves this computer</span></div>
+    <div class="health">
+      <div class="kv"><span class="l">Logs read this month</span><span class="num">12</span></div>
+      <div class="kv"><span class="l">Unreadable logs</span><span class="num star">1</span></div>
+      <div class="kv"><span class="l">Sessions without per-call data</span><span class="num">3</span></div>
+      <div class="kv"><span class="l">Lines in an unknown format</span><span class="num">0</span></div>
+      <div class="kv"><span class="l">Malformed lines</span><span class="num">0</span></div>
+      <div class="kv"><span class="l">Over-long lines skipped</span><span class="num">0</span></div>
+    </div>
+    <div class="head" style="margin-top:14px"><span class="title">Not covered</span></div>
+    <ul class="notes">
+      <li>Copilot features that don't write session-state logs: inline completions, some Chat surfaces, github.com, mobile, JetBrains.</li>
+      <li>Other computers.</li>
+      <li>Sessions from Copilot older than 1.0.99 (no per-call records); they are counted above, not added to totals.</li>
+      <li>"Today" uses this computer's local midnight; GitHub may count days in UTC.</li>
+    </ul>
+  </section>
+
+</div>
+</body>
+</html>

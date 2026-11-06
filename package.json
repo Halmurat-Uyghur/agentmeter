@@ -1,0 +1,86 @@
+{
+  "name": "copilot-usage-monitor",
+  "displayName": "Copilot Usage Monitor (Local)",
+  "description": "Shows your own Copilot token usage as observed in local Copilot session logs on this computer. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
+  "keywords": [
+    "copilot",
+    "usage",
+    "tokens",
+    "local",
+    "privacy",
+    "status bar"
+  ],
+  "publisher": "local",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "pretest:integration": "npm run build && tsc -p tsconfig.test.json",
+    "test:integration": "vscode-test",
+    "test:perf": "PERF=1 vitest run test/core/perf.test.ts",
+    "package": "vsce package --no-dependencies",
+    "probe": "node tools/schema-probe.mjs",
+    "probe:chat": "node tools/chat-schema-probe.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "4.0.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor/issues"
+  },
+  "homepage": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor#readme",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilotUsageMonitor.showDetails",
+        "title": "Copilot Usage: Show Local Details"
+      },
+      {
+        "command": "copilotUsageMonitor.pinSession",
+        "title": "Copilot Usage: Pin Session…"
+      },
+      {
+        "command": "copilotUsageMonitor.refresh",
+        "title": "Copilot Usage: Refresh"
+      }
+    ],
+    "configuration": {
+      "title": "Copilot Usage Monitor",
+      "properties": {
+        "copilotUsageMonitor.copilotHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains Copilot's session-state. Empty: use COPILOT_HOME, else ~/.copilot."
+        }
+      }
+    }
+  }
+}
