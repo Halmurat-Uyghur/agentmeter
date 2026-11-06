@@ -116,6 +116,15 @@ a.btn:hover, a.seg:hover { border-color: var(--accent); color: var(--accent); }
 .trend .col .fill.st-over, .lg b.st-over { background: var(--warn); }
 .lg b { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
 .lg b:first-child { margin-left: 0; }
+.trend.daily .plot { gap: 2px; height: 130px; }
+.trend.daily .col { padding: 0; }
+.trend.daily .col .fill { width: 80%; border-radius: 2px 2px 0 0; }
+.trend.daily .col .fill.peak { background: var(--heat, var(--accent)); }
+.trend.daily .col.later .track { border-bottom-style: dashed; }
+.trend.daily .col.sel { outline-offset: 0; }
+.trend.daily .avgwrap { position: absolute; left: 0; right: 0; top: 4px; bottom: 18px; z-index: 2; pointer-events: none; }
+.trend.daily .avg { position: absolute; left: 0; right: 0; height: 0; border-top: 1px dashed var(--fg); opacity: .55; }
+.lg b.avgsw { width: 14px; height: 0; border-top: 1px dashed var(--fg); border-radius: 0; opacity: .7; vertical-align: 3px; }
 .lg b.bandsw { background: color-mix(in srgb, var(--good) 13%, transparent); border: 1px dashed var(--good); }
 .kpi.k4.st-under { --edge: var(--c-gemini); } .kpi.k4.st-in { --edge: var(--good); } .kpi.k4.st-over { --edge: var(--warn); }
 .kpi.k4.st-over .big { color: var(--warn); } .kpi.k4.st-in .big { color: var(--good); }

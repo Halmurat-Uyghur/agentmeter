@@ -448,6 +448,63 @@ function trend(s: Snapshot, view: ViewOptions): string {
   return `<section class="box"><h2>Monthly trend<small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h2><div class="trend"><div class="plot">${band}${cols.join("")}</div></div><div class="scale">${legend}</div></section>`;
 }
 
+/**
+ * Daily bars for the viewed month (honours the filter, like the calendar),
+ * with a dashed line at the average over days that have records. Days after
+ * today render as empty slots. Bars carry no link: there is no day view.
+ */
+function dailyTrend(s: Snapshot, view: ViewOptions): string {
+  const mv = s.month;
+  if (!mv) return "";
+  const anchor = new Date(mv.monthStartMs);
+  const y = anchor.getFullYear();
+  const mo = anchor.getMonth();
+  const daysInMonth = new Date(y, mo + 1, 0).getDate();
+  const values = mv.days.map((d) => headlineValue(d.totals, view));
+  const active = values.filter((v): v is number => v !== undefined);
+  const top = Math.max(0, ...active);
+  const scale = top > 0 ? top * 1.08 : 1;
+  const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
+  const fmtNum = (n: number) => (view.unit === "cost" ? money(n) : formatCount({ sum: Math.round(n), reported: 1, missing: 0 }));
+  const word = view.unit === "cost" ? " USD (est.)" : " tokens";
+  const todayStart = s.dayStartMs;
+
+  let peakIdx = -1;
+  values.forEach((v, i) => {
+    if (v !== undefined && (peakIdx < 0 || v > values[peakIdx]!)) peakIdx = i;
+  });
+
+  const cols: string[] = [];
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = mv.days[day - 1];
+    const label = day === 1 || day % 5 === 0 ? String(day) : "";
+    if (!d) {
+      cols.push(`<span class="col later" title="${escapeHtml(`${MONTHS[mo]!.slice(0, 3)} ${day}: not yet`)}"><span class="track"></span><span class="m">${label}</span></span>`);
+      continue;
+    }
+    const v = values[day - 1];
+    const m = d.totals ? headlineMetric(d.totals, view) : undefined;
+    const text = m ? withStar(fmt(m), s.health.partial) : DASH;
+    const bar = v !== undefined && v > 0 ? `<span class="fill${day - 1 === peakIdx ? " peak" : ""}" style="height:${pct(v)}%"></span>` : "";
+    const now = d.dayStartMs === todayStart ? " sel" : "";
+    const title = m ? `${shortDate(d.dayStartMs)}: ${text}${word}` : `${shortDate(d.dayStartMs)}: no usage records`;
+    cols.push(`<span class="col${now}" title="${escapeHtml(title)}"><span class="track">${bar}</span><span class="m">${label}</span></span>`);
+  }
+
+  if (active.length === 0) {
+    return `<section class="box"><h2>Daily trend — ${MONTHS[mo]} ${y}<small>${escapeHtml(unitWord(view))}</small></h2><p class="muted">No usage records this month${s.filter ? " for this filter" : ""}.</p></section>`;
+  }
+  const avg = active.reduce((a, b) => a + b, 0) / active.length;
+  const avgLine = `<span class="avgwrap"><span class="avg" style="bottom:${pct(avg)}%" title="${escapeHtml(`Average per active day: ${fmtNum(avg)}${word}`)}"></span></span>`;
+  const peakDay = mv.days[peakIdx]!;
+  const peakMetric = headlineMetric(peakDay.totals!, view);
+  const partial = s.health.partial;
+  const filtered = s.filter ? " · filtered" : "";
+  const stats = `<span class="lg"><b class="avgsw"></b>Avg / active day <b class="num">${val(withStar(fmtNum(avg), partial))}</b></span><span>Peak <b class="num">${val(withStar(fmt(peakMetric), partial))}</b> on ${escapeHtml(shortDate(peakDay.dayStartMs))} · ${active.length} of ${plural(mv.days.length, "day")} active</span>`;
+  return `<section class="box"><h2>Daily trend — ${MONTHS[mo]} ${y}<small>${escapeHtml(unitWord(view))}${filtered} · one bar per day</small></h2><div class="trend daily"><div class="plot">${avgLine}${cols.join("")}</div></div><div class="scale">${stats}</div></section>`;
+}
+
 function share(part: Metric, whole: number | undefined): number {
   return whole && part.reported > 0 ? Math.round((100 * part.sum) / whole) : 0;
 }
@@ -576,6 +633,7 @@ ${stateNote(s.health)}
 ${navBar(s, view)}
 ${kpis(s, view)}
 ${trend(s, view)}
+${dailyTrend(s, view)}
 <div class="cols">
 <div>
 ${tilesBox("Today in detail", "9 metrics", s.today, s.health, true)}
