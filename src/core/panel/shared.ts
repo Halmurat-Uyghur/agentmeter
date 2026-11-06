@@ -1,6 +1,6 @@
 // Helpers shared by the panel's section renderers. Every log-derived string
 // goes through escapeHtml; "—" means not reported (never 0), "*" incomplete.
-import { formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
+import { costLabel, estWord, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
 import { addMetrics } from "../store";
 import type { Counts, Health, Metric, Snapshot, ViewOptions } from "../types";
 import { icon, type IconName } from "./icons";
@@ -138,7 +138,7 @@ export function headlineValue(c: Counts | undefined, view: ViewOptions): number 
 }
 
 export function unitWord(view: ViewOptions): string {
-  return view.unit === "cost" ? "estimated USD" : "input + output tokens";
+  return view.unit === "cost" ? estWord() : "input + output tokens";
 }
 
 export function titleAttr(note: string | undefined): string {
@@ -212,7 +212,8 @@ const TILE_FIELDS: [string, keyof Counts, (m: Metric) => string][] = [
 export function tilesBox(title: string, badge: string, c: Counts | undefined, health: Health, footReasons: boolean, extra = "", ic: IconName = "session"): string {
   const tiles: string[] = [];
   const notes: string[] = [];
-  for (const [label, key, fmt] of TILE_FIELDS) {
+  for (let [label, key, fmt] of TILE_FIELDS) {
+    if (label === "USD (est.)") label = costLabel();
     const m = c ? (c[key] as Metric) : undefined;
     const text = m ? withStar(fmt(m), health.partial) : DASH;
     const note = m ? partialNote(m) : undefined;

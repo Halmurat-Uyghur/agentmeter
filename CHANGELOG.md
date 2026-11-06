@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Display currency** (`copilotUsageMonitor.currency`, default `USD`, or **Copilot Usage: Choose Currency…**): show estimated cost in CAD, EUR, GBP and other currencies at the daily European Central Bank USD reference rate from frankfurter.dev, refreshed every 6 hours. Applies to the status bar, side bar, panel and tooltips. The request carries only the currency code; with USD no request is made. Monthly targets are read in the chosen currency. The privacy gates now allow exactly this one fetch, pinned to one file and one URL.
+
 ## 0.4.0 - 2026-11-06
 
 ### Added

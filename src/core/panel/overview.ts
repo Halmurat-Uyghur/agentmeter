@@ -1,7 +1,7 @@
 // Overview (D32, laid out by A2): the Today hero (with the activity heatmap and the
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
-import { formatCount, formatRange, formatUsd, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
+import { costLabel, formatCount, formatRange, formatUsd, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
 import type { MonthSummary, Snapshot, ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
@@ -120,7 +120,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     // A month with no record shows nothing above its bar (design #7); "—" is for a month
     // whose records carry no figure in the unit.
     const said = !h.totals ? "nothing logged" : view.unit === "cost" ? spoken(text === DASH ? text : `${text} est.`) : `${spoken(text)}${text === DASH ? "" : " tokens"}`;
-    const title = `${monthTitle(h.monthStartMs)}: ${h.totals ? `${text}${view.unit === "cost" ? " USD (est.)" : " tokens"}` : "no usage records"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
+    const title = `${monthTitle(h.monthStartMs)}: ${h.totals ? `${text}${view.unit === "cost" ? ` ${costLabel()}` : " tokens"}` : "no usage records"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
     const aria = `${monthTitle(h.monthStartMs)}: ${said}${range ? `, ${RANGE_LABEL[state]}` : ""}${isSel ? ", viewing" : ""}`;
     // A visible mark beside the month (never colour alone, M2): ▲ over, ✓ in range, ▼ under.
     const mark = range && state !== "none" ? ` ${STATE_MARK[state]}` : "";
@@ -136,7 +136,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
   }
   const legend = range
     ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range))}</span>`
-    : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : "Switch to USD (est.) to compare against a target."}</span>`;
+    : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : `Switch to ${costLabel()} to compare against a target.`}</span>`;
   const filtered = s.filter ? " · filtered" : "";
   return `<section class="card" aria-labelledby="trend-title"><h3 id="trend-title" class="ch">${icon("trend")}<span>Monthly trend</span><small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h3><div class="trend"><div class="plot">${band}<ol class="tcols" role="list" aria-label="Months, oldest first">${cols.join("")}</ol></div></div><div class="scale">${legend}</div></section>`;
 }

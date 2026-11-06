@@ -1,5 +1,5 @@
 // Projects (D32): per-project table for the viewed month; each row filters to that project (D26).
-import { formatCount, formatUsd } from "../format";
+import { costLabel, formatCount, formatUsd } from "../format";
 import { NO_PROJECT } from "../store";
 import type { GroupSummary, Snapshot, ViewOptions } from "../types";
 import { filterHref } from "./links";
@@ -31,7 +31,7 @@ export function projectsBox(s: Snapshot, view: ViewOptions): string {
     };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
-  return card("projects-title", "projects", "By project", `${scope} · ${plural(list.length, "project")} · click to filter`, `${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows, undefined, `Usage by project, ${scope}`)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read. Sessions and calls include sessions counted from session totals.${escapeHtml(note)}</div>`);
+  return card("projects-title", "projects", "By project", `${scope} · ${plural(list.length, "project")} · click to filter`, `${foldedTable(`<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>${costLabel()}</th>`, rows, undefined, `Usage by project, ${scope}`)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read. Sessions and calls include sessions counted from session totals.${escapeHtml(note)}</div>`);
 }
 
 export function renderProjects(s: Snapshot, view: ViewOptions): string {

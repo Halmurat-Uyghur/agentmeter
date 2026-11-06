@@ -1,7 +1,7 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { COST_NOTE, LOCAL_BANNER, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, estWord, LOCAL_BANNER, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
 import type { Health, Snapshot, ViewOptions } from "../types";
 import { icon, logo } from "./icons";
@@ -34,7 +34,7 @@ function rootLabel(h: Health): string {
 /** The figures' provenance: one muted line plus a native fold with the full text on every
  * section (design #4); Data health shows the full text openly. */
 function aboutNote(view: ViewOptions, full: boolean): string {
-  const costNote = view.unit === "cost" ? `<p>${escapeHtml(COST_NOTE)}</p>` : "";
+  const costNote = view.unit === "cost" ? costNotes(view).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
   const text = `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
   if (full) return `<section class="note" aria-label="About these figures">${text}</section>`;
   const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
@@ -94,7 +94,7 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
   const unit = (u: ViewOptions["unit"], label: string) =>
     view.unit === u
       ? `<span class="seg on">${label}<span class="sr"> (selected)</span></span>`
-      : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? "estimated USD" : "tokens"}`);
+      : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? estWord() : "tokens"}`);
   const f = s.filter;
   const chip = (kind: "project" | "tool", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`Clear ${kind} filter: ${value}`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
@@ -103,7 +103,7 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
     : "";
   return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>
-  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", "USD (est.)")}</div>
+  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div>
 </div></div>`;
 }
 

@@ -1,6 +1,6 @@
 # Copilot Usage Monitor (Local)
 
-A free, open-source VS Code extension that shows **your own GitHub Copilot usage, in tokens or estimated USD, as observed in Copilot's session logs on this computer**. It puts a status-bar item, a side bar summary and a details panel in VS Code. It makes no network calls, reads no credentials, stores nothing and has no runtime dependencies.
+A free, open-source VS Code extension that shows **your own GitHub Copilot usage, in tokens or estimated USD, as observed in Copilot's session logs on this computer**. It puts a status-bar item, a side bar summary and a details panel in VS Code. It reads no credentials, stores nothing and has no runtime dependencies. It makes no network calls, unless you choose a display currency other than USD (see [Currency](#currency)).
 
 Not affiliated with, endorsed by or supported by GitHub or Microsoft.
 
@@ -70,8 +70,9 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.copilotHome` | `""` | Folder that contains Copilot's `session-state`. Empty means `COPILOT_HOME`, else `~/.copilot`. Machine-scoped, so a repository's workspace settings cannot redirect it. |
 | `copilotUsageMonitor.historyMonths` | `12` | Months of logs to read, this month included (1–24). |
 | `copilotUsageMonitor.display` | `"tokens"` | `"tokens"` or `"cost"` (estimated USD). The panel switch and the command change it. |
-| `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated USD you mean to use per month. |
-| `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated USD you mean to use per month. |
+| `copilotUsageMonitor.currency` | `"USD"` | Currency for estimated cost, for example `"CAD"`. See [Currency](#currency). |
+| `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated cost you mean to use per month, in the chosen currency. |
+| `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated cost you mean to use per month, in the chosen currency. |
 | `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name; a folder named by an ID shows the session title instead). Off: every call is "(no project)" and neither the start line nor `workspace.yaml` is read. |
 | `copilotUsageMonitor.sessionTotals` | `true` | Count sessions from Copilot before 1.0.99 from the per-model total written when a session ends ("session total"). Off: `session.shutdown` lines are skipped without being decoded, as in 0.3. Machine-scoped. |
 
@@ -84,8 +85,18 @@ Commands:
 - **Copilot Usage: Refresh** rescans the logs.
 - **Copilot Usage: Show Month…** picks the month the panel shows.
 - **Copilot Usage: Switch Tokens / USD (est.)** flips the unit.
+- **Copilot Usage: Choose Currency…** picks the display currency.
 - **Copilot Usage: Filter by Project or Tool…** picks a filter (or clears all).
 - **Copilot Usage: Show Section…** opens the panel at a section (Overview, Daily, Sessions, Models, Projects, Tools, Insights or Data health).
+
+## Currency
+
+Estimated cost is always worked out in USD, from Copilot's logged AI credits. Set `copilotUsageMonitor.currency` (or run **Copilot Usage: Choose Currency…**) to show it in another currency, for example `CAD` shows `CA$17.36` instead of `$12.34`.
+
+- **Rate:** the European Central Bank daily USD reference rate, fetched from `https://api.frankfurter.dev` (free, no key, open source) when VS Code starts, when you change the currency, and every 6 hours after that. The rate and its date are shown under the cost note in the panel and in the status bar tooltip.
+- **What is sent:** one HTTPS GET with only the currency code, for example `?base=USD&symbols=CAD`. No usage figures, paths, project names or identifiers. With the default `USD` no request is ever made.
+- **Targets:** `monthlyTargetMin` / `monthlyTargetMax` are read in the chosen currency.
+- **Offline:** until a rate arrives, cost stays in USD with a note, and targets are not compared. A failed fetch is retried every 15 minutes.
 
 ## What it reads
 
@@ -94,14 +105,14 @@ Commands:
 - **Session totals:** from a `session.shutdown` line, per model, only the five token counts (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`), `requests.count` and `totalNanoAiu` are kept, plus the line's timestamp and `sessionStartTime`. The line (at most 64 KB) is decoded whole; the keys `filesModified`, `accountingSnapshot`, `agentMetrics`, `providerModelMetrics`, `usageAccountingWatermarks` and `currentModel` are removed during parsing and never copied, and nothing else on the line (such as `requests.cost`, `totalApiDurationMs` or `codeChanges`) is ever copied. When a session, or its session folder, also has per-call records, its session total is hidden, so nothing is counted twice; a later shutdown line replaces an earlier one instead of adding to it.
 - **Project label:** from `session.start` only `context.repository` (if it looks like `owner/repo`) or the last folder name of `context.gitRoot` / `context.cwd` is kept. The full path, branch, commits and everything else on that line are dropped. When that folder name is an ID (a UUID or long hex), the session title is shown instead: only the `name:` line of that session's `workspace.yaml` (under 16 KB), capped at 60 characters, with control, bidi and zero-width characters removed. The title is a display label only: sessions are still grouped and filtered by that folder, so two sessions in one folder stay one row (labelled with the most recently active session's title) and a title can never merge into another project's row. Copilot writes a short title there; for a session you never renamed it can be the start of your first prompt.
 - **Tool use:** the per-call `toolCounts` map (tool name → number of invocations). Tool arguments and output are never read.
-- **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp, the project label and, for session totals, the call count and session start time, in memory only. Nothing is written to disk and nothing is sent anywhere.
+- **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp, the project label and, for session totals, the call count and session start time, in memory only. Nothing is written to disk and no usage data is sent anywhere.
 - **Output channel:** the "Copilot Usage Monitor" output channel gets counts, error codes and timings only, never log content or paths.
 - **Panel:** the details panel runs no scripts and loads no remote resources. Its only links are VS Code command links, and the panel allows exactly four commands: show a month, show a section, set the unit, and set a filter. The selected section is kept in memory only.
 - **Side bar:** a web view with the same rules as the panel: no scripts, no local or remote resources, the same content security policy, and only four command links (open the panel, show a section, set the project filter, switch the unit). It shows figures the extension already holds and opens no other file; every name from the logs is escaped. Open workspace folder names are used only to pick the "This workspace" project and are never stored.
-- **No credentials, no network:** unlike tools that read your sign-in tokens, this extension never reads credentials and never uses the network. It works only from the log files above.
+- **No credentials, no network:** unlike tools that read your sign-in tokens, this extension never reads credentials. It works only from the log files above. Its one network request is the optional exchange rate described under [Currency](#currency); with the default USD it never uses the network.
 - **Settings:** the unit switch saves `copilotUsageMonitor.display` in your VS Code user settings. That is the only thing the extension ever writes.
 
-Automated tests enforce these rules. They scan the source and the bundle for network, persistence and telemetry APIs. They also check the exact files inside the `.vsix`, and that a canary string in synthetic logs never reaches the UI or the output channel.
+Automated tests enforce these rules. They scan the source and the bundle for network, persistence and telemetry APIs, allowing exactly one `fetch`, in `src/vscode/exchangeRate.ts`, pinned to the exchange-rate URL. They also check the exact files inside the `.vsix`, and that a canary string in synthetic logs never reaches the UI or the output channel.
 
 ## Development
 

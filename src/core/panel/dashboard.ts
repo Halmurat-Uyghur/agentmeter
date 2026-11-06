@@ -3,7 +3,7 @@
 // inline SVG with a text alternative; no script, no URL. Unknown is "—", never 0.
 // Today, the heatmap and the bars read the unfiltered per-day activity; Month to
 // date and the ring follow the viewed month and its filter.
-import { formatCount, formatUsd, money, partialNote, weekCoverage } from "../format";
+import { costLabel, estWord, formatCount, formatUsd, money, partialNote, weekCoverage } from "../format";
 import { heatLevel, localDaysBefore } from "../store";
 import type { DayStats, Metric, Snapshot, ViewOptions } from "../types";
 import { icon } from "./icons";
@@ -48,12 +48,12 @@ function fmtNum(n: number, view: ViewOptions): string {
 }
 
 function unitSuffix(view: ViewOptions): string {
-  return view.unit === "cost" ? " USD (est.)" : " tokens";
+  return view.unit === "cost" ? ` ${costLabel()}` : " tokens";
 }
 
 /** "estimated USD not reported" / "tokens not reported": a day with records but no figure in the unit. */
 export function notReported(view: ViewOptions): string {
-  return `${view.unit === "cost" ? "estimated USD" : "tokens"} not reported`;
+  return `${view.unit === "cost" ? estWord() : "tokens"} not reported`;
 }
 
 function totalsPart(d: DayStats | undefined): string {
@@ -102,7 +102,7 @@ function dayRow(t: number, d: DayStats | undefined, view: ViewOptions, partial: 
 }
 
 function unitHead(view: ViewOptions): string {
-  return view.unit === "cost" ? "USD (est.)" : "Tokens";
+  return view.unit === "cost" ? costLabel() : "Tokens";
 }
 
 /**
@@ -282,7 +282,7 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
   ].map(([r, l]) => `<text class="ax" x="0" y="${TOP + (r as number) * STEP + 10}">${l}</text>`);
   const peakText = peak ? `, busiest ${shortDate(peak.t)} (${fmtNum(peak.v, view)}${unitSuffix(view)})` : "";
   const since = first > from ? ` ${plural(activeAll, "active day")} since ${shortDate(from)}.` : "";
-  const label = `Daily activity from ${shortDate(days[0]!)} to ${shortDate(today)}: ${active} of ${plural(days.length, "day")} active${peakText}.${since} Stronger colour means more ${view.unit === "cost" ? "estimated USD" : "tokens"}. Not filtered.`;
+  const label = `Daily activity from ${shortDate(days[0]!)} to ${shortDate(today)}: ${active} of ${plural(days.length, "day")} active${peakText}.${since} Stronger colour means more ${view.unit === "cost" ? estWord() : "tokens"}. Not filtered.`;
   const lblTitle = titleAttr(`Days with usage since ${shortDate(from)}, the start of the history window. The grid shows the last ${plural(cols, "week")}.`);
   const table = dayTable(`Days with usage records from ${shortDate(days[0]!)} to ${shortDate(today)}, not filtered`, unitHead(view), rowsForTable, "Active days as a table");
   return `<div class="hero-heat"><p class="lbl"${lblTitle}>Daily activity <b class="hot num">${plural(activeAll, "active day")}</b></p><svg class="heat" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">${months.join("")}${rows.join("")}${cells.join("")}</svg>${table}</div>`;
@@ -360,7 +360,7 @@ export function monthCard(s: Snapshot, view: ViewOptions, extra: { cls: string; 
       const tch = changeVs(headlineValue(mt, TOKENS), priorTokens);
       compare = tch
         ? `<span class="delta ${tch.dir}">${sym(`${tch.text} tokens`)}</span> <span class="muted">vs ${escapeHtml(when)}</span>`
-        : `<span class="muted">${escapeHtml(`${priorName} logged tokens but no estimated USD.`)}</span>`;
+        : `<span class="muted">${escapeHtml(`${priorName} logged tokens but no ${estWord()}.`)}</span>`;
     } else compare = `<span class="muted">${escapeHtml(`No comparison with ${when}.`)}</span>`;
   }
   const title = isCurrent ? "Month to date" : `${name} total`;
@@ -381,7 +381,7 @@ const BAR_DAYS = 30;
 export function dailyBars(s: Snapshot, view: ViewOptions): string {
   const { from, byDay } = activityIndex(s);
   const partial = s.health.partial;
-  const heading = view.unit === "cost" ? "Daily USD (est.)" : "Daily tokens";
+  const heading = view.unit === "cost" ? `Daily ${costLabel()}` : "Daily tokens";
   const small = `last ${BAR_DAYS} days${s.filter ? " · not filtered" : ""}`;
   const h3 = `<h3 id="bars-title" class="ch">${icon("bars")}<span>${heading}</span><small>${escapeHtml(small)}</small></h3>`;
   if (from === undefined) {

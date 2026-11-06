@@ -1,6 +1,6 @@
 // Tools (D32): per-tool table for the viewed month; each row filters to calls
 // that used that tool (D26). Session totals carry no tool data.
-import { formatCount, formatUsd } from "../format";
+import { costLabel, currencyCode, formatCount, formatUsd } from "../format";
 import type { Snapshot, ToolSummary, ViewOptions } from "../types";
 import { filterHref } from "./links";
 import { card, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
@@ -58,7 +58,7 @@ export function toolsBox(s: Snapshot, view: ViewOptions): string {
   const totalsNote = totals > 0
     ? `<p>${escapeHtml(`${plural(totals, "session")} counted from session totals ${totals === 1 ? "is" : "are"} not in this table: session totals have no tool data.`)}</p>`
     : "<p>Session totals from Copilot before 1.0.99 have no tool data, so they are never in this table.</p>";
-  return card("tools-title", "tools", "By tool", `${scope} · ${plural(list.length, "tool")} · click to filter`, `${foldedTable("<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows, undefined, `Usage by tool, ${scope}`)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p>${totalsNote}</div>`);
+  return card("tools-title", "tools", "By tool", `${scope} · ${plural(list.length, "tool")} · click to filter`, `${foldedTable(`<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>${costLabel()}</th>`, rows, undefined, `Usage by tool, ${scope}`)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / ${escapeHtml(currencyCode())} = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p>${totalsNote}</div>`);
 }
 
 export function renderTools(s: Snapshot, view: ViewOptions): string {

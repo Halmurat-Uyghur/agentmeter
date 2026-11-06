@@ -1,18 +1,22 @@
 // VS Code wiring: resolve the Copilot folder, run the monitor on a 500 ms
 // poll, and show snapshots in the status bar, the details panel and the side bar. Reads
-// local files only; nothing is written, persisted or sent.
+// local files only; nothing is written or persisted. The one network call is
+// the opt-in exchange rate (src/vscode/exchangeRate.ts), made only when a
+// non-USD currency is chosen.
 import * as os from "node:os";
 import { posix } from "node:path";
 import * as vscode from "vscode";
 import { resolveCopilotRoot } from "./core/config";
 import { Logger } from "./core/log";
-import { cleanRange } from "./core/format";
+import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
+import { cleanRange, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
 import { nextLocalMidnight } from "./core/store";
-import type { Filter, Snapshot, ViewOptions } from "./core/types";
+import type { Currency, Filter, Snapshot, ViewOptions } from "./core/types";
+import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
 import { SummaryView } from "./vscode/sidebar";
@@ -21,13 +25,26 @@ import { StatusBar } from "./vscode/statusBar";
 const POLL_MS = 500;
 const SETTING = "copilotUsageMonitor.copilotHome";
 const SECTION = "copilotUsageMonitor";
+const RATE_REFRESH_MS = 6 * 60 * 60 * 1000;
+const RATE_RETRY_MS = 15 * 60 * 1000;
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-function readView(): ViewOptions {
+function readCurrency(): string {
+  return cleanCurrencyCode(vscode.workspace.getConfiguration(SECTION).get<unknown>("currency"));
+}
+
+/** Targets are entered in the chosen currency and held in USD; with no rate yet they are left out.
+ * Also sets the display currency every cost formatter uses. */
+function readView(rate: Currency | undefined): ViewOptions {
   const c = vscode.workspace.getConfiguration(SECTION);
   const unit = c.get<string>("display") === "cost" ? "cost" : "tokens";
-  const range = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
-  return range ? { unit, range } : { unit };
+  const code = readCurrency();
+  const cur = code !== DEFAULT_CURRENCY && rate?.code === code ? rate : undefined;
+  const pending = code !== DEFAULT_CURRENCY && !cur ? code : undefined;
+  setDisplayCurrency(cur);
+  const raw = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
+  const range = pending ? undefined : rangeToUsd(raw, cur);
+  return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }) };
 }
 
 function readProjects(): boolean {
@@ -69,7 +86,9 @@ export function activate(context: vscode.ExtensionContext): void {
   let midnight: ReturnType<typeof setTimeout> | undefined;
   let rootKey: string | undefined;
   let history = readHistory();
-  let view = readView();
+  let rate: Currency | undefined;
+  let rateTimer: ReturnType<typeof setTimeout> | undefined;
+  let view = readView(rate);
   /** viewed month start, kept across monitor restarts; undefined = current */
   let selected: number | undefined;
   let projectsOn = readProjects();
@@ -105,7 +124,7 @@ export function activate(context: vscode.ExtensionContext): void {
       type Item = vscode.QuickPickItem & { key: string };
       const items: Item[] = months.map((h, i) => {
         const d = new Date(h.monthStartMs);
-        const est = h.totals && h.totals.nanoAiu.reported > 0 ? `$${(h.totals.nanoAiu.sum / 1e11).toFixed(2)} est.` : "no per-call records";
+        const est = h.totals && h.totals.nanoAiu.reported > 0 ? `${money(h.totals.nanoAiu.sum / 1e11)} est.` : "no per-call records";
         const calls = h.totals ? callsPhrase(h.totals.calls, h.totals.callsMissing) : "";
         return {
           label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
@@ -175,6 +194,38 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.workspace.getConfiguration(SECTION).update("display", unit, vscode.ConfigurationTarget.Global);
   };
 
+  /** Fetches the chosen currency's rate now and every 6 hours; USD clears it and makes no request. */
+  const refreshRate = async () => {
+    if (rateTimer) clearTimeout(rateTimer);
+    rateTimer = undefined;
+    const code = readCurrency();
+    if (code === DEFAULT_CURRENCY) {
+      rate = undefined;
+      return;
+    }
+    let next = RATE_REFRESH_MS;
+    try {
+      const r = await fetchUsdRate(code);
+      if (readCurrency() !== code) return; // changed while in flight; that change re-fetches
+      rate = r;
+      log.count("rate.fetched", 1);
+    } catch (e) {
+      log.error("rate.fetch", e instanceof Error && /^[A-Z0-9_]+$/.test(e.message) ? e.message : "NETWORK");
+      next = RATE_RETRY_MS;
+    }
+    view = readView(rate);
+    render();
+    rateTimer = setTimeout(() => void refreshRate(), next);
+  };
+
+  const pickCurrency = async () => {
+    const now = readCurrency();
+    const items = CURRENCIES.map(([code, name]) => ({ label: code, description: name + (code === now ? " · current" : ""), code }));
+    const pick = await vscode.window.showQuickPick(items, { placeHolder: "Currency for estimated cost (non-USD fetches the daily USD rate)" });
+    if (!pick) return;
+    await vscode.workspace.getConfiguration(SECTION).update("currency", pick.code, vscode.ConfigurationTarget.Global);
+  };
+
   const start = () => {
     stop();
     const { root, source } = resolve();
@@ -211,6 +262,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     { dispose: stop },
+    { dispose: () => rateTimer && clearTimeout(rateTimer) },
+    vscode.commands.registerCommand("copilotUsageMonitor.selectCurrency", pickCurrency),
     vscode.commands.registerCommand("copilotUsageMonitor.showDetails", () => panel.show()),
     vscode.commands.registerCommand("copilotUsageMonitor.refresh", () => monitor?.refresh({ full: true })),
     vscode.commands.registerCommand("copilotUsageMonitor.pinSession", async () => {
@@ -240,10 +293,11 @@ export function activate(context: vscode.ExtensionContext): void {
       render();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (["display", "monthlyTargetMin", "monthlyTargetMax"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
-        view = readView();
+      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
+        view = readView(rate);
         render();
       }
+      if (e.affectsConfiguration(`${SECTION}.currency`)) void refreshRate();
       const h = readHistory();
       let rootChanged = false;
       if (e.affectsConfiguration(SETTING)) {
@@ -299,6 +353,7 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   start();
+  void refreshRate();
 }
 
 export function deactivate(): void {}

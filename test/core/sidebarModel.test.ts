@@ -6,7 +6,7 @@ import { mkdtemp as mkdtempP, rm as rmP } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LOCAL_BANNER, SESSION_TOTAL_SHORT, statusParts, statusText } from "../../src/core/format";
+import { LOCAL_BANNER, SESSION_TOTAL_SHORT, setDisplayCurrency, statusParts, statusText } from "../../src/core/format";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
 import { isSectionId } from "../../src/core/panelHtml";
@@ -545,5 +545,17 @@ describe("sidebar: v0.4 review fixes", () => {
     expect(html).toContain('<main aria-label="Copilot usage summary">');
     expect(html).toContain('<h1 class="sr">Copilot usage summary</h1>');
     expect(html.match(/<main[ >]/g)).toHaveLength(1);
+  });
+  it("cost view in CAD: side bar labels and figures are converted", () => {
+    const cad = { code: "CAD", rate: 1.4, date: "2026-11-06" };
+    setDisplayCurrency(cad);
+    try {
+      const json = JSON.stringify(buildSidebarModel(snap(), { unit: "cost", currency: cad }));
+      expect(json).toContain("CAD");
+      expect(json).not.toContain("USD (est.)");
+      expect(json.replace(/× \$0\.01/g, "")).not.toMatch(/(?<![A-Z])\$\d/);
+    } finally {
+      setDisplayCurrency(undefined);
+    }
   });
 });

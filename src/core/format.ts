@@ -3,7 +3,7 @@
 // "*" means some contributing records did not report the field.
 
 import { addMetrics, localDaysBefore } from "./store";
-import type { Counts, Health, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
+import type { Currency, Counts, Health, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
@@ -25,7 +25,7 @@ export const DEFAULT_VIEW: ViewOptions = { unit: "tokens" };
 
 export const NOT_COVERED: string[] = [
   "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
-  "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated USD), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
+  "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated amount), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
   '"Today" starts at local midnight on this computer; GitHub\'s own day may follow UTC.',
 ];
 
@@ -55,17 +55,59 @@ export function usd(m: Metric): number | undefined {
   return m.reported === 0 ? undefined : m.sum / 1e11;
 }
 
-/** "$12.34", "$0.032", "$123"; "—" when unreported, "*" when partial. */
-export function formatUsd(m: Metric): string {
-  const v = usd(m);
-  if (v === undefined) return DASH;
-  return m.missing > 0 ? money(v) + "*" : money(v);
+/** Display currency for every cost figure; undefined = USD. Set by the extension
+ * (setDisplayCurrency) from the chosen currency and its daily rate. */
+let displayCurrency: Currency | undefined;
+
+export function setDisplayCurrency(c: Currency | undefined): void {
+  displayCurrency = c && c.code !== "USD" ? c : undefined;
 }
 
-export function money(v: number): string {
-  if (v >= 100) return "$" + Math.round(v).toLocaleString("en-US");
-  if (v >= 1 || v === 0) return "$" + v.toFixed(2);
-  return "$" + v.toFixed(3);
+/** "USD", "CAD", … — the code estimated cost is shown in. */
+export function currencyCode(): string {
+  return displayCurrency?.code ?? "USD";
+}
+
+/** "USD (est.)", "CAD (est.)". */
+export function costLabel(): string {
+  return `${currencyCode()} (est.)`;
+}
+
+/** "estimated USD", "estimated CAD". */
+export function estWord(): string {
+  return `estimated ${currencyCode()}`;
+}
+
+/** The cost note plus, when converting, the rate used (or why it is not converted yet). */
+export function costNotes(view: ViewOptions): string[] {
+  const out = [COST_NOTE];
+  const c = view.currency;
+  if (c) out.push(`Shown in ${c.code} at 1 USD = ${c.rate} ${c.code}, the European Central Bank reference rate of ${c.date} (via frankfurter.dev). Targets are in ${c.code}.`);
+  else if (view.currencyPending) out.push(`No ${view.currencyPending} exchange rate yet, so cost is shown in USD and targets are not compared until it arrives.`);
+  return out;
+}
+
+/** "$12.34", "$0.032", "$123" (or "CA$17.36" in CAD); "—" when unreported, "*" when partial. */
+export function formatUsd(m: Metric, cur: Currency | undefined = displayCurrency): string {
+  const v = usd(m);
+  if (v === undefined) return DASH;
+  return m.missing > 0 ? money(v, cur) + "*" : money(v, cur);
+}
+
+/** Formats a USD amount, converted to the display currency (or `cur`). */
+export function money(v: number, cur: Currency | undefined = displayCurrency): string {
+  if (!cur || cur.code === "USD") {
+    if (v >= 100) return "$" + Math.round(v).toLocaleString("en-US");
+    if (v >= 1 || v === 0) return "$" + v.toFixed(2);
+    return "$" + v.toFixed(3);
+  }
+  const x = v * cur.rate;
+  const digits = x >= 100 ? 0 : x >= 1 || x === 0 ? 2 : 3;
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: cur.code, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(x);
+  } catch {
+    return `${x.toFixed(digits)} ${cur.code}`;
+  }
 }
 
 /** Usable range bounds: finite, non-negative, min ≤ max; anything else is dropped. */
@@ -87,11 +129,11 @@ export function rangeState(spent: number | undefined, range: ViewOptions["range"
   return "in";
 }
 
-export function formatRange(range: ViewOptions["range"]): string {
+export function formatRange(range: ViewOptions["range"], cur: Currency | undefined = displayCurrency): string {
   if (!range) return DASH;
-  if (range.min !== undefined && range.max !== undefined) return `${money(range.min)}–${money(range.max)}`;
-  if (range.min !== undefined) return `at least ${money(range.min)}`;
-  return `up to ${money(range.max!)}`;
+  if (range.min !== undefined && range.max !== undefined) return `${money(range.min, cur)}–${money(range.max, cur)}`;
+  if (range.min !== undefined) return `at least ${money(range.min, cur)}`;
+  return `up to ${money(range.max!, cur)}`;
 }
 
 export const RANGE_LABEL: Record<RangeState, string> = {
@@ -330,7 +372,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       const state = currentRangeState(s, view);
       lines.push(`Target ${escapeMarkdown(formatRange(view.range))}: ${RANGE_LABEL[state]}`);
     }
-    parts.push(lines.join("  \n"), escapeMarkdown(COST_NOTE));
+    parts.push(lines.join("  \n"), ...costNotes(view).map(escapeMarkdown));
   }
 
   parts.push(...healthLines(s.health));

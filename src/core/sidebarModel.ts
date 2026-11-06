@@ -5,17 +5,19 @@
 // "*" means incomplete, and figures that include session totals say so in their
 // title tooltip. Every string is plain text; renderSidebarHtml escapes it.
 import {
-  COST_NOTE,
+  costLabel,
+  costNotes,
+  currencyCode,
   DEFAULT_VIEW,
   formatCount,
   formatRange,
   formatUsd,
+  PRIOR_SHORT_NOTE,
   RANGE_LABEL,
   SESSION_TOTAL_SHORT,
   spoken,
   statusParts,
   thisMonthTotals,
-  PRIOR_SHORT_NOTE,
   WEEK_SHORT_NOTE,
   weekChange,
   weekCoverage,
@@ -78,7 +80,7 @@ export interface SidebarGroup {
 export interface SidebarModel {
   state: SidebarState;
   /** WebviewView.description: the unit the figures use */
-  unitWord: "tokens" | "USD (est.)";
+  unitWord: string;
   /** paragraphs shown instead of the groups when state is not "ready" */
   notice: string[];
   /** set only when there is something to say (an active panel filter) */
@@ -137,7 +139,7 @@ function countsFigure(c: Counts | undefined, view: ViewOptions, partial: boolean
 function detailLines(c: Counts | undefined, view: ViewOptions, h: Health): string[] {
   const out: string[] = [];
   if (c) {
-    if (view.unit === "cost") out.push(`Estimated USD: ${formatUsd(c.nanoAiu)}`);
+    if (view.unit === "cost") out.push(`Estimated ${currencyCode()}: ${formatUsd(c.nanoAiu)}`);
     out.push(`Input: ${formatCount(c.input)} tok`, `Output: ${formatCount(c.output)} tok`, `Calls: ${callsCell(c.calls, c.callsMissing)}`);
     if (c.callsMissing > 0) out.push(CALLS_MISSING_NOTE);
     if (c.sessionTotals > 0) out.push(`Includes ${plural(c.sessionTotals, "session total")}. ${SESSION_TOTAL_SHORT}`);
@@ -145,7 +147,7 @@ function detailLines(c: Counts | undefined, view: ViewOptions, h: Health): strin
     out.push("Nothing logged.");
   }
   if (h.partial) out.push(partialReasons(h));
-  if (view.unit === "cost") out.push(COST_NOTE);
+  if (view.unit === "cost") out.push(...costNotes(view));
   return out;
 }
 
@@ -153,7 +155,7 @@ function detailLines(c: Counts | undefined, view: ViewOptions, h: Health): strin
 function groupLines(g: GroupSummary | undefined, view: ViewOptions, h: Health): string[] {
   const out: string[] = [];
   if (g) {
-    if (view.unit === "cost") out.push(`Estimated USD: ${formatUsd(g.nanoAiu)}`);
+    if (view.unit === "cost") out.push(`Estimated ${currencyCode()}: ${formatUsd(g.nanoAiu)}`);
     out.push(`Tokens: ${formatCount(g.tokens)}`, `${callsPhrase(g.calls, g.callsMissing)} in ${plural(g.sessions, "session")}.`);
     if ((g.callsMissing ?? 0) > 0) out.push(CALLS_MISSING_NOTE);
     if ((g.sessionTotals ?? 0) > 0) out.push(`Includes ${plural(g.sessionTotals!, "session total")}. ${SESSION_TOTAL_SHORT}`);
@@ -161,7 +163,7 @@ function groupLines(g: GroupSummary | undefined, view: ViewOptions, h: Health): 
     out.push("Nothing logged.");
   }
   if (h.partial) out.push(partialReasons(h));
-  if (view.unit === "cost") out.push(COST_NOTE);
+  if (view.unit === "cost") out.push(...costNotes(view));
   return out;
 }
 
@@ -232,9 +234,9 @@ function healthNote(h: Health): SidebarModel["health"] {
  *   a project with a record this month names the "This workspace" group.
  */
 export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW, folders: readonly string[] = []): SidebarModel {
-  const unitWord = view.unit === "cost" ? "USD (est.)" : "tokens";
-  const unitSwitch = { text: view.unit === "cost" ? "Show tokens" : "Show USD (est.)", link: { command: "copilotUsageMonitor.toggleUnit" as const, args: [] } };
-  const footNote = view.unit === "cost" ? "Local logs only · USD figures are est." : "Local logs only";
+  const unitWord = view.unit === "cost" ? costLabel() : "tokens";
+  const unitSwitch = { text: view.unit === "cost" ? "Show tokens" : `Show ${costLabel()}`, link: { command: "copilotUsageMonitor.toggleUnit" as const, args: [] } };
+  const footNote = view.unit === "cost" ? `Local logs only · ${currencyCode()} figures are est.` : "Local logs only";
   const state: SidebarState = !s ? "loading" : s.health.state === "no-dir" ? "no-dir" : s.health.state === "permission" ? "permission" : "ready";
   if (!s || state !== "ready") return finish({ state, unitWord, notice: NOTICES[state as Exclude<SidebarState, "ready">], groups: [], unitSwitch, footNote });
 
@@ -295,7 +297,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
       ? []
       : view.unit === "cost"
         ? [`Target ${formatRange(view.range)}: ${RANGE_LABEL[status.state]}.`]
-        : [`Estimated USD this month is ${RANGE_LABEL[status.state]}.`];
+        : [`Estimated ${currencyCode()} this month is ${RANGE_LABEL[status.state]}.`];
   groups.push({
     id: "all",
     heading: "All projects",

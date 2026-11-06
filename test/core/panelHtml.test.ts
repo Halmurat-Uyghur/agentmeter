@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, LOCAL_BANNER, NOT_COVERED, SESSION_TOTAL_NOTE, STREAMING_NOTE } from "../../src/core/format";
+import { formatDuration, LOCAL_BANNER, NOT_COVERED, SESSION_TOTAL_NOTE, STREAMING_NOTE, setDisplayCurrency } from "../../src/core/format";
 import { escapeHtml, renderPanelHtml, SECTIONS } from "../../src/core/panelHtml";
 import {
   byLocalDay,
@@ -387,5 +387,34 @@ describe("renderPanelHtml", () => {
 
   it("canary never reaches the HTML", () => {
     for (const section of SECTIONS) expect(renderPanelHtml(snap(), "x", undefined, section)).not.toContain(CANARY);
+  });
+  it("cost view in CAD: every cost label and figure is converted", () => {
+    const cad = { code: "CAD", rate: 1.4, date: "2026-11-06" };
+    setDisplayCurrency(cad);
+    let t: string;
+    try {
+      t = text(renderPanelHtml(snap(), "x", { unit: "cost", currency: cad, range: { min: 10, max: 50 } }));
+    } finally {
+      setDisplayCurrency(undefined);
+    }
+    expect(t).toContain("CAD (est.)");
+    expect(t).toContain("1 USD = 1.4 CAD");
+    expect(t).toContain("CA$14.00–CA$70.00");
+    expect(t).not.toContain("USD (est.)");
+    expect(t.replace(/\$0\.01/g, "")).not.toMatch(/(?<![A-Z])\$\d/);
+  });
+  it("cost view in CAD: no section shows a USD label or a bare $ figure", () => {
+    const cad = { code: "CAD", rate: 1.4, date: "2026-11-06" };
+    setDisplayCurrency(cad);
+    try {
+      for (const sec of SECTIONS) {
+        const t = text(renderPanelHtml(snap(), "x", { unit: "cost", currency: cad, range: { min: 10 } }, sec));
+        expect(t, sec).not.toContain("USD (est.)");
+        expect(t, sec).not.toMatch(/estimated USD(?! reference)/);
+        expect(t.replace(/× \$0\.01|\$0\.01 per credit/g, ""), sec).not.toMatch(/(?<![A-Z])\$\d/);
+      }
+    } finally {
+      setDisplayCurrency(undefined);
+    }
   });
 });

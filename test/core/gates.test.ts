@@ -10,6 +10,7 @@ import { PANEL_COMMANDS } from "../../src/core/panelHtml";
 import { SIDEBAR_COMMANDS } from "../../src/core/sidebarModel";
 
 const ROOT = join(__dirname, "..", "..");
+const RATE_FILE = join(ROOT, "src", "vscode", "exchangeRate.ts");
 
 function files(dir: string, ext: RegExp): string[] {
   const out: string[] = [];
@@ -58,14 +59,23 @@ describe("gates", () => {
 
   it("forbidden APIs: none in src/", () => {
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
-      expect(offences(readFileSync(f, "utf8"), f.endsWith(SIDEBAR_SRC)), f).toEqual([]);
+      expect(offences(readFileSync(f, "utf8"), f.endsWith(SIDEBAR_SRC)), f).toEqual(f === RATE_FILE ? ["fetch("] : []);
     }
     expect(readFileSync(join(ROOT, SIDEBAR_SRC), "utf8").split(WEBVIEW_VIEW)).toHaveLength(2);
   });
 
-  it("forbidden APIs: none in the bundle", () => {
+  it("the exchange-rate file calls fetch once, only on the pinned rate URL", () => {
+    const src = readFileSync(RATE_FILE, "utf8");
+    expect(src.split("fetch(").length - 1).toBe(1);
+    expect(src).toContain("fetch(`${RATE_URL}?base=USD&symbols=${code}`");
+    expect(src.match(/https?:\/\/[^\s"'`]+/g)).toEqual(["https://api.frankfurter.dev/v1/latest"]);
+  });
+
+  it("forbidden APIs: none in the bundle beyond the one rate fetch", () => {
     const bundle = readFileSync(join(ROOT, "dist", "extension.js"), "utf8");
-    expect(offences(bundle, true)).toEqual([]);
+    expect(offences(bundle, true)).toEqual(["fetch("]);
+    expect(bundle.split("fetch(").length - 1).toBe(1);
+    expect(bundle.match(/https?:\/\/[a-z0-9.-]+/gi)?.filter((u) => !u.includes("github.com"))).toEqual(["https://api.frankfurter.dev"]);
     expect(bundle.split(WEBVIEW_VIEW)).toHaveLength(2);
   });
 

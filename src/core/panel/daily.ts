@@ -1,6 +1,6 @@
 // Daily (D32): today in detail (current month), the daily bars and the
 // calendar. Session totals are counted on the day their session ended.
-import { formatCount, formatUsd, money, SESSION_TOTAL_NOTE } from "../format";
+import { costLabel, estWord, formatCount, formatUsd, money, SESSION_TOTAL_NOTE } from "../format";
 import { dayTable, notReported, type DayRow } from "./dashboard";
 import { heatLevel } from "../store";
 import type { Metric, Snapshot, Totals, ViewOptions } from "../types";
@@ -57,7 +57,7 @@ export function dailyTrend(s: Snapshot, view: ViewOptions): string {
   const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
   const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
   const fmtNum = (n: number) => (view.unit === "cost" ? money(n) : formatCount({ sum: Math.round(n), reported: 1, missing: 0 }));
-  const word = view.unit === "cost" ? " USD (est.)" : " tokens";
+  const word = view.unit === "cost" ? ` ${costLabel()}` : " tokens";
   const todayStart = s.dayStartMs;
 
   let peakIdx = -1;
@@ -96,7 +96,7 @@ export function dailyTrend(s: Snapshot, view: ViewOptions): string {
   const filtered = s.filter ? " · filtered" : "";
   const summary = `${MONTHS[mo]}: ${active.length} of ${plural(mv.days.length, "day")} active, average ${withStar(fmtNum(avg), partial)}${word} per active day, peak ${withStar(fmt(peakMetric), partial)} on ${shortDate(peakDay.dayStartMs)}`;
   const stats = `<span class="lg"><b class="avgsw"></b>Avg / active day <b class="num">${val(withStar(fmtNum(avg), partial))}</b></span><span>Peak <b class="num">${val(withStar(fmt(peakMetric), partial))}</b> on ${escapeHtml(shortDate(peakDay.dayStartMs))} · ${active.length} of ${plural(mv.days.length, "day")} active</span>`;
-  const table = dayTable(`Daily ${view.unit === "cost" ? "estimated USD" : "tokens"}, ${MONTHS[mo]} ${y}${s.filter ? ", filtered" : ""}`, view.unit === "cost" ? "USD (est.)" : "Tokens", rows);
+  const table = dayTable(`Daily ${view.unit === "cost" ? estWord() : "tokens"}, ${MONTHS[mo]} ${y}${s.filter ? ", filtered" : ""}`, view.unit === "cost" ? costLabel() : "Tokens", rows);
   return card(
     "trend-title",
     "bars",
@@ -119,7 +119,7 @@ export function calendar(s: Snapshot, view: ViewOptions): string {
   const todayNum = new Date(s.dayStartMs).getDate();
   const sameMonth = new Date(s.dayStartMs).getMonth() === mo && new Date(s.dayStartMs).getFullYear() === y;
   const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
-  const word = view.unit === "cost" ? "estimated USD" : "tokens";
+  const word = view.unit === "cost" ? estWord() : "tokens";
 
   const cells: string[] = DOW.map((d) => `<div class="dow">${d}</div>`);
   for (let i = 0; i < lead; i++) cells.push(`<div class="d pad"></div>`);
@@ -141,7 +141,7 @@ export function calendar(s: Snapshot, view: ViewOptions): string {
   }
   const mt = s.month?.totals;
   const swatches = [0, 1, 2, 3, 4].map((l) => `<b class="${l ? `h${l}` : ""}"></b>`).join("");
-  const heading = view.unit === "cost" ? "Daily USD (est.)" : "Daily tokens";
+  const heading = view.unit === "cost" ? `Daily ${costLabel()}` : "Daily tokens";
   const sub = view.unit === "cost" ? "logged AI credits × $0.01" : "input + output";
   const so = s.month?.isCurrent === false ? "Month total" : "Month so far";
   return card(
@@ -149,7 +149,7 @@ export function calendar(s: Snapshot, view: ViewOptions): string {
     "daily",
     heading,
     `${MONTHS[mo]} ${y} · ${sub}`,
-    `<div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw" aria-hidden="true">${swatches}</span>More</span><span>${so}: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatUsd(mt.nanoAiu), s.health.partial) : DASH)}</b> USD (est.)</span></div>`,
+    `<div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw" aria-hidden="true">${swatches}</span>More</span><span>${so}: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatUsd(mt.nanoAiu), s.health.partial) : DASH)}</b> ${escapeHtml(costLabel())}</span></div>`,
   );
 }
 

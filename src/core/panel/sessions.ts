@@ -1,6 +1,6 @@
 // Sessions (D32): the current session's tiles, then the viewed month's
 // costliest sessions (the snapshot keeps up to 50; 10 show, the rest fold).
-import { formatCount, formatUsd, SESSION_TOTAL_NOTE, usd } from "../format";
+import { costLabel, formatCount, formatUsd, SESSION_TOTAL_NOTE, usd } from "../format";
 import { GROWTH_FLAG } from "../insights";
 import { modelFamily } from "../store";
 import type { SessionSummary, Snapshot, ViewOptions } from "../types";
@@ -58,8 +58,8 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
     notes.push(`<p><b aria-hidden="true">▲</b><span class="sr">Up:</span> Later calls in this session cost ${GROWTH_FLAG}× or more than its first ones: the context kept growing. Starting a fresh session for a new task is usually cheaper. Insights lists the costly ones.</p>`);
   if (list.some((x) => x.sessionTotal)) notes.push(`<p>${escapeHtml(SESSION_TOTAL_NOTE)} Its calls are the request count Copilot logged with the total.</p>`);
   if (count > list.length) notes.push(`<p>${escapeHtml(`${plural(count - list.length, "more session")} in ${name} ${count - list.length === 1 ? "is" : "are"} not listed.`)}</p>`);
-  notes.push(`<p>Bar = share of the month's estimated USD. Started = first record in ${escapeHtml(name)}, or the session start Copilot logged with a session total. Cache read = cache reads out of every 100 input tokens. Growth = cost of the last 5 calls ÷ the first 5.</p>`);
-  const head = "<th>Session</th><th>Started</th><th>Calls</th><th>Top model</th><th>Tokens</th><th>USD (est.)</th><th>Cache read</th><th>Growth</th>";
+  notes.push(`<p>Bar = share of the month's estimated cost. Started = first record in ${escapeHtml(name)}, or the session start Copilot logged with a session total. Cache read = cache reads out of every 100 input tokens. Growth = cost of the last 5 calls ÷ the first 5.</p>`);
+  const head = `<th>Session</th><th>Started</th><th>Calls</th><th>Top model</th><th>Tokens</th><th>${costLabel()}</th><th>Cache read</th><th>Growth</th>`;
   return card("sessions-title", "sessions", "Costliest sessions", `${name} · ${plural(count, "session")} · largest first`, `${foldedTable(head, rows, undefined, `Costliest sessions, ${name}`)}<div class="fine">${notes.join("")}</div>`);
 }
 
