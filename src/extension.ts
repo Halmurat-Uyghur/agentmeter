@@ -9,7 +9,7 @@ import { cleanRange } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
 import { monthKey } from "./core/panelHtml";
 import { nextLocalMidnight } from "./core/store";
-import type { Snapshot, ViewOptions } from "./core/types";
+import type { Filter, Snapshot, ViewOptions } from "./core/types";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
 import { StatusBar } from "./vscode/statusBar";
@@ -24,6 +24,15 @@ function readView(): ViewOptions {
   const unit = c.get<string>("display") === "cost" ? "cost" : "tokens";
   const range = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
   return range ? { unit, range } : { unit };
+}
+
+function readProjects(): boolean {
+  return vscode.workspace.getConfiguration(SECTION).get<boolean>("projectNames") !== false;
+}
+
+/** Filter values come from the panel or a quick pick; cap and type-check them. */
+function filterValue(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 && v.length <= 200 ? v : undefined;
 }
 
 function readHistory(): number {
@@ -46,6 +55,9 @@ export function activate(context: vscode.ExtensionContext): void {
   let view = readView();
   /** viewed month start, kept across monitor restarts; undefined = current */
   let selected: number | undefined;
+  let projectsOn = readProjects();
+  /** active filter, kept across monitor restarts (D26) */
+  let filter: Filter = {};
 
   const resolve = () => {
     const setting = vscode.workspace.getConfiguration("copilotUsageMonitor").get<string>("copilotHome");
@@ -96,6 +108,35 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.show();
   };
 
+  /** ("project" | "tool", value); an empty value clears that filter; no args opens a picker. */
+  const setFilter = async (kind?: unknown, value?: unknown) => {
+    const m = monitor;
+    if (!m) return;
+    if (kind === undefined) {
+      type Item = vscode.QuickPickItem & { filterKind?: "project" | "tool"; value?: string };
+      const month = snapshot?.month;
+      const items: Item[] = [{ label: "Clear all filters", filterKind: undefined }];
+      for (const p of month?.projects ?? []) items.push({ label: p.name, description: `project · ${p.calls} calls`, filterKind: "project", value: p.name });
+      for (const t of month?.tools ?? []) items.push({ label: t.name, description: `tool · ${t.builtIn ? "built-in" : "added"} · ${t.uses} uses`, filterKind: "tool", value: t.name });
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: "Filter the month view by project or tool" });
+      if (!pick || monitor !== m) return;
+      if (pick.filterKind === undefined) filter = {};
+      else filter = { ...filter, [pick.filterKind]: pick.value };
+    } else if (kind === "clear") {
+      filter = {};
+    } else if (kind === "project" || kind === "tool") {
+      const v = filterValue(value);
+      const next: Filter = { ...filter };
+      if (v === undefined) delete next[kind];
+      else next[kind] = v;
+      filter = next;
+    } else {
+      return;
+    }
+    m.setFilter(filter);
+    panel.show();
+  };
+
   const setUnit = async (arg?: unknown) => {
     const unit = arg === "cost" || arg === "tokens" ? arg : view.unit === "cost" ? "tokens" : "cost";
     view = { ...view, unit };
@@ -107,8 +148,9 @@ export function activate(context: vscode.ExtensionContext): void {
     stop();
     const { root, source } = resolve();
     rootKey = `${source}\u0000${root}`;
-    const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history });
+    const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn });
     if (selected !== undefined) m.selectMonth(selected);
+    if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
     monitor = m;
     snapshot = undefined;
     status.update(undefined);
@@ -158,6 +200,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.selectMonth", selectMonth),
     vscode.commands.registerCommand("copilotUsageMonitor.setUnit", setUnit),
     vscode.commands.registerCommand("copilotUsageMonitor.toggleUnit", () => setUnit()),
+    vscode.commands.registerCommand("copilotUsageMonitor.setFilter", setFilter),
+    vscode.commands.registerCommand("copilotUsageMonitor.filter", () => setFilter()),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (["display", "monthlyTargetMin", "monthlyTargetMax"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView();
@@ -169,8 +213,11 @@ export function activate(context: vscode.ExtensionContext): void {
         const { root, source } = resolve();
         rootChanged = `${source}\u0000${root}` !== rootKey;
       }
-      if (rootChanged || h !== history) {
+      const p = readProjects();
+      if (rootChanged || h !== history || p !== projectsOn) {
         history = h;
+        projectsOn = p;
+        if (!p) delete filter.project;
         start();
       }
     }),

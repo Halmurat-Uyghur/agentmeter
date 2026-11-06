@@ -13,6 +13,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
   - **Tokens / USD (est.) switch** for every figure.
   - **Monthly trend:** one bar per month. Click a bar to open that month.
   - **Personal target range** (optional): say how much you mean to use per month, for example $20–$60. The status bar icon shows whether this month is under (↓), in (✓) or over (🔥, amber) the range. It never stops Copilot and never pops up.
+  - **By project and by tool:** see which repositories and which tools (built-in, or added by MCP servers, plugins and extensions) your usage goes to. Click any row to filter the whole month view, trend and tables to it; click the chip's ✕ to clear. Today and the status bar are never filtered.
   - **Costliest sessions:** the month's top 10 sessions by estimated USD. A ▲ marks sessions whose last 5 calls cost 3× or more than their first 5, which means the context kept growing and a fresh session would likely be cheaper.
   - Per-metric tiles: input, output, cache read, cache write, reasoning, model time, AIU (as logged), USD (est.) and calls.
   - A per-model table with estimated USD per call, and a month calendar of daily tokens or USD.
@@ -48,7 +49,7 @@ The extension is not on the Marketplace yet. Build a `.vsix` and install it:
 npm ci
 npm run build
 npm run package
-code --install-extension copilot-usage-monitor-0.2.0.vsix
+code --install-extension copilot-usage-monitor-0.3.0.vsix
 ```
 
 Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
@@ -62,6 +63,7 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.display` | `"tokens"` | `"tokens"` or `"cost"` (estimated USD). The panel switch and the command change it. |
 | `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated USD you mean to use per month. |
 | `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated USD you mean to use per month. |
+| `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name). Off: every call is "(no project)" and the start line is not read. |
 
 VS Code launched from the macOS Dock or Finder does not see variables set in `.zshrc`. If you set `COPILOT_HOME` there, also set `copilotUsageMonitor.copilotHome`.
 
@@ -72,14 +74,17 @@ Commands:
 - **Copilot Usage: Refresh** rescans the logs.
 - **Copilot Usage: Show Month…** picks the month the panel shows.
 - **Copilot Usage: Switch Tokens / USD (est.)** flips the unit.
+- **Copilot Usage: Filter by Project or Tool…** picks a filter (or clears all).
 
 ## What it reads
 
 - **Files opened:** only `<copilot folder>/session-state/<session id>/events.jsonl` for sessions written within the history window (`historyMonths`, 12 months by default). Everything else in the folder is only listed. Lock-file names are used to tell live sessions apart, and nothing else is opened.
-- **Line filtering:** each line is checked by its first bytes. Only `session.usage_record` lines are decoded and parsed. Prompts, replies, tool output and file paths are skipped without being decoded.
-- **Fields kept:** model id, token counts, model time, AIU as logged, usage id, sequence, session id and timestamp, in memory only. Nothing is written to disk and nothing is sent anywhere.
+- **Line filtering:** each line is checked by its first bytes. Only `session.usage_record` lines are decoded and parsed, plus, when `projectNames` is on, each log's single `session.start` line (under 16 KB; larger ones are skipped). Prompts, replies, tool output and file contents are skipped without being decoded.
+- **Project label:** from `session.start` only `context.repository` (if it looks like `owner/repo`) or the last folder name of `context.gitRoot` / `context.cwd` is kept. The full path, branch, commits and everything else on that line are dropped.
+- **Tool use:** the per-call `toolCounts` map (tool name → number of invocations). Tool arguments and output are never read.
+- **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp and the project label, in memory only. Nothing is written to disk and nothing is sent anywhere.
 - **Output channel:** the "Copilot Usage Monitor" output channel gets counts, error codes and timings only, never log content or paths.
-- **Panel:** the details panel runs no scripts and loads no remote resources. Its only links are VS Code command links, and the panel allows exactly two commands: show a month, and set the unit.
+- **Panel:** the details panel runs no scripts and loads no remote resources. Its only links are VS Code command links, and the panel allows exactly three commands: show a month, set the unit, and set a filter.
 - **Settings:** the unit switch saves `copilotUsageMonitor.display` in your VS Code user settings. That is the only thing the extension ever writes.
 
 Automated tests enforce these rules. They scan the source and the bundle for network, persistence and telemetry APIs. They also check the exact files inside the `.vsix`, and that a canary string in synthetic logs never reaches the UI or the output channel.

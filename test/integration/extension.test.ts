@@ -116,6 +116,18 @@ suite("Copilot Usage Monitor", () => {
     assert.strictEqual(snap.history.length, 12);
   });
 
+  test("setFilter narrows the month view and clears; bad kinds are ignored", async () => {
+    type S = { snapshot: { filter?: { tool?: string }; month: { totals?: { records: number } } } };
+    const before = ((await state()) as unknown as S).snapshot.month.totals?.records ?? 0;
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "tool", "no-such-tool");
+    let s = (await waitFor((x) => (x as unknown as S).snapshot.filter?.tool === "no-such-tool")) as unknown as S;
+    assert.strictEqual(s.snapshot.month.totals, undefined);
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "bogus", "x");
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "tool", "");
+    s = (await waitFor((x) => (x as unknown as S).snapshot.filter === undefined)) as unknown as S;
+    assert.ok((s.snapshot.month.totals?.records ?? 0) >= before);
+  });
+
   test("the folder setting is machine-scoped", () => {
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
     const prop = ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.copilotHome"];

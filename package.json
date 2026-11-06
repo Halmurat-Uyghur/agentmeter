@@ -1,7 +1,7 @@
 {
   "name": "copilot-usage-monitor",
   "displayName": "Copilot Usage Monitor (Local)",
-  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Month history, trend and a personal target range. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
+  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Month history, trend, per-project and per-tool views and a personal target range. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
   "keywords": [
     "copilot",
     "usage",
@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -81,6 +81,14 @@
       {
         "command": "copilotUsageMonitor.setUnit",
         "title": "Copilot Usage: Set Unit"
+      },
+      {
+        "command": "copilotUsageMonitor.filter",
+        "title": "Copilot Usage: Filter by Project or Tool…"
+      },
+      {
+        "command": "copilotUsageMonitor.setFilter",
+        "title": "Copilot Usage: Set Filter"
       }
     ],
     "configuration": {
@@ -129,6 +137,11 @@
           "default": null,
           "minimum": 0,
           "description": "Optional personal target: the most estimated USD you want to use per month. Above it, the status bar turns amber with a flame icon."
+        },
+        "copilotUsageMonitor.projectNames": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. Full paths are never kept. Turn off to stop reading that line."
         }
       }
     },
@@ -136,6 +149,10 @@
       "commandPalette": [
         {
           "command": "copilotUsageMonitor.setUnit",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.setFilter",
           "when": "false"
         }
       ]

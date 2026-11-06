@@ -2,7 +2,7 @@
 // several files counts once; it is dropped only when every file that held it
 // has been reset. Metrics keep "not reported" apart from zero.
 
-import type { Counts, DayTotals, Metric, MonthSummary, SessionSummary, Totals, UsageRecord } from "./types";
+import type { Counts, DayTotals, GroupSummary, Metric, MonthSummary, SessionSummary, ToolSummary, Totals, UsageRecord } from "./types";
 
 export const UNKNOWN_MODEL = "(unknown model)";
 
@@ -152,7 +152,7 @@ export function byLocalDay(store: UsageStore, now: Date): DayTotals[] {
 
 /** Days 1..`lastDay` of the month starting at `monthStartMs`. With `openEnd`
  * the last bucket has no upper bound; otherwise records after the month are skipped. */
-export function daysOfMonth(store: UsageStore, monthStartMs: number, lastDay: number, openEnd: boolean): DayTotals[] {
+export function daysOfMonth(store: UsageStore, monthStartMs: number, lastDay: number, openEnd: boolean, keep: (r: UsageRecord) => boolean = ALL): DayTotals[] {
   const first = new Date(monthStartMs);
   const starts: number[] = [];
   for (let d = 1; d <= lastDay; d++) {
@@ -160,7 +160,7 @@ export function daysOfMonth(store: UsageStore, monthStartMs: number, lastDay: nu
   }
   const end = openEnd ? Number.POSITIVE_INFINITY : new Date(first.getFullYear(), first.getMonth(), lastDay + 1).getTime();
   const buckets = store.totalsByBucket(starts.length, (r) => {
-    if (r.timestampMs < starts[0]! || r.timestampMs >= end) return undefined;
+    if (r.timestampMs < starts[0]! || r.timestampMs >= end || !keep(r)) return undefined;
     let i = starts.length - 1;
     while (i > 0 && r.timestampMs < starts[i]!) i--;
     return i;
@@ -179,9 +179,9 @@ export function monthStarts(now: Date, n: number): number[] {
 }
 
 /** Totals per month for `starts` (oldest first); the newest month has no upper bound. */
-export function byMonth(store: UsageStore, starts: number[]): MonthSummary[] {
+export function byMonth(store: UsageStore, starts: number[], keep: (r: UsageRecord) => boolean = ALL): MonthSummary[] {
   const buckets = store.totalsByBucket(starts.length, (r) => {
-    if (starts.length === 0 || r.timestampMs < starts[0]!) return undefined;
+    if (starts.length === 0 || r.timestampMs < starts[0]! || !keep(r)) return undefined;
     let i = starts.length - 1;
     while (i > 0 && r.timestampMs < starts[i]!) i--;
     return i;
@@ -193,11 +193,78 @@ export function byMonth(store: UsageStore, starts: number[]): MonthSummary[] {
 }
 
 const GROWTH_SPAN = 5;
+const ALL = () => true;
+
+export const NO_PROJECT = "(no project)";
+
+/** Input + output of one record, or undefined when neither was reported. */
+function recordTokens(r: UsageRecord): number | undefined {
+  return r.tokens.input === undefined && r.tokens.output === undefined ? undefined : (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+}
+
+function byCost<T extends { name: string; nanoAiu: Metric; tokens: Metric }>(a: T, b: T): number {
+  return b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.name.localeCompare(b.name);
+}
+
+/** Per-project totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
+export function projectSummaries(
+  store: UsageStore,
+  fromMs: number,
+  toMs: number,
+  projectOf: (r: UsageRecord) => string,
+  keep: (r: UsageRecord) => boolean = ALL,
+): GroupSummary[] {
+  const groups = new Map<string, { s: GroupSummary; ids: Set<string> }>();
+  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && keep(x))) {
+    const name = projectOf(r);
+    let g = groups.get(name);
+    if (!g) {
+      g = { s: { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() }, ids: new Set() };
+      groups.set(name, g);
+    }
+    g.ids.add(r.sessionId);
+    g.s.calls++;
+    count(g.s.tokens, recordTokens(r));
+    count(g.s.nanoAiu, r.nanoAiu);
+  }
+  return [...groups.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
+}
+
+/** Copilot CLI's own tools; anything else (MCP servers, extensions, skills' tools) is "added". */
+export const BUILT_IN_TOOLS = new Set([
+  "bash", "read_bash", "write_bash", "stop_bash", "list_bash", "view", "edit", "create", "str_replace_editor",
+  "rg", "grep", "glob", "task", "task_complete", "rename_chat", "report_intent", "skill", "think",
+  "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
+]);
+
+/** Per-tool totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
+export function toolSummaries(
+  store: UsageStore,
+  fromMs: number,
+  toMs: number,
+  keep: (r: UsageRecord) => boolean = ALL,
+): ToolSummary[] {
+  const tools = new Map<string, ToolSummary>();
+  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && x.tools !== undefined && keep(x))) {
+    for (const [name, uses] of Object.entries(r.tools!)) {
+      let t = tools.get(name);
+      if (!t) {
+        t = { name, builtIn: BUILT_IN_TOOLS.has(name), uses: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() };
+        tools.set(name, t);
+      }
+      t.uses += uses;
+      t.calls++;
+      count(t.tokens, recordTokens(r));
+      count(t.nanoAiu, r.nanoAiu);
+    }
+  }
+  return [...tools.values()].sort(byCost);
+}
 
 /** Per-session summaries for records in [fromMs, toMs), costliest first, at most `limit`. */
-export function sessionSummaries(store: UsageStore, fromMs: number, toMs: number, limit = 10): SessionSummary[] {
+export function sessionSummaries(store: UsageStore, fromMs: number, toMs: number, limit = 10, keep: (r: UsageRecord) => boolean = ALL): SessionSummary[] {
   const groups = new Map<string, UsageRecord[]>();
-  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs)) {
+  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && keep(x))) {
     const g = groups.get(r.sessionId);
     if (g) g.push(r);
     else groups.set(r.sessionId, [r]);

@@ -1,13 +1,19 @@
 // The privacy gate. classifyLine looks at raw bytes only and never decodes a
 // line; parseUsageLine runs only on lines the gate called "usage" and copies
-// an allowlist of fields into a fresh object. Nothing else leaves this module.
+// an allowlist of fields into a fresh object. parseStartLine runs only on the
+// small "start" line and keeps one short project label, never a path (D25).
+// Nothing else leaves this module.
 import type { ParseResult, Tokens, UsageRecord } from "./types";
 
-export type LineClass = "usage" | "activity" | "suspect" | "skip";
+export type LineClass = "usage" | "start" | "activity" | "suspect" | "skip";
 
 const USAGE_TYPE = "session.usage_record";
 const USAGE_PREFIX = Buffer.from(`{"type":"${USAGE_TYPE}"`);
 const ACTIVITY_PREFIX = Buffer.from(`{"type":"assistant.turn_end"`);
+const START_TYPE = "session.start";
+const START_PREFIX = Buffer.from(`{"type":"${START_TYPE}"`);
+/** session.start lines are < 1 KB in practice; anything larger is not decoded. */
+export const MAX_START_BYTES = 16 * 1024;
 // A real usage event whose keys were reordered or re-spaced. Inside a JSON string
 // value these quotes are escaped as \", so prompt or tool text can never match.
 const SUSPECT_NEEDLES = [
@@ -35,6 +41,7 @@ export function classifyLine(
 ): LineClass {
   if (startsWith(buf, start, end, USAGE_PREFIX)) return "usage";
   if (startsWith(buf, start, end, ACTIVITY_PREFIX)) return "activity";
+  if (startsWith(buf, start, end, START_PREFIX)) return end - start <= MAX_START_BYTES ? "start" : "skip";
   // subarray is a view (no copy, no decode) so the search stops at `end`.
   const line = buf.subarray(start, end);
   for (const needle of SUSPECT_NEEDLES) {
@@ -60,6 +67,43 @@ function nonEmptyString(v: unknown): string | undefined {
 }
 
 const MODEL_ID = /^[A-Za-z0-9._:\/-]{1,100}$/;
+/** Tool names: identifiers only (MCP tools look like server-tool or server/tool). */
+const TOOL_NAME = /^[A-Za-z0-9._:\/@-]{1,80}$/;
+const MAX_TOOLS = 64;
+const REPO = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const FOLDER_NAME = /^[A-Za-z0-9 ._@+-]{1,80}$/;
+
+/** Last segment of a POSIX or Windows path, or undefined. */
+function baseName(p: string): string | undefined {
+  const parts = p.split(/[\\/]+/).filter(Boolean);
+  return parts.at(-1);
+}
+
+/**
+ * The project label of a session.start line: `context.repository` ("owner/repo")
+ * if well-formed, else the last folder name of `context.gitRoot` or `context.cwd`.
+ * Only that label is returned; the full path and every other field are dropped.
+ */
+export function parseStartLine(line: string): string | undefined {
+  let event: unknown;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isObject(event) || event.type !== START_TYPE) return undefined;
+  const data = event.data;
+  const ctx = isObject(data) && isObject(data.context) ? data.context : undefined;
+  if (!ctx) return undefined;
+  if (typeof ctx.repository === "string" && REPO.test(ctx.repository)) return ctx.repository;
+  for (const key of ["gitRoot", "cwd"]) {
+    const v = ctx[key];
+    if (typeof v !== "string") continue;
+    const name = baseName(v);
+    if (name !== undefined && FOLDER_NAME.test(name) && name !== "." && name !== "..") return name;
+  }
+  return undefined;
+}
 
 export function parseUsageLine(line: string, folderId: string): ParseResult {
   let event: unknown;
@@ -120,6 +164,17 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     ? count(usage.copilotUsage.totalNanoAiu)
     : undefined;
   if (nanoAiu !== undefined) record.nanoAiu = nanoAiu;
+  if (isObject(usage.toolCounts)) {
+    const tools: Record<string, number> = {};
+    let n = 0;
+    for (const [name, v] of Object.entries(usage.toolCounts)) {
+      const c = count(v);
+      if (c === undefined || c === 0 || !TOOL_NAME.test(name)) continue;
+      if (++n > MAX_TOOLS) break;
+      tools[name] = c;
+    }
+    if (n > 0) record.tools = tools;
+  }
 
   return { kind: "usage", record };
 }

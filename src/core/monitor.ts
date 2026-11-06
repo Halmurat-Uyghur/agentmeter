@@ -4,11 +4,11 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
-import { parseUsageLine } from "./extract";
+import { parseStartLine, parseUsageLine } from "./extract";
 import type { Logger } from "./log";
-import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, sessionSummaries, UsageStore } from "./store";
+import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
-import type { Health, MonthView, Snapshot } from "./types";
+import type { Filter, Health, MonthView, Snapshot, UsageRecord } from "./types";
 
 export interface MonitorOptions {
   root: string;
@@ -21,6 +21,8 @@ export interface MonitorOptions {
   onSnapshot: (s: Snapshot) => void;
   /** months of history to read, this month included (D21); default 1 = this month only */
   historyMonths?: number;
+  /** decode each log's session.start line for a project label (D25); default false */
+  readProjects?: boolean;
 }
 
 export const MAX_HISTORY_MONTHS = 24;
@@ -45,6 +47,8 @@ interface FileState {
   windowActivity: number;
   windowUsage: number;
   error?: ReadErrorCode;
+  /** project label from this log's session.start line (D25) */
+  project?: string;
 }
 
 const REDISCOVER_MS = 10_000;
@@ -69,6 +73,8 @@ export class UsageMonitor {
   private readonly historyMonths: number;
   /** month start of the viewed month; undefined = follow the current month */
   private selectedMonth: number | undefined;
+  private readonly readProjects: boolean;
+  private filter: Filter = {};
 
   private readonly store = new UsageStore();
   /** eventsPath → state; kept for the life of the monitor, dropped only on ENOENT */
@@ -99,6 +105,7 @@ export class UsageMonitor {
     this.log = o.log;
     this.onSnapshot = o.onSnapshot;
     this.historyMonths = clampHistory(o.historyMonths ?? 1);
+    this.readProjects = o.readProjects === true;
   }
 
   /**
@@ -128,6 +135,16 @@ export class UsageMonitor {
    * A month outside the history window, or the current month, follows the current month. */
   selectMonth(monthStartMs: number | undefined): void {
     this.selectedMonth = monthStartMs;
+    this.dirty = true;
+    void this.refresh();
+  }
+
+  /** Narrows the month view, trend and tables; empty values clear (D26). */
+  setFilter(filter: Filter): void {
+    this.filter = {
+      ...(filter.project ? { project: filter.project } : {}),
+      ...(filter.tool ? { tool: filter.tool } : {}),
+    };
     this.dirty = true;
     void this.refresh();
   }
@@ -215,7 +232,7 @@ export class UsageMonitor {
       if (this.files.has(c.eventsPath)) continue;
       this.files.set(c.eventsPath, {
         folderId: c.folderId,
-        tailer: new LineTailer(c.eventsPath),
+        tailer: new LineTailer(c.eventsPath, { decodeStart: this.readProjects }),
         primed: false,
         malformed: 0,
         unrecognized: 0,
@@ -245,12 +262,20 @@ export class UsageMonitor {
     if (r.reset) {
       this.store.resetFile(path);
       f.malformed = f.unrecognized = f.overlong = 0;
+      delete f.project;
       f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
     const inWindow = f.primed;
     let added = 0;
     let usage = 0;
+    for (const line of r.startLines) {
+      const label = parseStartLine(line);
+      if (label !== undefined && f.project === undefined) {
+        f.project = label;
+        this.dirty = true;
+      }
+    }
     for (const line of r.usageLines) {
       const p = this.parse(line, f.folderId);
       if (p.kind === "usage") {
@@ -338,8 +363,16 @@ export class UsageMonitor {
 
     const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
-    const history = byMonth(this.store, starts);
-    const month = this.monthView(nowDate, starts);
+    const projects = new Map<string, string>();
+    for (const f of this.files.values()) if (f.project !== undefined) projects.set(f.folderId, f.project);
+    const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
+    const { project, tool } = this.filter;
+    const byProject = (r: UsageRecord) => project === undefined || projectOf(r) === project;
+    const byTool = (r: UsageRecord) => tool === undefined || (r.tools?.[tool] ?? 0) > 0;
+    const keep = (r: UsageRecord) => byProject(r) && byTool(r);
+    const history = byMonth(this.store, starts, keep);
+    const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
+    const filter = project !== undefined || tool !== undefined ? { ...this.filter } : undefined;
 
     return {
       generatedAtMs: nowMs,
@@ -350,33 +383,45 @@ export class UsageMonitor {
       health,
       month,
       history,
+      ...(filter && { filter }),
     };
   }
 
   /** The viewed month: the selected one if it is a past month in the window, else this month. */
-  private monthView(nowDate: Date, starts: number[]): MonthView {
+  private monthView(
+    nowDate: Date,
+    starts: number[],
+    keep: (r: UsageRecord) => boolean,
+    projectOf: (r: UsageRecord) => string,
+    byProject: (r: UsageRecord) => boolean,
+    byTool: (r: UsageRecord) => boolean,
+  ): MonthView {
     const current = starts.at(-1)!;
     const sel = this.selectedMonth;
     const past = sel !== undefined && sel !== current && starts.includes(sel) ? sel : undefined;
     if (past === undefined) {
-      const totals = this.store.totals((r) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS);
+      const totals = this.store.totals((r) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r));
       return {
         monthStartMs: current,
         isCurrent: true,
-        days: daysOfMonth(this.store, current, nowDate.getDate(), true),
-        sessions: sessionSummaries(this.store, current, Number.POSITIVE_INFINITY),
+        days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
+        sessions: sessionSummaries(this.store, current, Number.POSITIVE_INFINITY, 10, keep),
+        projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
+        tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
         ...(totals !== undefined && { totals }),
       };
     }
     const first = new Date(past);
     const end = new Date(first.getFullYear(), first.getMonth() + 1, 1).getTime();
     const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
-    const totals = this.store.totals((r) => r.timestampMs >= past && r.timestampMs < end);
+    const totals = this.store.totals((r) => r.timestampMs >= past && r.timestampMs < end && keep(r));
     return {
       monthStartMs: past,
       isCurrent: false,
-      days: daysOfMonth(this.store, past, lastDay, false),
-      sessions: sessionSummaries(this.store, past, end),
+      days: daysOfMonth(this.store, past, lastDay, false, keep),
+      sessions: sessionSummaries(this.store, past, end, 10, keep),
+      projects: projectSummaries(this.store, past, end, projectOf, byTool),
+      tools: toolSummaries(this.store, past, end, byProject),
       ...(totals !== undefined && { totals }),
     };
   }

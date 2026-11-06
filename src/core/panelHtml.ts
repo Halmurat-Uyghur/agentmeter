@@ -21,8 +21,8 @@ import {
   usd,
 } from "./format";
 import { PANEL_CSS } from "./panelCss";
-import { addMetrics, heatLevel, modelFamily } from "./store";
-import type { Counts, Health, Metric, MonthSummary, SessionSummary, Snapshot, Totals, ViewOptions } from "./types";
+import { addMetrics, heatLevel, modelFamily, NO_PROJECT } from "./store";
+import type { Counts, GroupSummary, Health, Metric, MonthSummary, SessionSummary, Snapshot, ToolSummary, Totals, ViewOptions } from "./types";
 
 const DASH = "—";
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -32,7 +32,7 @@ const MONTHS = [
 ];
 
 /** Commands the panel may link to; the webview allows exactly these (D20). */
-export const PANEL_COMMANDS = ["copilotUsageMonitor.selectMonth", "copilotUsageMonitor.setUnit"] as const;
+export const PANEL_COMMANDS = ["copilotUsageMonitor.selectMonth", "copilotUsageMonitor.setUnit", "copilotUsageMonitor.setFilter"] as const;
 
 /** Sessions whose late calls cost this many times their early ones are flagged (D24). */
 export const GROWTH_FLAG = 3;
@@ -52,8 +52,13 @@ export function monthKey(ms: number): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
 
-function commandHref(command: (typeof PANEL_COMMANDS)[number], arg: string): string {
-  return `command:${command}?${encodeURIComponent(JSON.stringify([arg]))}`;
+function commandHref(command: (typeof PANEL_COMMANDS)[number], ...args: string[]): string {
+  return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
+}
+
+/** A link that sets (or, with "", clears) one filter. */
+function filterHref(kind: "project" | "tool", value: string): string {
+  return commandHref("copilotUsageMonitor.setFilter", kind, value);
 }
 
 /** A formatted value with its "*" styled; `text` is already formatted. */
@@ -194,7 +199,13 @@ function navBar(s: Snapshot, view: ViewOptions): string {
     view.unit === u
       ? `<span class="seg on">${label}</span>`
       : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? "estimated USD" : "tokens"}`);
-  return `<nav class="nav">
+  const f = s.filter;
+  const chip = (kind: "project" | "tool", label: string, value: string) =>
+    `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter">${escapeHtml(label)}: <b>${escapeHtml(value)}</b> ✕</a>`;
+  const filters = f
+    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", f.project) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today and the status bar are not filtered.</span></div>`
+    : "";
+  return `${filters}<nav class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month")}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month")}${back}${pick}</div>
   <div class="unit">${unit("tokens", "Tokens")}${unit("cost", "USD (est.)")}</div>
 </nav>`;
@@ -399,7 +410,56 @@ function trend(s: Snapshot, view: ViewOptions): string {
   const legend = range
     ? `<span class="lg"><b class="st-under"></b>Under <b class="st-in"></b>In range <b class="st-over"></b>Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range))}</span>`
     : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : "Switch to USD (est.) to compare against a target."}</span>`;
-  return `<section class="box"><h2>Monthly trend<small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))} · click a month to open it</small></h2><div class="trend"><div class="plot">${band}${cols.join("")}</div></div><div class="scale">${legend}</div></section>`;
+  const filtered = s.filter ? " · filtered" : "";
+  return `<section class="box"><h2>Monthly trend<small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h2><div class="trend"><div class="plot">${band}${cols.join("")}</div></div><div class="scale">${legend}</div></section>`;
+}
+
+function share(part: Metric, whole: number | undefined): number {
+  return whole && part.reported > 0 ? Math.round((100 * part.sum) / whole) : 0;
+}
+
+/** Per-project table for the viewed month; each row filters to that project (D26). */
+function projectsBox(s: Snapshot, view: ViewOptions): string {
+  const list: GroupSummary[] = s.month?.projects ?? [];
+  const scope = monthTitle(s.month?.monthStartMs ?? s.dayStartMs);
+  const partial = s.health.partial;
+  const active = s.filter?.project;
+  if (list.length === 0) {
+    return `<section class="box"><h2>By project<small>${escapeHtml(scope)}</small></h2><p class="muted">No per-call records in this month.</p></section>`;
+  }
+  const whole = list.reduce((a, g) => a + (view.unit === "cost" ? g.nanoAiu.sum : g.tokens.sum), 0);
+  const rows = list.map((g) => {
+    const pct = share(view.unit === "cost" ? g.nanoAiu : g.tokens, whole);
+    const on = g.name === active;
+    const href = filterHref("project", on ? "" : g.name);
+    const name = g.name === NO_PROJECT ? `<span class="muted">${escapeHtml(g.name)}</span>` : escapeHtml(g.name);
+    return `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>`;
+  });
+  const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
+  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · click to filter</small></h2><div class="tablewrap"><table><thead><tr><th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine">Project = the session's GitHub repository, else its folder name; full paths are never read.${escapeHtml(note)}</div></section>`;
+}
+
+/** Per-tool table for the viewed month; each row filters to calls that used that tool (D26). */
+function toolsBox(s: Snapshot, view: ViewOptions): string {
+  const list: ToolSummary[] = s.month?.tools ?? [];
+  const scope = monthTitle(s.month?.monthStartMs ?? s.dayStartMs);
+  const partial = s.health.partial;
+  const active = s.filter?.tool;
+  if (list.length === 0) {
+    return `<section class="box"><h2>By tool<small>${escapeHtml(scope)}</small></h2><p class="muted">No tool use logged in this month.</p></section>`;
+  }
+  const added = list.filter((t) => !t.builtIn);
+  const rows = list.map((t) => {
+    const on = t.name === active;
+    const href = filterHref("tool", on ? "" : t.name);
+    const kind = t.builtIn ? `<span class="tag">built-in</span>` : `<span class="tag add">added</span>`;
+    return `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a></td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td></tr>`;
+  });
+  const addedNote = added.length
+    ? `${plural(added.length, "added tool")} (MCP servers, plugins, extensions): ${added.map((t) => t.name).join(", ")}.`
+    : "Only built-in tools were used.";
+  const note = s.filter?.project ? ` Only project ${s.filter.project}.` : "";
+  return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · click to filter</small></h2><div class="tablewrap"><table><thead><tr><th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
 }
 
 function sessionsBox(s: Snapshot, view: ViewOptions): string {
@@ -477,6 +537,10 @@ ${tilesBox("Current session", badge, s.current?.totals, s.health, false)}
 ${modelTable(s, view)}
 ${calendar(s, view)}
 </div>
+</div>
+<div class="cols even">
+<div>${projectsBox(s, view)}</div>
+<div>${toolsBox(s, view)}</div>
 </div>
 ${sessionsBox(s, view)}
 ${healthBox(s)}`;

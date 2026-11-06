@@ -62,6 +62,7 @@ describe("LineTailer", () => {
     r = await t.read();
     expect(r).toEqual({
       usageLines: [],
+      startLines: [],
       activity: 0,
       suspect: 0,
       overlong: 0,

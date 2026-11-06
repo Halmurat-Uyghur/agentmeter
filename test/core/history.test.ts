@@ -192,6 +192,14 @@ function snap(o: Partial<Snapshot> = {}): Snapshot {
       isCurrent: true,
       days,
       totals: t,
+      projects: [
+        { name: "acme/web", sessions: 2, calls: 12, tokens: m(500_000, 12), nanoAiu: m(2_000e9, 12) },
+        { name: "(no project)", sessions: 1, calls: 3, tokens: m(9_000, 3), nanoAiu: m(1_000e9, 3) },
+      ],
+      tools: [
+        { name: "bash", builtIn: true, uses: 30, calls: 10, tokens: m(400_000, 10), nanoAiu: m(1_500e9, 10) },
+        { name: "github-mcp-server/get_issue", builtIn: false, uses: 4, calls: 3, tokens: m(90_000, 3), nanoAiu: m(900e9, 3) },
+      ],
       sessions: [
         { sessionId: "3f2a91c0-aaaa-4000-8000-000000000001", firstMs: NOV, lastMs: NOV + 86_400_000, calls: 12, topModel: "gpt-6-luna", tokens: m(500_000, 12), nanoAiu: m(2_000e9, 12), growth: 6.2 },
         { sessionId: "77777777-bbbb-4000-8000-000000000002", firstMs: NOV, lastMs: NOV, calls: 3, tokens: m(9_000, 3), nanoAiu: m(1_000e9, 3) },

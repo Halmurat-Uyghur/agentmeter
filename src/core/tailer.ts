@@ -10,6 +10,8 @@ export type ReadErrorCode = "ENOENT" | "EACCES" | "EPERM" | "EIO" | "OTHER";
 export interface TailResult {
   /** decoded, complete lines classified "usage" (trailing \r stripped) */
   usageLines: string[];
+  /** decoded session.start lines (only when `decodeStart`) */
+  startLines: string[];
   activity: number;
   suspect: number;
   overlong: number;
@@ -20,6 +22,8 @@ export interface TailResult {
 export interface TailerOptions {
   maxCarryBytes?: number;
   chunkBytes?: number;
+  /** decode session.start lines for the project label (D25); default false */
+  decodeStart?: boolean;
 }
 
 interface Cursor {
@@ -53,6 +57,7 @@ export class LineTailer {
   private carry: Buffer = EMPTY;
   /** inside an over-long line: discard bytes until the next \n */
   private skipping = false;
+  private readonly decodeStart: boolean;
 
   constructor(
     private readonly path: string,
@@ -60,6 +65,7 @@ export class LineTailer {
   ) {
     this.maxCarryBytes = Math.max(1, opts.maxCarryBytes ?? 1_048_576);
     this.chunkBytes = Math.max(1, opts.chunkBytes ?? 262_144);
+    this.decodeStart = opts.decodeStart === true;
   }
 
   get carryLength(): number {
@@ -69,6 +75,7 @@ export class LineTailer {
   async read(): Promise<TailResult> {
     const result: TailResult = {
       usageLines: [],
+      startLines: [],
       activity: 0,
       suspect: 0,
       overlong: 0,
@@ -178,6 +185,12 @@ export class LineTailer {
       case "usage": {
         const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
         out.usageLines.push(buf.toString("utf8", start, stop));
+        break;
+      }
+      case "start": {
+        if (!this.decodeStart) break;
+        const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
+        out.startLines.push(buf.toString("utf8", start, stop));
         break;
       }
       case "activity":

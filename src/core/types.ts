@@ -21,6 +21,8 @@ export interface UsageRecord {
   tokens: Tokens;
   durationMs?: number;
   nanoAiu?: number;
+  /** tool name → times the model invoked it in this call (D25); absent if none */
+  tools?: Record<string, number>;
 }
 
 export type UnrecognizedReason =
@@ -88,6 +90,34 @@ export interface Snapshot {
   month?: MonthView;
   /** one entry per month in the history window, oldest first, ending with this month (D21) */
   history?: MonthSummary[];
+  /** active filter, if any (D26) */
+  filter?: Filter;
+}
+
+/** Narrows the month view, trend and tables (D26); Today and the status bar ignore it. */
+export interface Filter {
+  project?: string;
+  tool?: string;
+}
+
+/** One project's records in the viewed month. */
+export interface GroupSummary {
+  name: string;
+  sessions: number;
+  calls: number;
+  tokens: Metric;
+  nanoAiu: Metric;
+}
+
+/** One tool in the viewed month: how often the model invoked it, and the model
+ * calls that did. A call that used two tools counts toward both (D26). */
+export interface ToolSummary {
+  name: string;
+  builtIn: boolean;
+  uses: number;
+  calls: number;
+  tokens: Metric;
+  nanoAiu: Metric;
 }
 
 /** One calendar month of the history window; totals undefined = no record. */
@@ -124,6 +154,10 @@ export interface MonthView {
   days: DayTotals[];
   /** costliest sessions first (by AIU, then tokens), at most 10 */
   sessions: SessionSummary[];
+  /** per project, costliest first; ignores the project filter, honours the tool filter (D26) */
+  projects: GroupSummary[];
+  /** per tool, costliest first; ignores the tool filter, honours the project filter (D26) */
+  tools: ToolSummary[];
   /** undefined iff no record this month */
   totals?: Totals;
 }

@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.3.0 - 2026-11-05
+
+### Added
+
+- **By project** table: usage per GitHub repository (else folder name) for the viewed month.
+- **By tool** table: each tool the model invoked, marked built-in or added (MCP servers, plugins, extensions), with uses, calls, tokens and estimated USD of the calls that used it.
+- Click a project or tool row, or run **Copilot Usage: Filter by Project or Tool…**, to filter the month view, trend, model, session and calendar views; chips with ✕ clear it. Today and the status bar stay unfiltered.
+- `copilotUsageMonitor.projectNames` (default on) controls reading the project label.
+
+### Changed
+
+- The line gate now also decodes each log's small `session.start` line (≤ 16 KB) when `projectNames` is on, and keeps only the project label. `toolCounts` on usage records is now read.
+- The panel's command allowlist adds `setFilter`.
+
 ## 0.2.0 - 2026-11-05
 
 ### Added

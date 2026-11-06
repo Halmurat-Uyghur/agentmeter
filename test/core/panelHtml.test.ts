@@ -66,7 +66,7 @@ function snap(o: Partial<Snapshot> = {}): Snapshot {
     current: { folderId: "3f2a91c0-0000-4000-8000-000000000001", live: true, pinned: false, totals: t },
     sessions: [{ folderId: "3f2a91c0-0000-4000-8000-000000000001", live: true, lastMs: NOW.getTime() }],
     health: health(),
-    month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, { 3: t, 5: t }), sessions: [], totals: t },
+    month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, { 3: t, 5: t }), sessions: [], projects: [], tools: [], totals: t },
     ...o,
   };
 }
@@ -213,7 +213,7 @@ describe("renderPanelHtml", () => {
   });
 
   it("no today and no month render dashes", () => {
-    const html = renderPanelHtml(snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, {}), sessions: [] } }), "x");
+    const html = renderPanelHtml(snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, {}), sessions: [], projects: [], tools: [] } }), "x");
     expect(html).toMatch(/<div class="big">—<\/div>/);
     expect(html).toContain("No per-call records dated today.");
     expect(html).not.toMatch(/class="d h[1-4]/);
