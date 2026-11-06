@@ -186,8 +186,10 @@ describe("monitor: project labels and filters", () => {
     // D has no workspace.yaml: it keeps the folder name.
     const m = make(true);
     await m.refresh({ full: true });
-    const names = snaps.at(-1)!.month!.projects.map((p) => p.name);
+    // Shown: the title (label) for the ID folder; the key stays the folder name.
+    const names = snaps.at(-1)!.month!.projects.map((p) => p.label ?? p.name);
     expect(names).toContain("Fix Login Bug");
+    expect(snaps.at(-1)!.month!.projects.find((p) => p.label === "Fix Login Bug")?.name).toBe("a5ba938d-3495-450d-94f0-cdab4c64c501");
     expect(names).toContain("33887a44-aeb6-43ec-b802-689f688a9d41");
     expect(names).toContain("acme/web"); // real names are never replaced
     expect(JSON.stringify(snaps)).not.toContain(CANARY);

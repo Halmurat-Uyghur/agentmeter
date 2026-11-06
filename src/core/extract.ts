@@ -143,10 +143,15 @@ export function parseStartLine(line: string): string | undefined {
   return undefined;
 }
 
-/** A folder name that is an ID (UUID or long hex), which means nothing to a person. */
-const ID_LABEL = /^(?=.*[0-9])[0-9a-f]+(?:-[0-9a-f]+)*$/i;
+/**
+ * A folder name that is an ID (UUID or long hex), which means nothing to a person.
+ * Hex needs both a digit and a letter a-f: all digits is more likely a build or
+ * ticket number, and all letters a word.
+ */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const HEX_ID = /^(?=.*[0-9])(?=.*[a-f])[0-9a-f]+(?:-[0-9a-f]+)*$/i;
 export function isIdLabel(label: string): boolean {
-  return label.length >= 16 && label.length <= 64 && ID_LABEL.test(label);
+  return label.length >= 16 && label.length <= 64 && (UUID.test(label) || HEX_ID.test(label));
 }
 
 /** workspace.yaml files are ~200 bytes; anything larger is not read. */
@@ -155,19 +160,34 @@ export const MAX_TITLE_CHARS = 60;
 
 /**
  * The session title from workspace.yaml: the top-level `name:` value only, on one
- * line, without control characters, at most MAX_TITLE_CHARS long. Every other key
- * (cwd, git_root, branch, ...) is ignored.
+ * line, without control or format characters (bidi overrides, zero-width), at most
+ * MAX_TITLE_CHARS code points long. A trailing ` # comment` is dropped; YAML null
+ * and empty values are no title. Every other key (cwd, git_root, branch, ...) is ignored.
  */
 export function parseWorkspaceName(text: string): string | undefined {
   const m = /^name:[ \t]*(.*)$/m.exec(text);
   if (!m) return undefined;
-  let v = m[1]!.trim();
-  if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1).replace(/''/g, "'");
-  else if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1).replace(/\\(["\\])/g, "$1");
-  else if (/^[|>]/.test(v)) return undefined; // a block scalar: not a title
-  v = v.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  const raw = m[1]!.trim();
+  let v: string;
+  if (raw.startsWith("'") || raw.startsWith('"')) {
+    const q =
+      /^'((?:[^']|'')*)'(?:\s+#.*)?$/.exec(raw)?.[1]?.replace(/''/g, "'") ??
+      /^"((?:[^"\\]|\\.)*)"(?:\s+#.*)?$/.exec(raw)?.[1]?.replace(/\\(["\\])/g, "$1");
+    if (q === undefined) return undefined; // unbalanced or trailing junk: not a title
+    v = q;
+  } else {
+    if (/^[|>]/.test(raw)) return undefined; // a block scalar: not a title
+    v = raw.replace(/(?:^|\s)#.*$/, "").trim();
+    if (/^(?:~|null|Null|NULL)$/.test(v)) return undefined;
+  }
+  v = v
+    .replace(/\p{Cf}+/gu, "")
+    .replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (v.length === 0) return undefined;
-  return v.length > MAX_TITLE_CHARS ? `${v.slice(0, MAX_TITLE_CHARS - 1).trimEnd()}…` : v;
+  const cps = Array.from(v);
+  return cps.length > MAX_TITLE_CHARS ? `${cps.slice(0, MAX_TITLE_CHARS - 1).join("").trimEnd()}…` : v;
 }
 
 export function parseUsageLine(line: string, folderId: string): ParseResult {

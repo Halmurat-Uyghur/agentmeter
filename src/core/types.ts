@@ -105,7 +105,10 @@ export interface Filter {
 
 /** One project's records in the viewed month. */
 export interface GroupSummary {
+  /** grouping and filter key: the project label (repository or folder name) */
   name: string;
+  /** display-only: the session title when the folder is named by an ID; show it instead of `name` */
+  label?: string;
   sessions: number;
   calls: number;
   tokens: Metric;

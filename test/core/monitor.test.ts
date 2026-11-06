@@ -397,7 +397,39 @@ describe("UsageMonitor", () => {
     expect(last().current?.totals?.records).toBe(2);
   });
 
-  it("reads only events.jsonl", async () => {
+  it("projectNames on: opens events.jsonl, plus workspace.yaml only for ID-named projects", async () => {
+    const ID = "a5ba938d-3495-450d-94f0-cdab4c64c501";
+    const startEv = (cwd: string) => ({ type: "session.start", id: "s", parentId: null, timestamp: at(8), data: { context: { cwd }, prompt: CANARY } });
+    await sessionTree(root, [
+      { id: A, lines: jsonl([startEv(`/srv/${ID}`), rec(A, 1)]) },
+      { id: B, lines: jsonl([startEv("/srv/tools-cli"), rec(B, 2)]) },
+      { id: C, lines: jsonl([rec(C, 3)]) },
+    ]);
+    for (const id of [A, B, C]) {
+      const dir = join(root, "session-state", id);
+      await writeFile(join(dir, "workspace.yaml"), `name: Title ${id.slice(4, 8)}\n`);
+      for (const name of ["config.json", "session.db", "vscode.metadata.json"])
+        await writeFile(join(dir, name), CANARY);
+    }
+    const open = vi.spyOn(fs.promises, "open");
+    const readFile = vi.spyOn(fs.promises, "readFile");
+    const openSync = vi.spyOn(fsModule, "openSync");
+    const readFileSync = vi.spyOn(fsModule, "readFileSync");
+    syncBuiltinESMExports();
+    make({ readProjects: true });
+    await monitor.refresh({ full: true });
+    expect(last().month?.projects.find((p) => p.name === ID)?.label).toBe("Title aaaa");
+    const opened = open.mock.calls.map((c) => String(c[0]).slice(root.length));
+    const evs = opened.filter((p) => /^\/session-state\/[0-9a-f-]+\/events\.jsonl$/.test(p));
+    const others = opened.filter((p) => !evs.includes(p));
+    expect(new Set(evs).size).toBe(3);
+    expect(others).toEqual([`/session-state/${A}/workspace.yaml`]);
+    expect(readFile).not.toHaveBeenCalled();
+    expect(openSync).not.toHaveBeenCalled();
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+
+  it("projectNames off: reads only events.jsonl", async () => {
     await sessionTree(root, [
       { id: A, lines: jsonl([rec(A, 1)]), lockPid: LIVE_PID },
       { id: B, lines: jsonl([turnEnd()]) },

@@ -6,7 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
-- A project whose folder is named by an ID (a UUID or long hex) now shows the session title instead, read from the `name:` line of that session's `workspace.yaml`. Only with `projectNames` on; repository and normal folder names are unchanged.
+- A project whose folder is named by an ID (a UUID or long hex) now shows the session title as its display label, read from the `name:` line of that session's `workspace.yaml` (at most 16 KB read, regular files only). Grouping and the project filter stay per folder: sessions in one ID folder stay one row (labelled with the most recently active session's title), and a title equal to another project's name never merges into it. Only with `projectNames` on; repository and normal folder names are unchanged.
+- Titles drop YAML comments, `null` / `~` / empty values, and control, bidi and zero-width characters; truncation never splits a character. A deleted, oversize or symlinked `workspace.yaml` drops the title. All-digit folder names are not treated as IDs.
 
 ### Fixed
 

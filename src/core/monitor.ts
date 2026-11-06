@@ -56,6 +56,27 @@ interface FileState {
   titleMtimeMs?: number;
 }
 
+/**
+ * Reads at most MAX_WORKSPACE_BYTES + 1 bytes of workspace.yaml (never following a
+ * symlink where the OS allows) and returns its title; a longer file has no title.
+ */
+async function readBoundedTitle(path: string): Promise<string | undefined> {
+  const fh = await fs.promises.open(path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!(await fh.stat()).isFile()) return undefined;
+    const buf = Buffer.alloc(MAX_WORKSPACE_BYTES + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+      if (bytesRead === 0) break;
+      n += bytesRead;
+    }
+    return n > MAX_WORKSPACE_BYTES ? undefined : parseWorkspaceName(buf.toString("utf8", 0, n));
+  } finally {
+    await fh.close();
+  }
+}
+
 const REDISCOVER_MS = 10_000;
 const FORMAT_ACTIVITY = 3;
 /** "today" has no upper bound (a clock-skewed record still counts today); the month mirrors that. */
@@ -309,21 +330,31 @@ export class UsageMonitor {
     return { added, changed };
   }
 
-  /** Reads the `name:` of the session's workspace.yaml when that file changed. */
+  /**
+   * Reads the `name:` of the session's workspace.yaml when that file changed. A file
+   * that is gone, unreadable, not a regular file (e.g. a symlink) or over
+   * MAX_WORKSPACE_BYTES drops the title, so the folder name shows again.
+   */
   private async readTitle(eventsPath: string, f: FileState): Promise<void> {
     const ws = join(dirname(eventsPath), "workspace.yaml");
+    let title: string | undefined;
+    let mtimeMs: number | undefined;
     try {
       const st = await fs.promises.lstat(ws);
-      if (!st.isFile() || st.size > MAX_WORKSPACE_BYTES || st.mtimeMs === f.titleMtimeMs) return;
-      const title = parseWorkspaceName(await fs.promises.readFile(ws, "utf8"));
-      f.titleMtimeMs = st.mtimeMs;
-      if (title !== f.title) {
-        if (title === undefined) delete f.title;
-        else f.title = title;
-        this.dirty = true;
+      if (st.isFile() && st.size <= MAX_WORKSPACE_BYTES) {
+        if (st.mtimeMs === f.titleMtimeMs) return;
+        title = await readBoundedTitle(ws);
+        mtimeMs = st.mtimeMs;
       }
     } catch {
-      // No workspace.yaml (older Copilot) or unreadable: keep the folder name.
+      // No workspace.yaml (older Copilot) or unreadable: the folder name shows.
+    }
+    if (mtimeMs === undefined) delete f.titleMtimeMs;
+    else f.titleMtimeMs = mtimeMs;
+    if (title !== f.title) {
+      if (title === undefined) delete f.title;
+      else f.title = title;
+      this.dirty = true;
     }
   }
 
@@ -397,8 +428,19 @@ export class UsageMonitor {
 
     const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
+    // Grouping and the project filter are keyed by the project folder label only.
+    // A session title (ID-named folders) is display-only: the title of the most
+    // recently active titled session in that folder.
     const projects = new Map<string, string>();
-    for (const f of this.files.values()) if (f.project !== undefined) projects.set(f.folderId, f.title ?? f.project);
+    const titles = new Map<string, { title: string; ms: number }>();
+    for (const f of this.files.values()) {
+      if (f.project === undefined) continue;
+      projects.set(f.folderId, f.project);
+      if (f.title === undefined) continue;
+      const ms = latest.get(f.folderId) ?? Number.NEGATIVE_INFINITY;
+      const t = titles.get(f.project);
+      if (t === undefined || ms > t.ms) titles.set(f.project, { title: f.title, ms });
+    }
     const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
     const { project, tool } = this.filter;
     const byProject = (r: UsageRecord) => project === undefined || projectOf(r) === project;
@@ -406,6 +448,10 @@ export class UsageMonitor {
     const keep = (r: UsageRecord) => byProject(r) && byTool(r);
     const history = byMonth(this.store, starts, keep);
     const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
+    month.projects = month.projects.map((g) => {
+      const t = titles.get(g.name);
+      return t === undefined ? g : { ...g, label: t.title };
+    });
     const filter = project !== undefined || tool !== undefined ? { ...this.filter } : undefined;
 
     return {
