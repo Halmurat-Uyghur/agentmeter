@@ -1,7 +1,7 @@
 {
   "name": "copilot-usage-monitor",
   "displayName": "Copilot Usage Monitor (Local)",
-  "description": "Shows your own Copilot token usage as observed in local Copilot session logs on this computer. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
+  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Month history, trend and a personal target range. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
   "keywords": [
     "copilot",
     "usage",
@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -69,6 +69,18 @@
       {
         "command": "copilotUsageMonitor.refresh",
         "title": "Copilot Usage: Refresh"
+      },
+      {
+        "command": "copilotUsageMonitor.selectMonth",
+        "title": "Copilot Usage: Show Month…"
+      },
+      {
+        "command": "copilotUsageMonitor.toggleUnit",
+        "title": "Copilot Usage: Switch Tokens / USD (est.)"
+      },
+      {
+        "command": "copilotUsageMonitor.setUnit",
+        "title": "Copilot Usage: Set Unit"
       }
     ],
     "configuration": {
@@ -79,8 +91,54 @@
           "default": "",
           "scope": "machine",
           "description": "Folder that contains Copilot's session-state. Empty: use COPILOT_HOME, else ~/.copilot."
+        },
+        "copilotUsageMonitor.historyMonths": {
+          "type": "integer",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "How many months of Copilot session logs to read for the month picker and trend chart, this month included. Older logs are read once at start-up; nothing is stored."
+        },
+        "copilotUsageMonitor.display": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "cost"
+          ],
+          "default": "tokens",
+          "enumDescriptions": [
+            "Input + output tokens.",
+            "Estimated USD: Copilot's logged AI credits × $0.01."
+          ],
+          "description": "Unit for the status bar and panel figures."
+        },
+        "copilotUsageMonitor.monthlyTargetMin": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the least estimated USD you want to use per month. Below it, the status bar shows a down arrow."
+        },
+        "copilotUsageMonitor.monthlyTargetMax": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the most estimated USD you want to use per month. Above it, the status bar turns amber with a flame icon."
         }
       }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "copilotUsageMonitor.setUnit",
+          "when": "false"
+        }
+      ]
     }
   }
 }

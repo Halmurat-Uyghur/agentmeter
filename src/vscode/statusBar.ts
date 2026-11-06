@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
-import { statusText, tooltipMarkdown } from "../core/format";
-import type { Snapshot } from "../core/types";
+import { currentRangeState, DEFAULT_VIEW, statusText, tooltipMarkdown } from "../core/format";
+import type { Snapshot, ViewOptions } from "../core/types";
 
 export class StatusBar implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
@@ -15,9 +15,11 @@ export class StatusBar implements vscode.Disposable {
     this.item.show();
   }
 
-  update(s: Snapshot | undefined): void {
-    this.text = statusText(s);
-    this.tooltip = tooltipMarkdown(s);
+  update(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): void {
+    this.text = statusText(s, view);
+    this.tooltip = tooltipMarkdown(s, view);
+    const over = s !== undefined && currentRangeState(s, view) === "over";
+    this.item.backgroundColor = over ? new vscode.ThemeColor("statusBarItem.warningBackground") : undefined;
     const md = new vscode.MarkdownString(this.tooltip);
     md.isTrusted = false;
     md.supportHtml = false;

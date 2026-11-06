@@ -629,3 +629,13 @@ Original options:
 - **D19 — Status-bar figure.** Recommended: when the source is on, the status-bar `tok` figure includes VS Code calls and the tooltip says so. Alternative: status bar stays CLI-only and VS Code appears only in the panel.
 
 **Unknowns to close in Step 1:** U1 — what makes Copilot Chat write `llm_request` (version or setting); U2 — whether `inputTokens` includes `cachedTokens` (needed before any "net input" figure; none is planned); U3 — whether sub-agent and title calls also appear in `main.jsonl` (affects in-source dedupe); U4 — whether Copilot CLI sessions started from VS Code's chat UI also produce `llm_request` lines (the double-count case §13.3 guards against).
+
+## 14. v0.2 decisions — history, USD estimate and target range (2026-11-05, owner request)
+
+The owner asked for past-month selection, a trend, a tokens ⇄ money view and a personal target range (employer pays; the goal is to stay within a self-set range, neither overspending nor under-using). These supersede the matching parts of D2, D10 and the non-goals list.
+
+- **D20 — Month selection, script-free.** The panel stays `enableScripts: false`. Navigation uses `command:` links, and `enableCommandUris` is an allowlist of exactly `copilotUsageMonitor.selectMonth` and `copilotUsageMonitor.setUnit`. Arguments are a month key (`YYYY-MM`), `current`, `pick`, `tokens` or `cost`; anything else is ignored.
+- **D21 — History window.** `historyMonths` (default 12, 1–24) replaces D10's "this month only" window. Logs modified since the 1st of the oldest month are read; nothing is persisted, so the cold start reads more files. "Sessions this month" and the pin list still show this month only.
+- **D22 — USD estimate.** USD = logged `totalNanoAiu / 1e9` × $0.01. Verified on 46 real records (gpt-6-luna, mai-code-1.1-flash): the AIU equals GitHub's published per-token prices (input includes cached tokens) to four decimal places, so no price table is shipped. Every USD figure is labelled "est." and the panel carries a cost note ("not an invoice"). The copy gate now bans only account-statement words (bill, billing, remaining, quota, limit, allowance, premium) and `%`.
+- **D23 — Target range.** `monthlyTargetMin` / `monthlyTargetMax` in USD, both optional. The state (under / in / over) uses spend so far this month — no projection (owner's choice). Status-bar icon: ↓ under, ✓ in, 🔥 over with the warning background. Nothing blocks Copilot and nothing pops up.
+- **D24 — Costliest sessions.** Picked from two independent subagent proposals (both converged on per-session cost). Top 10 sessions of the viewed month by AIU; growth = mean AIU of the last 5 calls ÷ the first 5 (needs ≥ 10 priced calls); ▲ at ≥ 3×, with the advice that a fresh session is usually cheaper.

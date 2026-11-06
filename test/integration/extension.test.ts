@@ -92,6 +92,30 @@ suite("Copilot Usage Monitor", () => {
     await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:"));
   });
 
+  test("USD view and a target range change the status bar; the panel links are allowlisted", async () => {
+    try {
+      await config().update("monthlyTargetMax", 0.001, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setUnit", "cost");
+      const s = await waitFor((x) => x.statusText.startsWith("$(flame) Local ") && x.statusText.includes(" / up to $0.001"));
+      assert.match(s.tooltip, /over target/);
+      assert.strictEqual(config().get("display"), "cost");
+    } finally {
+      await config().update("monthlyTargetMax", undefined, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setUnit", "tokens");
+      await config().update("display", undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:"));
+  });
+
+  test("selectMonth accepts current and ignores unknown months", async () => {
+    await vscode.commands.executeCommand("copilotUsageMonitor.selectMonth", "1999-01");
+    await vscode.commands.executeCommand("copilotUsageMonitor.selectMonth", "current");
+    const s = await waitFor((x) => x.panelOpen);
+    const snap = (s as unknown as { snapshot: { month: { isCurrent: boolean }; history: unknown[] } }).snapshot;
+    assert.strictEqual(snap.month.isCurrent, true);
+    assert.strictEqual(snap.history.length, 12);
+  });
+
   test("the folder setting is machine-scoped", () => {
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
     const prop = ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.copilotHome"];

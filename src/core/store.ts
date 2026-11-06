@@ -2,7 +2,7 @@
 // several files counts once; it is dropped only when every file that held it
 // has been reset. Metrics keep "not reported" apart from zero.
 
-import type { Counts, DayTotals, Metric, Totals, UsageRecord } from "./types";
+import type { Counts, DayTotals, Metric, MonthSummary, SessionSummary, Totals, UsageRecord } from "./types";
 
 export const UNKNOWN_MODEL = "(unknown model)";
 
@@ -99,6 +99,13 @@ export class UsageStore {
     return out;
   }
 
+  /** Every record matching `filter`, in no particular order. */
+  records(filter: (r: UsageRecord) => boolean): UsageRecord[] {
+    const out: UsageRecord[] = [];
+    for (const { record } of this.entries.values()) if (filter(record)) out.push(record);
+    return out;
+  }
+
   /** folderId → newest timestampMs over all records. */
   latest(): Map<string, number> {
     const out = new Map<string, number>();
@@ -140,12 +147,20 @@ export function localMonthStart(now: Date): number {
  * stays undefined for a day with no record ("—" in the panel, never 0). Today's
  * bucket has no upper bound, matching the Today figure (clock-skewed records). */
 export function byLocalDay(store: UsageStore, now: Date): DayTotals[] {
+  return daysOfMonth(store, localMonthStart(now), now.getDate(), true);
+}
+
+/** Days 1..`lastDay` of the month starting at `monthStartMs`. With `openEnd`
+ * the last bucket has no upper bound; otherwise records after the month are skipped. */
+export function daysOfMonth(store: UsageStore, monthStartMs: number, lastDay: number, openEnd: boolean): DayTotals[] {
+  const first = new Date(monthStartMs);
   const starts: number[] = [];
-  for (let d = 1; d <= now.getDate(); d++) {
-    starts.push(new Date(now.getFullYear(), now.getMonth(), d).getTime());
+  for (let d = 1; d <= lastDay; d++) {
+    starts.push(new Date(first.getFullYear(), first.getMonth(), d).getTime());
   }
+  const end = openEnd ? Number.POSITIVE_INFINITY : new Date(first.getFullYear(), first.getMonth(), lastDay + 1).getTime();
   const buckets = store.totalsByBucket(starts.length, (r) => {
-    if (r.timestampMs < starts[0]!) return undefined;
+    if (r.timestampMs < starts[0]! || r.timestampMs >= end) return undefined;
     let i = starts.length - 1;
     while (i > 0 && r.timestampMs < starts[i]!) i--;
     return i;
@@ -154,6 +169,80 @@ export function byLocalDay(store: UsageStore, now: Date): DayTotals[] {
     const totals = buckets[i];
     return totals === undefined ? { dayStartMs } : { dayStartMs, totals };
   });
+}
+
+/** Local month starts, oldest first: the `n` months ending with `now`'s month. */
+export function monthStarts(now: Date, n: number): number[] {
+  const out: number[] = [];
+  for (let i = n - 1; i >= 0; i--) out.push(new Date(now.getFullYear(), now.getMonth() - i, 1).getTime());
+  return out;
+}
+
+/** Totals per month for `starts` (oldest first); the newest month has no upper bound. */
+export function byMonth(store: UsageStore, starts: number[]): MonthSummary[] {
+  const buckets = store.totalsByBucket(starts.length, (r) => {
+    if (starts.length === 0 || r.timestampMs < starts[0]!) return undefined;
+    let i = starts.length - 1;
+    while (i > 0 && r.timestampMs < starts[i]!) i--;
+    return i;
+  });
+  return starts.map((monthStartMs, i) => {
+    const totals = buckets[i];
+    return totals === undefined ? { monthStartMs } : { monthStartMs, totals };
+  });
+}
+
+const GROWTH_SPAN = 5;
+
+/** Per-session summaries for records in [fromMs, toMs), costliest first, at most `limit`. */
+export function sessionSummaries(store: UsageStore, fromMs: number, toMs: number, limit = 10): SessionSummary[] {
+  const groups = new Map<string, UsageRecord[]>();
+  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs)) {
+    const g = groups.get(r.sessionId);
+    if (g) g.push(r);
+    else groups.set(r.sessionId, [r]);
+  }
+  const out: SessionSummary[] = [];
+  for (const [sessionId, recs] of groups) {
+    recs.sort((a, b) => a.timestampMs - b.timestampMs || (a.sequence ?? 0) - (b.sequence ?? 0));
+    const tokens = emptyMetric();
+    const nanoAiu = emptyMetric();
+    const models = new Map<string, number>();
+    for (const r of recs) {
+      const t = r.tokens.input === undefined && r.tokens.output === undefined ? undefined : (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+      count(tokens, t);
+      count(nanoAiu, r.nanoAiu);
+      if (r.model !== undefined) models.set(r.model, (models.get(r.model) ?? 0) + 1);
+    }
+    let topModel: string | undefined;
+    let best = 0;
+    for (const [m, n] of [...models].sort((a, b) => a[0].localeCompare(b[0]))) {
+      if (n > best) {
+        best = n;
+        topModel = m;
+      }
+    }
+    const priced = recs.filter((r) => r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
+    let growth: number | undefined;
+    if (priced.length >= 2 * GROWTH_SPAN) {
+      const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+      const early = mean(priced.slice(0, GROWTH_SPAN));
+      const late = mean(priced.slice(-GROWTH_SPAN));
+      if (early > 0) growth = late / early;
+    }
+    out.push({
+      sessionId,
+      firstMs: recs[0]!.timestampMs,
+      lastMs: recs.at(-1)!.timestampMs,
+      calls: recs.length,
+      ...(topModel !== undefined && { topModel }),
+      tokens,
+      nanoAiu,
+      ...(growth !== undefined && { growth }),
+    });
+  }
+  out.sort((a, b) => b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.sessionId.localeCompare(b.sessionId));
+  return out.slice(0, limit);
 }
 
 /** 0 for no value or zero; otherwise 1–4 in quarters of `max`. */

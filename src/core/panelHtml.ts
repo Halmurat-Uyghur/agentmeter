@@ -1,18 +1,28 @@
 // Renders the details panel as one static HTML string: no scripts, no remote
 // resources, every dynamic string HTML-escaped. Missing values render "—",
 // incomplete ones carry "*" plus a reason; a 0 appears only when logged.
+// Navigation (month, tokens/cost) uses command: links limited to an allowlist
+// by the webview (D20); the panel itself never runs code.
 import {
+  COST_NOTE,
+  DEFAULT_VIEW,
   formatAiu,
   formatCount,
   formatDuration,
+  formatRange,
+  formatUsd,
   LOCAL_BANNER,
+  money,
   NOT_COVERED,
   partialNote,
+  RANGE_LABEL,
+  rangeState,
   STREAMING_NOTE,
+  usd,
 } from "./format";
 import { PANEL_CSS } from "./panelCss";
 import { addMetrics, heatLevel, modelFamily } from "./store";
-import type { Counts, Health, Metric, Snapshot, Totals } from "./types";
+import type { Counts, Health, Metric, MonthSummary, SessionSummary, Snapshot, Totals, ViewOptions } from "./types";
 
 const DASH = "—";
 const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -21,6 +31,12 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
+/** Commands the panel may link to; the webview allows exactly these (D20). */
+export const PANEL_COMMANDS = ["copilotUsageMonitor.selectMonth", "copilotUsageMonitor.setUnit"] as const;
+
+/** Sessions whose late calls cost this many times their early ones are flagged (D24). */
+export const GROWTH_FLAG = 3;
+
 export function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -28,6 +44,16 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/** "YYYY-MM" for a local month start. */
+export function monthKey(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+}
+
+function commandHref(command: (typeof PANEL_COMMANDS)[number], arg: string): string {
+  return `command:${command}?${encodeURIComponent(JSON.stringify([arg]))}`;
 }
 
 /** A formatted value with its "*" styled; `text` is already formatted. */
@@ -42,6 +68,26 @@ function withStar(text: string, partial: boolean): string {
 
 function tokens(c: Counts): Metric {
   return addMetrics(c.input, c.output);
+}
+
+/** The headline figure of `c` in the chosen unit. */
+function headline(c: Counts, view: ViewOptions): string {
+  return view.unit === "cost" ? formatUsd(c.nanoAiu) : formatCount(tokens(c));
+}
+
+function headlineMetric(c: Counts, view: ViewOptions): Metric {
+  return view.unit === "cost" ? c.nanoAiu : tokens(c);
+}
+
+function headlineValue(c: Counts | undefined, view: ViewOptions): number | undefined {
+  if (!c) return undefined;
+  const m = headlineMetric(c, view);
+  if (m.reported === 0) return undefined;
+  return view.unit === "cost" ? usd(m) : m.sum;
+}
+
+function unitWord(view: ViewOptions): string {
+  return view.unit === "cost" ? "estimated USD" : "input + output tokens";
 }
 
 function titleAttr(note: string | undefined): string {
@@ -63,6 +109,16 @@ function pad2(n: number): string {
 function clock(ms: number): string {
   const d = new Date(ms);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+function shortDate(ms: number): string {
+  const d = new Date(ms);
+  return `${MONTHS[d.getMonth()]!.slice(0, 3)} ${d.getDate()}`;
+}
+
+function monthTitle(ms: number): string {
+  const d = new Date(ms);
+  return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 function rootLabel(h: Health): string {
@@ -91,7 +147,7 @@ ${body}
 </html>`;
 }
 
-function topBar(s: Snapshot | undefined): string {
+function topBar(s: Snapshot | undefined, view: ViewOptions): string {
   const chips: string[] = [];
   if (s) {
     if (s.current) {
@@ -112,50 +168,94 @@ function topBar(s: Snapshot | undefined): string {
   const when = s
     ? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`
     : "Reading Copilot session logs…";
+  const costNote = view.unit === "cost" ? `<p>${escapeHtml(COST_NOTE)}</p>` : "";
   return `<header class="top">
   <div><h1>Copilot Usage <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
 </header>
-<section class="note"><p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p></section>`;
+<section class="note"><p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}</section>`;
+}
+
+/** Month navigation and the tokens / cost switch. */
+function navBar(s: Snapshot, view: ViewOptions): string {
+  const viewed = s.month?.monthStartMs ?? s.dayStartMs;
+  const starts = (s.history ?? []).map((h) => h.monthStartMs);
+  const i = starts.indexOf(viewed);
+  const link = (cls: string, label: string, href: string | undefined, title: string) =>
+    href
+      ? `<a class="${cls}" href="${escapeHtml(href)}" title="${escapeHtml(title)}">${label}</a>`
+      : `<span class="${cls} off">${label}</span>`;
+  const prev = i > 0 ? commandHref("copilotUsageMonitor.selectMonth", monthKey(starts[i - 1]!)) : undefined;
+  const next = i >= 0 && i < starts.length - 1 ? commandHref("copilotUsageMonitor.selectMonth", monthKey(starts[i + 1]!)) : undefined;
+  const isCurrent = s.month?.isCurrent !== false;
+  const back = isCurrent ? "" : link("btn", "This month", commandHref("copilotUsageMonitor.selectMonth", "current"), "Back to the current month");
+  const pick = link("btn", "Pick month…", commandHref("copilotUsageMonitor.selectMonth", "pick"), "Choose a month from the history window");
+  const unit = (u: ViewOptions["unit"], label: string) =>
+    view.unit === u
+      ? `<span class="seg on">${label}</span>`
+      : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? "estimated USD" : "tokens"}`);
+  return `<nav class="nav">
+  <div class="months">${link("btn", "‹", prev, "Previous month")}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month")}${back}${pick}</div>
+  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", "USD (est.)")}</div>
+</nav>`;
 }
 
 function kpi(cls: string, name: string, sub: string, value: string, note?: string): string {
   return `<div class="kpi ${cls}"${titleAttr(note)}><div><div class="name">${escapeHtml(name)}</div><div class="sub">${escapeHtml(sub)}</div></div><div class="big">${val(value)}</div></div>`;
 }
 
-function kpis(s: Snapshot): string {
+function targetKpi(s: Snapshot, view: ViewOptions): string {
+  const cur = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
+  const spentMetric = cur?.totals?.nanoAiu;
+  const spent = spentMetric ? usd(spentMetric) : undefined;
+  const state = rangeState(spent, view.range);
+  const name = `Target ${formatRange(view.range)}`;
+  const sub = `${MONTHS[new Date(cur?.monthStartMs ?? s.dayStartMs).getMonth()]} so far ${spentMetric ? withStar(formatUsd(spentMetric), s.health.partial) : money(0)} (est.)`;
+  const big = state === "under" ? "Under" : state === "over" ? "Over" : "In range";
+  return `<div class="kpi k4 st-${state}" title="${escapeHtml(RANGE_LABEL[state])}"><div><div class="name">${escapeHtml(name)}</div><div class="sub">${escapeHtml(sub)}</div></div><div class="big">${escapeHtml(big)}</div></div>`;
+}
+
+function kpis(s: Snapshot, view: ViewOptions): string {
   const partial = s.health.partial;
   const today = s.today;
-  const todayTok = today ? withStar(formatCount(tokens(today)), partial) : DASH;
-  const todaySub = today ? `input + output tokens · ${plural(today.records, "call")}` : "input + output tokens · no calls yet";
+  const todayVal = today ? withStar(headline(today, view), partial) : DASH;
+  const todaySub = today ? `${unitWord(view)} · ${plural(today.records, "call")}` : `${unitWord(view)} · no calls yet`;
 
   const cur = s.current;
-  const curTok = cur?.totals ? withStar(formatCount(tokens(cur.totals)), partial) : DASH;
+  const curVal = cur?.totals ? withStar(headline(cur.totals, view), partial) : DASH;
   const curSub = cur
     ? `${shortId(cur.folderId)} · ${cur.live ? "live" : "ended"}${cur.totals ? ` · ${plural(cur.totals.records, "call")}` : ""}`
     : "no session yet";
 
-  const monthName = MONTHS[new Date(s.month?.monthStartMs ?? s.dayStartMs).getMonth()]!;
+  const viewed = new Date(s.month?.monthStartMs ?? s.dayStartMs);
+  const monthName = MONTHS[viewed.getMonth()]! + (s.month?.isCurrent === false ? ` ${viewed.getFullYear()}` : "");
   const mt = s.month?.totals;
   const active = s.month?.days.filter((d) => d.totals !== undefined).length ?? 0;
-  const monthTok = mt ? withStar(formatCount(tokens(mt)), partial) : DASH;
+  const monthVal = mt ? withStar(headline(mt, view), partial) : DASH;
   let monthSub = `${plural(active, "active day")}`;
   if (mt && active > 0) {
-    const t = tokens(mt);
+    const t = headlineMetric(mt, view);
     if (t.reported > 0) {
-      const avg = formatCount({ sum: Math.round(t.sum / active), reported: t.reported, missing: t.missing });
-      monthSub += ` · ${avg} per active day`;
+      const avg = { sum: t.sum / active, reported: t.reported, missing: t.missing };
+      const avgText = view.unit === "cost" ? formatUsd(avg) : formatCount({ ...avg, sum: Math.round(avg.sum) });
+      monthSub += ` · ${avgText} per active day`;
     }
   }
 
-  const aiuToday = today ? withStar(formatAiu(today.nanoAiu), partial) : DASH;
-  const aiuMonth = mt ? withStar(formatAiu(mt.nanoAiu), partial) : DASH;
+  let fourth: string;
+  if (view.range) {
+    fourth = targetKpi(s, view);
+  } else {
+    const aiuToday = today ? withStar(formatAiu(today.nanoAiu), partial) : DASH;
+    const aiuMonth = mt ? withStar(formatAiu(mt.nanoAiu), partial) : DASH;
+    fourth = kpi("k4", "AIU (as logged)", `today · ${monthName} ${aiuMonth}`, aiuToday, today ? partialNote(today.nanoAiu) : undefined);
+  }
 
   return `<section class="kpis">
-${kpi("k1", "Today", todaySub, todayTok, today ? partialNote(tokens(today)) : undefined)}
-${kpi("k2", "Current session", curSub, curTok, cur?.totals ? partialNote(tokens(cur.totals)) : undefined)}
-${kpi("k3", monthName, monthSub, monthTok, mt ? partialNote(tokens(mt)) : undefined)}
-${kpi("k4", "AIU (as logged)", `today · ${monthName} ${aiuMonth}`, aiuToday, today ? partialNote(today.nanoAiu) : undefined)}
+${kpi("k1", "Today", todaySub, todayVal, today ? partialNote(headlineMetric(today, view)) : undefined)}
+${kpi("k2", "Current session", curSub, curVal, cur?.totals ? partialNote(headlineMetric(cur.totals, view)) : undefined)}
+${kpi("k3", monthName, monthSub, monthVal, mt ? partialNote(headlineMetric(mt, view)) : undefined)}
+${fourth}
 </section>`;
 }
 
@@ -167,6 +267,7 @@ const TILE_FIELDS: [string, keyof Counts, (m: Metric) => string][] = [
   ["Reasoning", "reasoning", formatCount],
   ["Model time", "durationMs", formatDuration],
   ["AIU (as logged)", "nanoAiu", formatAiu],
+  ["USD (est.)", "nanoAiu", formatUsd],
 ];
 
 function tilesBox(title: string, badge: string, c: Counts | undefined, health: Health, footReasons: boolean): string {
@@ -195,58 +296,140 @@ function partialReasons(h: Health): string {
   return `Totals may be incomplete: ${parts.join("; ")}.`;
 }
 
-function modelTable(t: Totals | undefined, partial: boolean): string {
+function modelTable(s: Snapshot, view: ViewOptions): string {
+  const partial = s.health.partial;
+  const pastMonth = s.month?.isCurrent === false;
+  const t: Totals | undefined = pastMonth ? s.month?.totals : s.today;
+  const scope = pastMonth ? monthTitle(s.month!.monthStartMs) : "Today";
   const models = t ? Object.keys(t.byModel) : [];
-  const total = t ? tokens(t).sum : 0;
+  const total = t ? (headlineValue(t, view) ?? 0) : 0;
   const rows = models
     .map((m) => ({ m, c: t!.byModel[m]! }))
-    .sort((a, b) => tokens(b.c).sum - tokens(a.c).sum || a.m.localeCompare(b.m))
+    .sort((a, b) => (headlineValue(b.c, view) ?? 0) - (headlineValue(a.c, view) ?? 0) || a.m.localeCompare(b.m))
     .map(({ m, c }) => {
       const tok = tokens(c);
-      const share = total > 0 && tok.reported > 0 ? Math.round((100 * tok.sum) / total) : 0;
+      const v = headlineValue(c, view);
+      const share = total > 0 && v !== undefined ? Math.round((100 * v) / total) : 0;
       const fam = modelFamily(m);
       const cell = (x: string, note?: string) =>
         `<td class="num${x === DASH ? " muted" : ""}"${titleAttr(note)}>${val(withStar(x, partial))}</td>`;
-      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${share > 0 ? `<span class="bar f-${fam}" style="width:${share}%"></span>` : ""}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num sum"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td>${cell(formatAiu(c.nanoAiu), partialNote(c.nanoAiu))}<td class="num">${c.records}</td></tr>`;
+      const perCall = usd(c.nanoAiu);
+      const perCallText = perCall === undefined || c.records === 0 ? DASH : money(perCall / c.records);
+      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${share > 0 ? `<span class="bar f-${fam}" style="width:${share}%"></span>` : ""}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num${view.unit === "tokens" ? " sum" : ""}"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}"${titleAttr(partialNote(c.nanoAiu))}>${val(withStar(formatUsd(c.nanoAiu), partial))}</td>${cell(perCallText)}<td class="num">${c.records}</td></tr>`;
     });
+  const empty = pastMonth ? `No per-call records in ${monthTitle(s.month!.monthStartMs)}.` : "No per-call records dated today.";
   const body = rows.length
-    ? `<div class="tablewrap"><table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>AIU</th><th>Calls</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
-    : `<p class="muted">No per-call records dated today.</p>`;
-  return `<section class="box"><h2>Today by model<small>${plural(models.length, "model")}</small></h2>${body}<div class="fine">Bar = share of today's input + output tokens. "—" means the log did not report the value; it is never shown as 0.</div></section>`;
+    ? `<div class="tablewrap"><table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Calls</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+    : `<p class="muted">${escapeHtml(empty)}</p>`;
+  return `<section class="box"><h2>${escapeHtml(scope)} by model<small>${plural(models.length, "model")}</small></h2>${body}<div class="fine">Bar = share of ${pastMonth ? "the month's" : "today's"} ${unitWord(view)}. Per call = estimated USD per model call. "—" means the log did not report the value; it is never shown as 0.</div></section>`;
 }
 
-function calendar(s: Snapshot): string {
+function calendar(s: Snapshot, view: ViewOptions): string {
   const anchor = new Date(s.month?.monthStartMs ?? s.dayStartMs);
   const y = anchor.getFullYear();
   const mo = anchor.getMonth();
   const daysInMonth = new Date(y, mo + 1, 0).getDate();
   const lead = (new Date(y, mo, 1).getDay() + 6) % 7;
   const days = s.month?.days ?? [];
-  const values = days.map((d) => (d.totals ? tokens(d.totals) : undefined));
-  const max = Math.max(0, ...values.map((v) => (v && v.reported > 0 ? v.sum : 0)));
+  const metrics = days.map((d) => (d.totals ? headlineMetric(d.totals, view) : undefined));
+  const values = days.map((d) => headlineValue(d.totals, view));
+  const max = Math.max(0, ...values.map((v) => v ?? 0));
   const todayNum = new Date(s.dayStartMs).getDate();
-  const sameMonth = new Date(s.dayStartMs).getMonth() === mo;
+  const sameMonth = new Date(s.dayStartMs).getMonth() === mo && new Date(s.dayStartMs).getFullYear() === y;
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
+  const word = view.unit === "cost" ? "estimated USD" : "tokens";
 
   const cells: string[] = DOW.map((d) => `<div class="dow">${d}</div>`);
   for (let i = 0; i < lead; i++) cells.push(`<div class="d pad"></div>`);
   for (let day = 1; day <= daysInMonth; day++) {
-    const v = values[day - 1];
+    const m = metrics[day - 1];
     const known = day <= days.length;
     if (!known) {
       cells.push(`<div class="d later">${day}</div>`);
       continue;
     }
-    const text = v ? withStar(formatCount(v), s.health.partial) : DASH;
-    const level = v && v.reported > 0 ? heatLevel(v.sum, max) : 0;
+    const text = m ? withStar(fmt(m), s.health.partial) : DASH;
+    const v = values[day - 1];
+    const level = v !== undefined ? heatLevel(v, max) : 0;
     const now = sameMonth && day === todayNum ? " now" : "";
-    const title = v ? `${text} tokens${text.endsWith("*") ? " (may be incomplete)" : ""}` : "No usage records";
+    const title = m ? `${text} ${word}${text.endsWith("*") ? " (may be incomplete)" : ""}` : "No usage records";
     cells.push(`<div class="d${level ? ` h${level}` : ""}${now}" title="${escapeHtml(title)}">${day}<small>${val(text)}</small></div>`);
   }
   const mt = s.month?.totals;
   const swatches = [0, 1, 2, 3, 4]
     .map((l) => `<b class="${l ? `h${l}` : ""}"></b>`)
     .join("");
-  return `<section class="box"><h2>Daily tokens — ${MONTHS[mo]} ${y}<small>input + output</small></h2><div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw">${swatches}</span>More</span><span>Month so far: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatAiu(mt.nanoAiu), s.health.partial) : DASH)}</b> AIU (as logged)</span></div></section>`;
+  const heading = view.unit === "cost" ? "Daily USD (est.)" : "Daily tokens";
+  const sub = view.unit === "cost" ? "logged AI credits × $0.01" : "input + output";
+  const so = s.month?.isCurrent === false ? "Month total" : "Month so far";
+  return `<section class="box"><h2>${heading} — ${MONTHS[mo]} ${y}<small>${escapeHtml(sub)}</small></h2><div class="month">${cells.join("")}</div><div class="scale"><span>Less<span class="sw month-sw">${swatches}</span>More</span><span>${so}: <b class="num">${val(mt ? withStar(formatCount(tokens(mt)), s.health.partial) : DASH)}</b> tokens · <b class="num">${val(mt ? withStar(formatUsd(mt.nanoAiu), s.health.partial) : DASH)}</b> USD (est.)</span></div></section>`;
+}
+
+/** Monthly bars over the history window; each bar opens that month (D21). */
+function trend(s: Snapshot, view: ViewOptions): string {
+  const hist: MonthSummary[] = s.history ?? [];
+  if (hist.length === 0) return "";
+  const viewed = s.month?.monthStartMs;
+  const values = hist.map((h) => headlineValue(h.totals, view));
+  const range = view.unit === "cost" ? view.range : undefined;
+  const top = Math.max(0, ...values.map((v) => v ?? 0), range?.max ?? 0, range?.min ?? 0);
+  const scale = top > 0 ? top * 1.08 : 1;
+  const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
+  const fmt = (m: Metric) => (view.unit === "cost" ? formatUsd(m) : formatCount(m));
+
+  const cols = hist.map((h, i) => {
+    const v = values[i];
+    const m = h.totals ? headlineMetric(h.totals, view) : undefined;
+    const text = m ? withStar(fmt(m), s.health.partial) : DASH;
+    const state = range ? rangeState(h.totals ? usd(h.totals.nanoAiu) : undefined, range) : "none";
+    const d = new Date(h.monthStartMs);
+    const label = MONTHS[d.getMonth()]!.slice(0, 3) + (d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : "");
+    const sel = h.monthStartMs === viewed ? " sel" : "";
+    const bar = v !== undefined && v > 0 ? `<span class="fill st-${state}" style="height:${pct(v)}%"></span>` : "";
+    const title = `${monthTitle(h.monthStartMs)}: ${text}${view.unit === "cost" ? " USD (est.)" : " tokens"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
+    return `<a class="col${sel}" href="${escapeHtml(commandHref("copilotUsageMonitor.selectMonth", monthKey(h.monthStartMs)))}" title="${escapeHtml(title)}"><span class="v">${val(text)}</span><span class="track">${bar}</span><span class="m">${escapeHtml(label)}</span></a>`;
+  });
+
+  let band = "";
+  if (range) {
+    const lo = range.min ?? 0;
+    const hi = range.max ?? scale;
+    band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}`)}"></span>`;
+  }
+  const legend = range
+    ? `<span class="lg"><b class="st-under"></b>Under <b class="st-in"></b>In range <b class="st-over"></b>Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range))}</span>`
+    : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : "Switch to USD (est.) to compare against a target."}</span>`;
+  return `<section class="box"><h2>Monthly trend<small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))} · click a month to open it</small></h2><div class="trend"><div class="plot">${band}${cols.join("")}</div></div><div class="scale">${legend}</div></section>`;
+}
+
+function sessionsBox(s: Snapshot, view: ViewOptions): string {
+  const list: SessionSummary[] = s.month?.sessions ?? [];
+  const scope = monthTitle(s.month?.monthStartMs ?? s.dayStartMs);
+  const partial = s.health.partial;
+  if (list.length === 0) {
+    return `<section class="box"><h2>Costliest sessions<small>${escapeHtml(scope)}</small></h2><p class="muted">No per-call records in this month.</p></section>`;
+  }
+  const monthUsd = s.month?.totals ? usd(s.month.totals.nanoAiu) : undefined;
+  const rows = list.map((x) => {
+    const cost = usd(x.nanoAiu);
+    const perCall = cost === undefined ? DASH : money(cost / x.calls);
+    const share = cost !== undefined && monthUsd ? Math.round((100 * cost) / monthUsd) : 0;
+    const flagged = x.growth !== undefined && x.growth >= GROWTH_FLAG;
+    const growth = x.growth === undefined ? DASH : `${x.growth.toFixed(1)}×`;
+    const growthTitle = x.growth === undefined
+      ? "Needs at least 10 calls with logged AI credits"
+      : `Last 5 calls cost ${x.growth.toFixed(1)}× the first 5${flagged ? ": the context grew; a fresh session may be cheaper" : ""}`;
+    const dates = shortDate(x.firstMs) === shortDate(x.lastMs) ? shortDate(x.firstMs) : `${shortDate(x.firstMs)} – ${shortDate(x.lastMs)}`;
+    const model = x.topModel
+      ? `<span class="chipm f-${modelFamily(x.topModel)}" title="${escapeHtml(x.topModel)}">${escapeHtml(x.topModel)}</span>`
+      : `<span class="muted">${DASH}</span>`;
+    return `<tr><td><span class="num" title="${escapeHtml(x.sessionId)}">${escapeHtml(shortId(x.sessionId))}</span>${share > 0 ? `<span class="bar f-other" style="width:${share}%"></span>` : ""}</td><td>${escapeHtml(dates)}</td><td>${model}</td><td class="num">${x.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td><td class="num">${escapeHtml(perCall)}</td><td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${escapeHtml(growth)}${flagged ? " ▲" : ""}</td></tr>`;
+  });
+  const anyFlag = list.some((x) => x.growth !== undefined && x.growth >= GROWTH_FLAG);
+  const tip = anyFlag
+    ? `<p><b>▲</b> Later calls in this session cost ${GROWTH_FLAG}× or more than its first ones: the context kept growing. Starting a fresh session for a new task is usually cheaper.</p>`
+    : "";
+  return `<section class="box"><h2>Costliest sessions<small>${escapeHtml(scope)} · top ${list.length}</small></h2><div class="tablewrap"><table><thead><tr><th>Session</th><th>Dates</th><th>Main model</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Growth</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine">${tip}<p>Bar = share of the month's estimated USD. Growth = cost of the last 5 calls ÷ the first 5.</p></div></section>`;
 }
 
 function healthBox(s: Snapshot): string {
@@ -255,6 +438,7 @@ function healthBox(s: Snapshot): string {
     `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
   return `<section class="box"><h2>Data health<small>read-only · nothing leaves this computer</small></h2><div class="facts">
 ${fact("Sessions this month", s.sessions.length)}
+${fact("Months of history", s.history?.length ?? 1)}
 ${fact("Unreadable logs", h.unreadableFiles, true)}
 ${fact("Sessions without per-call data", h.sessionsWithoutUsage)}
 ${fact("Lines in an unknown format", h.unrecognized, true)}
@@ -274,24 +458,27 @@ function stateNote(h: Health): string {
 }
 
 /** The whole panel document for a snapshot (or the loading state). */
-export function renderPanelHtml(s: Snapshot | undefined, cspSource: string): string {
-  if (!s) return page(`${topBar(undefined)}<p class="muted">Loading…</p>`, cspSource);
+export function renderPanelHtml(s: Snapshot | undefined, cspSource: string, view: ViewOptions = DEFAULT_VIEW): string {
+  if (!s) return page(`${topBar(undefined, view)}<p class="muted">Loading…</p>`, cspSource);
   const badge = s.current
     ? `${shortId(s.current.folderId)} · ${s.current.live ? "live" : "ended"}${s.current.pinned ? " · pinned" : ""}`
     : "none";
-  const body = `${topBar(s)}
+  const body = `${topBar(s, view)}
 ${stateNote(s.health)}
-${kpis(s)}
+${navBar(s, view)}
+${kpis(s, view)}
+${trend(s, view)}
 <div class="cols">
 <div>
-${tilesBox("Today in detail", "8 metrics", s.today, s.health, true)}
+${tilesBox("Today in detail", "9 metrics", s.today, s.health, true)}
 ${tilesBox("Current session", badge, s.current?.totals, s.health, false)}
 </div>
 <div>
-${modelTable(s.today, s.health.partial)}
-${calendar(s)}
+${modelTable(s, view)}
+${calendar(s, view)}
 </div>
 </div>
+${sessionsBox(s, view)}
 ${healthBox(s)}`;
   return page(body, cspSource);
 }

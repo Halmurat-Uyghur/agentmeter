@@ -84,8 +84,30 @@ export interface Snapshot {
   current?: { folderId: string; live: boolean; pinned: boolean; totals?: Totals };
   sessions: { folderId: string; lastMs?: number; live: boolean }[];
   health: Health;
-  /** month-to-date view (D10); absent until the first snapshot with a month window */
+  /** the viewed month (D10; D20): this month by default, or a selected past month */
   month?: MonthView;
+  /** one entry per month in the history window, oldest first, ending with this month (D21) */
+  history?: MonthSummary[];
+}
+
+/** One calendar month of the history window; totals undefined = no record. */
+export interface MonthSummary {
+  monthStartMs: number;
+  totals?: Totals;
+}
+
+/** One session's records inside the viewed month (D24). */
+export interface SessionSummary {
+  sessionId: string;
+  firstMs: number;
+  lastMs: number;
+  calls: number;
+  /** model with the most calls; undefined if none reported */
+  topModel?: string;
+  tokens: Metric;
+  nanoAiu: Metric;
+  /** mean nanoAiu of the last 5 calls ÷ mean of the first 5, by time; needs ≥ 10 calls with AIU */
+  growth?: number;
 }
 
 /** One local day of the month window; totals undefined = no record that day. */
@@ -96,8 +118,21 @@ export interface DayTotals {
 
 export interface MonthView {
   monthStartMs: number;
-  /** day 1 .. today */
+  /** true when the viewed month is the current one */
+  isCurrent: boolean;
+  /** day 1 .. today for this month; every day for a past month */
   days: DayTotals[];
+  /** costliest sessions first (by AIU, then tokens), at most 10 */
+  sessions: SessionSummary[];
   /** undefined iff no record this month */
   totals?: Totals;
 }
+
+/** How figures are shown (D22, D23); from settings, never from the logs. */
+export interface ViewOptions {
+  unit: "tokens" | "cost";
+  /** self-set monthly target in USD; either bound may be absent */
+  range?: { min?: number; max?: number };
+}
+
+export type RangeState = "none" | "under" | "in" | "over";

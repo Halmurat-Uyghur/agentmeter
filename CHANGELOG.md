@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 - 2026-11-05
+
+### Added
+
+- Month picker: read up to 24 months of history (`historyMonths`, default 12) and view any month in the panel; Today and the current session stay live.
+- Tokens / USD (est.) switch for the panel and status bar. USD = logged AIU × $0.01, which matches GitHub's published per-model token prices.
+- Monthly trend chart; click a bar to open that month.
+- Optional personal target range (`monthlyTargetMin` / `monthlyTargetMax`): the status-bar icon shows under / in / over for this month, amber when over.
+- Costliest sessions table for the viewed month, with a ▲ flag when a session's later calls cost 3× or more than its first ones (growing context).
+- Per-model table: estimated USD and USD per call.
+
+### Changed
+
+- The copy rule now allows estimated USD (always labelled "est."); account-statement wording (bill, quota, allowance, remaining, premium) stays banned outside the banner.
+- The panel enables command links for exactly two commands (show month, set unit); it still runs no scripts.
+
 ## 0.1.0 - 2026-11-05
 
 First release.

@@ -66,7 +66,7 @@ function snap(o: Partial<Snapshot> = {}): Snapshot {
     current: { folderId: "3f2a91c0-0000-4000-8000-000000000001", live: true, pinned: false, totals: t },
     sessions: [{ folderId: "3f2a91c0-0000-4000-8000-000000000001", live: true, lastMs: NOW.getTime() }],
     health: health(),
-    month: { monthStartMs: new Date(2026, 10, 1).getTime(), days: days(5, { 3: t, 5: t }), totals: t },
+    month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, { 3: t, 5: t }), sessions: [], totals: t },
     ...o,
   };
 }
@@ -84,7 +84,8 @@ function text(html: string): string {
     .replace(/&amp;/g, "&");
 }
 
-const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|credits?|cost|spend|premium)\b|\$\d|%/i;
+// D22: estimated USD is allowed (labelled "est."); account-statement words stay banned.
+const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
 
 describe("month helpers", () => {
   it("localMonthStart is local midnight on the 1st (across DST)", () => {
@@ -212,7 +213,7 @@ describe("renderPanelHtml", () => {
   });
 
   it("no today and no month render dashes", () => {
-    const html = renderPanelHtml(snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), days: days(5, {}) } }), "x");
+    const html = renderPanelHtml(snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, {}), sessions: [] } }), "x");
     expect(html).toMatch(/<div class="big">—<\/div>/);
     expect(html).toContain("No per-call records dated today.");
     expect(html).not.toMatch(/class="d h[1-4]/);

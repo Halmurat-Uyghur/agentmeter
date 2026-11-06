@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
 import { parseUsageLine } from "./extract";
 import type { Logger } from "./log";
-import { byLocalDay, localDayStart, localMonthStart, UsageStore } from "./store";
+import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, sessionSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
-import type { Health, Snapshot } from "./types";
+import type { Health, MonthView, Snapshot } from "./types";
 
 export interface MonitorOptions {
   root: string;
@@ -19,6 +19,15 @@ export interface MonitorOptions {
   parse?: typeof parseUsageLine;
   log: Logger;
   onSnapshot: (s: Snapshot) => void;
+  /** months of history to read, this month included (D21); default 1 = this month only */
+  historyMonths?: number;
+}
+
+export const MAX_HISTORY_MONTHS = 24;
+
+/** Clamps a history setting to 1..MAX_HISTORY_MONTHS; anything invalid is 1. */
+export function clampHistory(n: unknown): number {
+  return typeof n === "number" && Number.isFinite(n) ? Math.min(MAX_HISTORY_MONTHS, Math.max(1, Math.floor(n))) : 1;
 }
 
 interface FileState {
@@ -57,6 +66,9 @@ export class UsageMonitor {
   private readonly parse: typeof parseUsageLine;
   private readonly log: Logger;
   private readonly onSnapshot: (s: Snapshot) => void;
+  private readonly historyMonths: number;
+  /** month start of the viewed month; undefined = follow the current month */
+  private selectedMonth: number | undefined;
 
   private readonly store = new UsageStore();
   /** eventsPath → state; kept for the life of the monitor, dropped only on ENOENT */
@@ -86,6 +98,7 @@ export class UsageMonitor {
     this.parse = o.parse ?? parseUsageLine;
     this.log = o.log;
     this.onSnapshot = o.onSnapshot;
+    this.historyMonths = clampHistory(o.historyMonths ?? 1);
   }
 
   /**
@@ -107,6 +120,14 @@ export class UsageMonitor {
   /** Pins `folderId` as current (undefined unpins) and refreshes. */
   pin(folderId: string | undefined): void {
     this.pinned = folderId;
+    this.dirty = true;
+    void this.refresh();
+  }
+
+  /** Views the month starting at `monthStartMs` (undefined = the current month) and refreshes.
+   * A month outside the history window, or the current month, follows the current month. */
+  selectMonth(monthStartMs: number | undefined): void {
+    this.selectedMonth = monthStartMs;
     this.dirty = true;
     void this.refresh();
   }
@@ -165,8 +186,8 @@ export class UsageMonitor {
   }
 
   private async rediscover(nowMs: number, dayStartMs: number): Promise<void> {
-    const monthStartMs = localMonthStart(new Date(nowMs));
-    const result = await discover(this.root, monthStartMs, this.isLiveFn, dayStartMs);
+    const windowStartMs = monthStarts(new Date(nowMs), this.historyMonths)[0]!;
+    const result = await discover(this.root, windowStartMs, this.isLiveFn, dayStartMs);
     this.discovered = true;
     this.lastDiscoverAt = nowMs;
     if (!result.ok) {
@@ -298,7 +319,9 @@ export class UsageMonitor {
 
     const monthStart = localMonthStart(new Date(nowMs));
     const inMonth = [...latest].filter(([, ms]) => ms >= monthStart).map(([id]) => id);
-    const ids = new Set<string>([...this.candidates.keys(), ...inMonth]);
+    // Older logs in the history window are read for totals but are not "this month's" sessions.
+    const recent = [...this.candidates.values()].filter((c) => c.mtimeMs >= monthStart).map((c) => c.folderId);
+    const ids = new Set<string>([...recent, ...inMonth]);
     const sessions = [...ids]
       .map((folderId) => {
         const lastMs = latest.get(folderId);
@@ -314,15 +337,9 @@ export class UsageMonitor {
       );
 
     const nowDate = new Date(nowMs);
-    const monthStartMs = localMonthStart(nowDate);
-    const monthTotals = this.store.totals(
-      (r) => r.timestampMs >= monthStartMs && r.timestampMs <= nowMs + DAY_SLACK_MS,
-    );
-    const month = {
-      monthStartMs,
-      days: byLocalDay(this.store, nowDate),
-      ...(monthTotals !== undefined && { totals: monthTotals }),
-    };
+    const starts = monthStarts(nowDate, this.historyMonths);
+    const history = byMonth(this.store, starts);
+    const month = this.monthView(nowDate, starts);
 
     return {
       generatedAtMs: nowMs,
@@ -332,6 +349,35 @@ export class UsageMonitor {
       sessions,
       health,
       month,
+      history,
+    };
+  }
+
+  /** The viewed month: the selected one if it is a past month in the window, else this month. */
+  private monthView(nowDate: Date, starts: number[]): MonthView {
+    const current = starts.at(-1)!;
+    const sel = this.selectedMonth;
+    const past = sel !== undefined && sel !== current && starts.includes(sel) ? sel : undefined;
+    if (past === undefined) {
+      const totals = this.store.totals((r) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS);
+      return {
+        monthStartMs: current,
+        isCurrent: true,
+        days: daysOfMonth(this.store, current, nowDate.getDate(), true),
+        sessions: sessionSummaries(this.store, current, Number.POSITIVE_INFINITY),
+        ...(totals !== undefined && { totals }),
+      };
+    }
+    const first = new Date(past);
+    const end = new Date(first.getFullYear(), first.getMonth() + 1, 1).getTime();
+    const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+    const totals = this.store.totals((r) => r.timestampMs >= past && r.timestampMs < end);
+    return {
+      monthStartMs: past,
+      isCurrent: false,
+      days: daysOfMonth(this.store, past, lastDay, false),
+      sessions: sessionSummaries(this.store, past, end),
+      ...(totals !== undefined && { totals }),
     };
   }
 

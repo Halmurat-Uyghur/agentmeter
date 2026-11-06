@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
-import { renderPanelHtml } from "../core/panelHtml";
-import type { Snapshot } from "../core/types";
+import { DEFAULT_VIEW } from "../core/format";
+import { PANEL_COMMANDS, renderPanelHtml } from "../core/panelHtml";
+import type { Snapshot, ViewOptions } from "../core/types";
 
-/** The details webview: scripts off, no local resources, re-rendered per snapshot. */
+/** The details webview: scripts off, no local resources, command links limited
+ * to PANEL_COMMANDS (month and unit only), re-rendered per snapshot. */
 export class DetailsPanel implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
   private last: Snapshot | undefined;
+  private view: ViewOptions = DEFAULT_VIEW;
 
   show(): void {
     if (this.panel) {
@@ -16,7 +19,7 @@ export class DetailsPanel implements vscode.Disposable {
       "copilotUsageMonitor.details",
       "Copilot Usage (Local)",
       vscode.ViewColumn.Active,
-      { enableScripts: false, enableCommandUris: false, localResourceRoots: [], retainContextWhenHidden: false },
+      { enableScripts: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: [], retainContextWhenHidden: false },
     );
     this.panel.onDidDispose(() => (this.panel = undefined));
     this.render();
@@ -30,14 +33,15 @@ export class DetailsPanel implements vscode.Disposable {
     return this.panel?.title;
   }
 
-  update(s: Snapshot | undefined): void {
+  update(s: Snapshot | undefined, view: ViewOptions = this.view): void {
     this.last = s;
+    this.view = view;
     this.render();
   }
 
   private render(): void {
     if (!this.panel) return;
-    this.panel.webview.html = renderPanelHtml(this.last, this.panel.webview.cspSource);
+    this.panel.webview.html = renderPanelHtml(this.last, this.panel.webview.cspSource, this.view);
   }
 
   dispose(): void {

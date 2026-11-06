@@ -37,7 +37,8 @@ function offences(source: string): string[] {
   return found;
 }
 
-const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|credits?|cost|spend|premium)\b|\$\d|%/i;
+// D22: estimated USD is allowed (labelled "est."); account-statement words stay banned.
+const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
 
 describe("gates", () => {
   beforeAll(() => {
