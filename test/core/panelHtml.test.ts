@@ -173,13 +173,40 @@ describe("renderPanelHtml", () => {
   it("has every section in order", () => {
     const t = text(renderPanelHtml(snap(), "x"));
     const order = ["Copilot Usage", "Local", "Today", "Current session", "November", "AIU (as logged)",
-      "Today in detail", "Current session", "Today by model", "Daily tokens — November 2026", "Data health", "Not covered"];
+      "Daily trend — November 2026", "Today in detail", "Current session", "Today by model", "Daily tokens — November 2026", "Data health", "Not covered"];
     let at = 0;
     for (const s of order) {
       const i = t.indexOf(s, at);
       expect(i, s).toBeGreaterThanOrEqual(0);
       at = i + 1;
     }
+  });
+
+  it("daily trend: one bar per day of the month, future days empty, today marked", () => {
+    const t = totals();
+    const big = totals(undefined, { input: m(6_000_000, 2), output: m(0, 2) });
+    const html = renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, { 2: t, 3: big, 5: t }) } }), "x");
+    const daily = html.slice(html.indexOf("Daily trend"), html.indexOf("</section>", html.indexOf("Daily trend")));
+    expect(daily.match(/class="col[ "]/g)).toHaveLength(30);
+    expect(daily.match(/class="col later"/g)).toHaveLength(25);
+    expect(daily.match(/class="col sel"/g)).toHaveLength(1);
+    expect(daily.match(/class="fill/g)).toHaveLength(3);
+    expect(daily.match(/class="fill peak"/g)).toHaveLength(1);
+    const v = text(daily).replace(/\s+/g, " ");
+    expect(v).toContain("Peak 6.0M on Nov 3");
+    expect(v).toContain("3 of 5 days active");
+    // (1.5M + 6.0M + 1.5M) / 3 active days
+    expect(v).toContain("Avg / active day 3.0M");
+    expect(v).toContain("Nov 1: no usage records");
+    expect(v).not.toMatch(COPY_RE);
+  });
+
+  it("daily trend: USD view and empty month", () => {
+    const cost = text(renderPanelHtml(snap(), "x", { unit: "cost" })).replace(/\s+/g, " ");
+    expect(cost).toContain("Daily trend — November 2026");
+    expect(cost).toContain("Avg / active day $0.040");
+    const empty = text(renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, {}), totals: undefined } }), "x"));
+    expect(empty).toContain("No usage records this month.");
   });
 
   it("calendar: 7 weekday headers, leading blanks, one today, future days", () => {

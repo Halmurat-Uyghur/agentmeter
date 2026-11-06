@@ -12,6 +12,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
   - **Month picker:** step back through up to 24 months of history (12 by default) with ‹ ›, or pick one from a list. Today and the current session stay live while you look at an old month.
   - **Tokens / USD (est.) switch** for every figure.
   - **Monthly trend:** one bar per month. Click a bar to open that month.
+  - **Daily trend:** one bar per day of the viewed month, with a dashed line at the average per active day and the peak day highlighted. Follows the project or tool filter.
   - **Personal target range** (optional): say how much you mean to use per month, for example $20–$60. The status bar icon shows whether this month is under (↓), in (✓) or over (🔥, amber) the range. It never stops Copilot and never pops up.
   - **By project and by tool:** see which repositories and which tools (built-in, or added by MCP servers, plugins and extensions) your usage goes to. Click any row to filter the whole month view, trend and tables to it; click the chip's ✕ to clear. Today and the status bar are never filtered. Long tables show their top 10 rows and fold the rest under "Show N more"; an active filter row always stays visible. Added tools are summarised per server or plugin.
   - **Costliest sessions:** the month's top 10 sessions by estimated USD. A ▲ marks sessions whose last 5 calls cost 3× or more than their first 5, which means the context kept growing and a fresh session would likely be cheaper.
