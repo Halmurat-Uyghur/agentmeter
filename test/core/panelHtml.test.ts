@@ -139,6 +139,19 @@ describe("month helpers", () => {
 });
 
 describe("renderPanelHtml", () => {
+  it("partial reason for over-long lines reads as a sentence (singular and plural)", () => {
+    const one = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 1 }) }), "x"));
+    expect(one).toContain("1 over-long line that may contain usage was skipped.");
+    const many = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 3 }) }), "x"));
+    expect(many).toContain("3 over-long lines that may contain usage were skipped.");
+  });
+
+  it("hides the over-long non-usage row when there are none", () => {
+    const t = text(renderPanelHtml(snap(), "x"));
+    expect(t).not.toContain("Over-long lines skipped (not usage)");
+    expect(t).toContain("Over-long lines skipped (may be usage)");
+  });
+
   it("over-long non-usage lines are listed but not flagged as partial", () => {
     const t = text(renderPanelHtml(snap({ health: health({ overlongOther: 37 }) }), "x"));
     expect(t).toMatch(/Over-long lines skipped \(not usage\)\s+37/);

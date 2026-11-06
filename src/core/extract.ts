@@ -7,17 +7,23 @@ import type { ParseResult, Tokens, UsageRecord } from "./types";
 
 export type LineClass = "usage" | "start" | "activity" | "suspect" | "skip";
 
+// One definition of "what a usage line looks like"; every byte pattern below
+// (prefix, needles, the over-long type check) is derived from these.
 const USAGE_TYPE = "session.usage_record";
-const USAGE_PREFIX = Buffer.from(`{"type":"${USAGE_TYPE}"`);
-const ACTIVITY_PREFIX = Buffer.from(`{"type":"assistant.turn_end"`);
+const TYPE_KEY = `"type":"`;
+const TYPE_PREFIX = Buffer.from(`{${TYPE_KEY}`);
+const typePrefix = (name: string): Buffer => Buffer.from(`{${TYPE_KEY}${name}"`);
+const USAGE_TYPE_BYTES = Buffer.from(USAGE_TYPE);
+const USAGE_PREFIX = typePrefix(USAGE_TYPE);
+const ACTIVITY_PREFIX = typePrefix("assistant.turn_end");
 const START_TYPE = "session.start";
-const START_PREFIX = Buffer.from(`{"type":"${START_TYPE}"`);
+const START_PREFIX = typePrefix(START_TYPE);
 /** session.start lines are < 1 KB in practice; anything larger is not decoded. */
 export const MAX_START_BYTES = 16 * 1024;
 // A real usage event whose keys were reordered or re-spaced. Inside a JSON string
 // value these quotes are escaped as \", so prompt or tool text can never match.
 const SUSPECT_NEEDLES = [
-  Buffer.from(`"type":"${USAGE_TYPE}"`),
+  Buffer.from(`${TYPE_KEY}${USAGE_TYPE}"`),
   Buffer.from(`"type": "${USAGE_TYPE}"`),
 ];
 
@@ -42,16 +48,19 @@ export function classifyLine(
   if (startsWith(buf, start, end, USAGE_PREFIX)) return "usage";
   if (startsWith(buf, start, end, ACTIVITY_PREFIX)) return "activity";
   if (startsWith(buf, start, end, START_PREFIX)) return end - start <= MAX_START_BYTES ? "start" : "skip";
-  // subarray is a view (no copy, no decode) so the search stops at `end`.
-  const line = buf.subarray(start, end);
-  for (const needle of SUSPECT_NEEDLES) {
-    if (line.indexOf(needle) !== -1) return "suspect";
-  }
-  return "skip";
+  return hasUsageNeedle(buf, start, end) ? "suspect" : "skip";
 }
 
-const TYPE_PREFIX = Buffer.from(`{"type":"`);
-const USAGE_TYPE_BYTES = Buffer.from(USAGE_TYPE);
+/**
+ * True if the usage type appears as a `"type"` value anywhere in buf[start, end)
+ * (keys reordered, re-spaced, or nested). Raw byte search, no decoding.
+ */
+export function hasUsageNeedle(buf: Buffer, start: number, end: number): boolean {
+  // subarray is a view (no copy, no decode) so the search stops at `end`.
+  const line = buf.subarray(start, end);
+  return SUSPECT_NEEDLES.some((needle) => line.indexOf(needle) !== -1);
+}
+
 /** How far past `{"type":"` to look for the closing quote of the type name. */
 const MAX_TYPE_NAME_BYTES = 128;
 /** Bytes of a line's start that isKnownNonUsage needs to see. */

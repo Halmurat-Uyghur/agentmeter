@@ -241,7 +241,9 @@ export function parseUsageLine(line: string, folderId: string): ParseResult;
 export type ReadErrorCode = "ENOENT" | "EACCES" | "EPERM" | "EIO" | "OTHER";
 export interface TailResult {
   usageLines: string[];   // decoded, complete lines classified "usage"
-  activity: number; suspect: number; overlong: number;
+  activity: number; suspect: number;
+  overlong: number;       // over-long lines that may be usage (feeds partial)
+  overlongOther: number;  // over-long lines whose type shows they are not usage (informational)
   reset: boolean; error?: ReadErrorCode;
 }
 export class LineTailer {
@@ -250,7 +252,7 @@ export class LineTailer {
   readonly carryLength: number;   // for tests
 }
 ```
-Cursor = `{dev, ino, offset, tail: Buffer}` where `tail` = up to 64 bytes ending at `offset`. On each `read()`: `open`, then `handle.stat()` (never `stat(path)`); **reset** (offset 0, clear carry and skip state) when `dev`/`ino` changed, `size < offset`, or the bytes at `[offset - tail.length, offset)` differ from `tail`. Read to the size seen by that `stat` in `chunkBytes` chunks; for each complete line call `classifyLine`; decode only `usage` lines (strip a trailing `\r`). When the carry would exceed `maxCarryBytes`, drop it, increment `overlong` **at that moment**, and skip until the next `\n`. Errors map to `ReadErrorCode`; `read()` never throws.
+Cursor = `{dev, ino, offset, tail: Buffer}` where `tail` = up to 64 bytes ending at `offset`. On each `read()`: `open`, then `handle.stat()` (never `stat(path)`); **reset** (offset 0, clear carry and skip state) when `dev`/`ino` changed, `size < offset`, or the bytes at `[offset - tail.length, offset)` differ from `tail`. Read to the size seen by that `stat` in `chunkBytes` chunks; for each complete line call `classifyLine`; decode only `usage` lines (strip a trailing `\r`). When the carry would exceed `maxCarryBytes`, drop it, count the line **at that moment**, and skip until the next `\n`. A skipped line counts as `overlongOther` only when its first bytes provably name a non-usage type (`isKnownNonUsage`) and, when the whole line is in memory (it arrived in one chunk), it contains no usage-type needle (the same search `classifyLine` uses for `suspect`); otherwise it counts as `overlong`. A line streamed across chunks is judged by its head only, so a usage type nested past the head can't be seen there. Errors map to `ReadErrorCode`; `read()` never throws.
 
 - [ ] **Step 1: Tests** (lines built from fixtures):
   - `complete lines only`: usage line without `\n` → none; append `\n` → one; a second `read()` with no change → none, `reset false`.
@@ -359,8 +361,8 @@ Folder names must match `/^[0-9a-f-]{8,64}$/i` (others skipped). `events.jsonl` 
 export type HealthState = "ok" | "no-data" | "no-dir" | "permission" | "format-changed";
 export interface Health {
   state: HealthState; rootSource: "setting" | "env" | "default";
-  partial: boolean;                 // unreadableFiles + malformed + overlong > 0
-  unrecognized: number; malformed: number; overlong: number; unreadableFiles: number;
+  partial: boolean;                 // unreadableFiles + malformed + overlong > 0 (overlongOther never sets it)
+  unrecognized: number; malformed: number; overlong: number; overlongOther: number; unreadableFiles: number;
   sessionsWithoutUsage: number;
 }
 export interface Snapshot {

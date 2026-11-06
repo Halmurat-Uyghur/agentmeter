@@ -292,7 +292,18 @@ describe("tooltipMarkdown", () => {
     );
     expect(md).toContain("2 log file(s) could not be read");
     expect(md).toContain("3 malformed line(s)");
-    expect(md).toContain("4 over-long line(s)");
+    expect(md).toContain("4 over-long line(s) that may contain usage were skipped.");
+  });
+
+  it("over-long non-usage lines are listed under data health without marking partial", () => {
+    const md = tooltipMarkdown(snap({ health: health({ overlongOther: 5 }) }));
+    expect(md).toContain("Data health: 5 over-long line(s) that are not usage were skipped; totals are unaffected.");
+    expect(md).not.toContain("may be incomplete");
+  });
+
+  it("over-long non-usage lines are not mentioned when there are none", () => {
+    const md = tooltipMarkdown(snap({ health: health({ partial: true, malformed: 1 }) }));
+    expect(md).not.toContain("are not usage were skipped");
   });
 
   it("partial omits reasons with a zero count", () => {

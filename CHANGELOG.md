@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Fixed
 
-- Log lines over 1 MiB whose type shows they are not usage records (large tool output, long prompts) no longer mark totals as "Partial data". They are listed under Data health as "Over-long lines skipped (not usage)". Only over-long lines that could be usage records still set the `*`.
+- Log lines over 1 MiB whose type shows they are not usage records (large tool output, long prompts) no longer mark totals as "Partial data". They are listed under Data health as "Over-long lines skipped (not usage)" and noted in the status bar tooltip. Only over-long lines that could be usage records (including ones with a usage record nested inside) still set the `*`.
 
 ## 0.3.1 - 2026-11-05
 
