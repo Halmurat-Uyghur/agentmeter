@@ -129,6 +129,11 @@ a.rowlink:hover { color: var(--accent); border-bottom-color: var(--accent); }
 tr.on td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 .tag { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10.5px; border: 1px solid var(--line); color: var(--muted); }
 .tag.add { border-color: var(--c-other); color: var(--c-other); }
+details.more { margin-top: 6px; }
+details.more > summary { cursor: pointer; color: var(--accent); font-size: 12px; padding: 4px 0; list-style: none; }
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary::before { content: "▸ "; }
+details.more[open] > summary::before { content: "▾ "; }
 
 @media (max-width: 1100px) { .cols { grid-template-columns: minmax(0, 1fr); } .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .kpis, .tiles { grid-template-columns: minmax(0, 1fr); } }

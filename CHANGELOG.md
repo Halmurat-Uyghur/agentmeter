@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.3.1 - 2026-11-05
+
+### Changed
+
+- Project, tool and model tables show their top 10 rows and fold the rest under a script-free "Show N more"; an active filter row always stays visible.
+- The added-tools line is summarised per server or plugin (for example `github-mcp-server (14 tools, 30 uses)`) instead of listing every tool.
+
 ## 0.3.0 - 2026-11-05
 
 ### Added

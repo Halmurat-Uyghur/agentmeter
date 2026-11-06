@@ -34,6 +34,34 @@ const MONTHS = [
 /** Commands the panel may link to; the webview allows exactly these (D20). */
 export const PANEL_COMMANDS = ["copilotUsageMonitor.selectMonth", "copilotUsageMonitor.setUnit", "copilotUsageMonitor.setFilter"] as const;
 
+/** Rows shown before a table folds the rest into "Show N more" (D27). */
+export const TABLE_LIMIT = 10;
+
+/**
+ * A table whose first TABLE_LIMIT rows show; the rest fold into a native
+ * <details> (no script). Rows marked `keep` (an active filter) always show,
+ * in their sorted place. Rows must already be sorted.
+ */
+function foldedTable(head: string, rows: { html: string; keep?: boolean }[], limit = TABLE_LIMIT): string {
+  const shown: string[] = [];
+  const rest: string[] = [];
+  rows.forEach((r, i) => (i < limit || r.keep ? shown : rest).push(r.html));
+  const table = (body: string[]) => `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body.join("")}</tbody></table></div>`;
+  if (rest.length === 0) return table(shown);
+  return `${table(shown)}<details class="more"><summary>Show ${rest.length} more</summary>${table(rest)}</details>`;
+}
+
+/** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
+ * "mcp__server__tool", else the part before the first "-" or "_". */
+export function toolGroup(name: string): string {
+  const slash = name.indexOf("/");
+  if (slash > 0) return name.slice(0, slash);
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(name);
+  if (mcp) return mcp[1]!;
+  const m = /^([A-Za-z0-9.]+)[-_]/.exec(name);
+  return m ? m[1]! : name;
+}
+
 /** Sessions whose late calls cost this many times their early ones are flagged (D24). */
 export const GROWTH_FLAG = 3;
 
@@ -330,7 +358,7 @@ function modelTable(s: Snapshot, view: ViewOptions): string {
     });
   const empty = pastMonth ? `No per-call records in ${monthTitle(s.month!.monthStartMs)}.` : "No per-call records dated today.";
   const body = rows.length
-    ? `<div class="tablewrap"><table><thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Calls</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`
+    ? foldedTable("<th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Tokens</th><th>USD (est.)</th><th>Per call</th><th>Calls</th>", rows.map((html) => ({ html })))
     : `<p class="muted">${escapeHtml(empty)}</p>`;
   return `<section class="box"><h2>${escapeHtml(scope)} by model<small>${plural(models.length, "model")}</small></h2>${body}<div class="fine">Bar = share of ${pastMonth ? "the month's" : "today's"} ${unitWord(view)}. Per call = estimated USD per model call. "—" means the log did not report the value; it is never shown as 0.</div></section>`;
 }
@@ -429,14 +457,15 @@ function projectsBox(s: Snapshot, view: ViewOptions): string {
   }
   const whole = list.reduce((a, g) => a + (view.unit === "cost" ? g.nanoAiu.sum : g.tokens.sum), 0);
   const rows = list.map((g) => {
+    const keep = g.name === active;
     const pct = share(view.unit === "cost" ? g.nanoAiu : g.tokens, whole);
     const on = g.name === active;
     const href = filterHref("project", on ? "" : g.name);
     const name = g.name === NO_PROJECT ? `<span class="muted">${escapeHtml(g.name)}</span>` : escapeHtml(g.name);
-    return `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>`;
+    return { keep, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>` };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
-  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · click to filter</small></h2><div class="tablewrap"><table><thead><tr><th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine">Project = the session's GitHub repository, else its folder name; full paths are never read.${escapeHtml(note)}</div></section>`;
+  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name; full paths are never read.${escapeHtml(note)}</div></section>`;
 }
 
 /** Per-tool table for the viewed month; each row filters to calls that used that tool (D26). */
@@ -453,13 +482,25 @@ function toolsBox(s: Snapshot, view: ViewOptions): string {
     const on = t.name === active;
     const href = filterHref("tool", on ? "" : t.name);
     const kind = t.builtIn ? `<span class="tag">built-in</span>` : `<span class="tag add">added</span>`;
-    return `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a></td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td></tr>`;
+    return { keep: on, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a></td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td></tr>` };
   });
-  const addedNote = added.length
-    ? `${plural(added.length, "added tool")} (MCP servers, plugins, extensions): ${added.map((t) => t.name).join(", ")}.`
-    : "Only built-in tools were used.";
+  let addedNote = "Only built-in tools were used.";
+  if (added.length) {
+    const groups = new Map<string, { tools: number; uses: number; nano: number }>();
+    for (const t of added) {
+      const g = groups.get(toolGroup(t.name)) ?? { tools: 0, uses: 0, nano: 0 };
+      g.tools++;
+      g.uses += t.uses;
+      g.nano += t.nanoAiu.sum;
+      groups.set(toolGroup(t.name), g);
+    }
+    const sorted = [...groups].sort((a, b) => b[1].nano - a[1].nano || b[1].uses - a[1].uses || a[0].localeCompare(b[0]));
+    const shown = sorted.slice(0, TABLE_LIMIT).map(([name, g]) => `${name} (${plural(g.tools, "tool")}, ${plural(g.uses, "use")})`);
+    const more = sorted.length > TABLE_LIMIT ? ` and ${sorted.length - TABLE_LIMIT} more` : "";
+    addedNote = `${plural(added.length, "added tool")} from ${plural(sorted.length, "server or plugin", "servers or plugins")}: ${shown.join(", ")}${more}.`;
+  }
   const note = s.filter?.project ? ` Only project ${s.filter.project}.` : "";
-  return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · click to filter</small></h2><div class="tablewrap"><table><thead><tr><th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th></tr></thead><tbody>${rows.join("")}</tbody></table></div><div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
+  return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · ${plural(list.length, "tool")} · click to filter</small></h2>${foldedTable("<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
 }
 
 function sessionsBox(s: Snapshot, view: ViewOptions): string {

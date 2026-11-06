@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { classifyLine, MAX_START_BYTES, parseStartLine, parseUsageLine } from "../../src/core/extract";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
-import { PANEL_COMMANDS, renderPanelHtml } from "../../src/core/panelHtml";
+import { PANEL_COMMANDS, renderPanelHtml, toolGroup } from "../../src/core/panelHtml";
 import { byMonth, NO_PROJECT, projectSummaries, toolSummaries, UsageStore } from "../../src/core/store";
 import { LineTailer } from "../../src/core/tailer";
 import type { Snapshot, UsageRecord } from "../../src/core/types";
@@ -233,5 +233,68 @@ describe("panel: project and tool tables", () => {
     expect(html.match(/<tr class="on">/g)).toHaveLength(2);
     expect(html).toContain("· filtered ·");
     expect(html).toContain("Today and the status bar are not filtered.");
+  });
+});
+
+describe("panel: long lists fold (D27)", () => {
+  const m = (sum: number, reported: number) => ({ sum, reported, missing: 0 });
+  const tool = (name: string, i: number) => ({ name, builtIn: false, uses: 1, calls: 1, tokens: m(100 - i, 1), nanoAiu: m((100 - i) * 1e9, 1) });
+  const snap = (filter?: { tool?: string }): Snapshot => ({
+    generatedAtMs: 0,
+    dayStartMs: new Date(2026, 10, 5).getTime(),
+    sessions: [],
+    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
+    month: {
+      monthStartMs: new Date(2026, 10, 1).getTime(),
+      isCurrent: true,
+      days: [],
+      sessions: [],
+      projects: Array.from({ length: 4 }, (_, i) => ({ name: `p${i}`, sessions: 1, calls: 1, tokens: m(1, 1), nanoAiu: m(1, 1) })),
+      tools: [
+        ...Array.from({ length: 14 }, (_, i) => tool(`github-mcp-server/t${i}`, i)),
+        ...Array.from({ length: 11 }, (_, i) => tool(`mcp__jira__t${i}`, 20 + i)),
+      ],
+    },
+    ...(filter && { filter }),
+  });
+
+  it("shows 10 rows, folds the rest into a script-free details", () => {
+    const html = renderPanelHtml(snap(), "x");
+    const tools = html.slice(html.indexOf("By tool"), html.indexOf("Costliest sessions"));
+    const [visible, folded] = tools.split('<details class="more">');
+    expect(visible!.match(/<tr>/g)!.length - 1).toBe(10); // minus the header row
+    expect(folded).toContain("<summary>Show 15 more</summary>");
+    expect(folded!.match(/<tr>/g)!.length - 1).toBe(15);
+    expect(html).not.toMatch(/<script/i);
+    // short lists do not fold
+    const projects = html.slice(html.indexOf("By project"), html.indexOf("By tool"));
+    expect(projects).not.toContain("<details");
+  });
+
+  it("an active filter row beyond the top 10 stays visible", () => {
+    const html = renderPanelHtml(snap({ tool: "mcp__jira__t9" }), "x");
+    const tools = html.slice(html.indexOf("By tool"), html.indexOf("Costliest sessions"));
+    const [visible, folded] = tools.split('<details class="more">');
+    expect(visible).toContain("mcp__jira__t9");
+    expect(visible).toContain('<tr class="on">');
+    expect(folded).toContain("<summary>Show 14 more</summary>");
+    expect(folded).not.toContain("mcp__jira__t9");
+  });
+
+  it("added tools are summarised per server or plugin", () => {
+    const html = renderPanelHtml(snap(), "x");
+    expect(html).toContain("25 added tools from 2 servers or plugins: github-mcp-server (14 tools, 14 uses), jira (11 tools, 11 uses).");
+  });
+});
+
+describe("toolGroup", () => {
+  it.each([
+    ["github-mcp-server/get_issue", "github-mcp-server"],
+    ["mcp__jira__create_issue", "jira"],
+    ["playwright-browser_click", "playwright"],
+    ["sentry_list_issues", "sentry"],
+    ["bash", "bash"],
+  ])("%s → %s", (name, group) => {
+    expect(toolGroup(name)).toBe(group);
   });
 });

@@ -13,7 +13,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
   - **Tokens / USD (est.) switch** for every figure.
   - **Monthly trend:** one bar per month. Click a bar to open that month.
   - **Personal target range** (optional): say how much you mean to use per month, for example $20–$60. The status bar icon shows whether this month is under (↓), in (✓) or over (🔥, amber) the range. It never stops Copilot and never pops up.
-  - **By project and by tool:** see which repositories and which tools (built-in, or added by MCP servers, plugins and extensions) your usage goes to. Click any row to filter the whole month view, trend and tables to it; click the chip's ✕ to clear. Today and the status bar are never filtered.
+  - **By project and by tool:** see which repositories and which tools (built-in, or added by MCP servers, plugins and extensions) your usage goes to. Click any row to filter the whole month view, trend and tables to it; click the chip's ✕ to clear. Today and the status bar are never filtered. Long tables show their top 10 rows and fold the rest under "Show N more"; an active filter row always stays visible. Added tools are summarised per server or plugin.
   - **Costliest sessions:** the month's top 10 sessions by estimated USD. A ▲ marks sessions whose last 5 calls cost 3× or more than their first 5, which means the context kept growing and a fresh session would likely be cheaper.
   - Per-metric tiles: input, output, cache read, cache write, reasoning, model time, AIU (as logged), USD (est.) and calls.
   - A per-model table with estimated USD per call, and a month calendar of daily tokens or USD.
@@ -49,7 +49,7 @@ The extension is not on the Marketplace yet. Build a `.vsix` and install it:
 npm ci
 npm run build
 npm run package
-code --install-extension copilot-usage-monitor-0.3.0.vsix
+code --install-extension copilot-usage-monitor-0.3.1.vsix
 ```
 
 Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
