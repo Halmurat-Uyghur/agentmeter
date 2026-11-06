@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendFile,
   chmod,
@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LineTailer } from "../../src/core/tailer";
-import { jsonl, otherEvent, usageEvent } from "../fixtures/build";
+import { CANARY, jsonl, otherEvent, shutdownEvent, usageEvent } from "../fixtures/build";
 
 const TS = "2026-11-05T14:30:00.000Z";
 
@@ -63,6 +63,8 @@ describe("LineTailer", () => {
     expect(r).toEqual({
       usageLines: [],
       startLines: [],
+      shutdownLines: [],
+      shutdownOversize: 0,
       activity: 0,
       suspect: 0,
       overlong: 0,
@@ -336,5 +338,41 @@ describe("LineTailer", () => {
     await writeFile(file, lines.map((l) => l + "\n").join(""));
     const r = await t.read();
     expect(r.usageLines).toEqual(lines);
+  });
+
+  it("shutdown lines are delivered only with decodeShutdown (CRLF stripped)", async () => {
+    const sd = JSON.stringify(shutdownEvent({ timestamp: TS }));
+    await writeFile(file, usage(1) + "\n" + sd + "\r\n");
+    const toStr = vi.spyOn(Buffer.prototype, "toString");
+    const off = await new LineTailer(file).read();
+    const offDecodes = toStr.mock.calls.length;
+    toStr.mockRestore();
+    expect(off.shutdownLines).toEqual([]);
+    expect(off.shutdownOversize).toBe(0);
+    expect(off.suspect).toBe(0);
+    expect(offDecodes).toBe(1); // the usage line only
+    const on = await new LineTailer(file, { decodeShutdown: true }).read();
+    expect(on.shutdownLines).toEqual([sd]);
+    expect(on.usageLines).toEqual([usage(1)]);
+  });
+
+  it("a reordered shutdown line is suspect only when shutdown lines are read", async () => {
+    await writeFile(file, '{"id":"x","type":"session.shutdown","data":{}}\n');
+    expect((await new LineTailer(file).read()).suspect).toBe(0);
+    expect((await new LineTailer(file, { decodeShutdown: true }).read()).suspect).toBe(1);
+  });
+
+  it("a shutdown line over MAX_SHUTDOWN_BYTES is counted, not decoded", async () => {
+    const big = JSON.stringify(shutdownEvent({ timestamp: TS })).replace('"routine"', `"${CANARY.repeat(4000)}"`);
+    expect(big.length).toBeGreaterThan(64 * 1024);
+    await writeFile(file, big + "\n" + usage(1) + "\n");
+    const toStr = vi.spyOn(Buffer.prototype, "toString");
+    const r = await new LineTailer(file, { decodeShutdown: true }).read();
+    const decodes = toStr.mock.calls.length;
+    toStr.mockRestore();
+    expect(r.shutdownOversize).toBe(1);
+    expect(r.shutdownLines).toEqual([]);
+    expect(r.overlong + r.overlongOther).toBe(0);
+    expect(decodes).toBe(1);
   });
 });

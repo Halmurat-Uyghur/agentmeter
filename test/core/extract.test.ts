@@ -40,6 +40,7 @@ describe("parseUsageLine", () => {
     expect(record(parseUsageLine(line(), "f"))).toStrictEqual({
       key: "u-1",
       keySource: "usageId",
+      kind: "call",
       sessionId: SRC,
       folderId: "f",
       timestampMs: Date.parse(TS),
@@ -189,6 +190,9 @@ describe("parseUsageLine", () => {
     ["a b", false],
     ["<img>", false],
     ["a".repeat(101), false],
+    ["__proto__", false],
+    ["constructor", false],
+    ["prototype", false],
   ])("model id allowlist: %s", (model, kept) => {
     const r = record(parseUsageLine(line({ model }), "f"));
     if (kept) expect(r.model).toBe(model);
@@ -196,6 +200,25 @@ describe("parseUsageLine", () => {
       expect(r.model).toBeUndefined();
       expect("model" in r).toBe(false);
     }
+  });
+});
+
+describe("prototype keys (D28)", () => {
+  it("tool names __proto__ / constructor / prototype are dropped; tools has no prototype", () => {
+    const l = lineWith((e) => {
+      e.data.usage.toolCounts = JSON.parse('{"__proto__":3,"constructor":2,"prototype":4,"bash":1}');
+    });
+    const r = record(parseUsageLine(l, "f"));
+    expect(Object.keys(r.tools!)).toStrictEqual(["bash"]);
+    expect(Object.getPrototypeOf(r.tools!)).toBeNull();
+    expect(({} as Plain).records).toBeUndefined();
+  });
+
+  it("a __proto__ model line parses without touching Object.prototype", () => {
+    const l = '{"type":"session.usage_record","id":"e","timestamp":"' + TS + '","data":{"usage":{"model":"__proto__","inputTokens":1,"outputTokens":1}}}';
+    const r = record(parseUsageLine(l, "f"));
+    expect(r.model).toBeUndefined();
+    expect(({} as Plain).records).toBeUndefined();
   });
 });
 
@@ -260,5 +283,18 @@ describe("classifyLine", () => {
     expect(classifyLine(buf, 0, buf.length - 1)).toBe("skip");
     expect(toStr).toHaveBeenCalledTimes(0);
     expect(decode).toHaveBeenCalledTimes(0);
+  });
+});
+
+describe("sourceSessionId validation (review 1)", () => {
+  it.each(["not a session id", "../../etc", "__proto__", "a".repeat(65), "short", "0000aaaa-0000-4000-8000-00000000000g"])(
+    "an id that is not shaped like a session folder (%s) falls back to the folder",
+    (bad) => {
+      expect(record(parseUsageLine(line({ sourceSessionId: bad }), "folder-1")).sessionId).toBe("folder-1");
+    },
+  );
+
+  it("a well-formed id is kept", () => {
+    expect(record(parseUsageLine(line({ sourceSessionId: SRC }), "folder-1")).sessionId).toBe(SRC);
   });
 });

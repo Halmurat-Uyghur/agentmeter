@@ -1,9 +1,18 @@
 // Incremental reader for one append-only events.jsonl file. Each read() picks
 // up where the last one stopped, gates every complete line through
-// classifyLine on raw bytes, and decodes only the lines it calls "usage".
+// classifyLine on raw bytes, and decodes only the lines it calls "usage"
+// (plus bounded "start" and "shutdown" lines when asked to).
 // Truncation, rotation and in-place rewrites reset the cursor to offset 0.
 import * as fs from "node:fs";
-import { classifyLine, hasUsageNeedle, isKnownNonUsage, TYPE_HEAD_BYTES } from "./extract";
+import {
+  classifyLine,
+  hasShutdownNeedle,
+  hasUsageNeedle,
+  isKnownNonUsage,
+  isShutdownHead,
+  MAX_SHUTDOWN_BYTES,
+  TYPE_HEAD_BYTES,
+} from "./extract";
 
 export type ReadErrorCode = "ENOENT" | "EACCES" | "EPERM" | "EIO" | "OTHER";
 
@@ -12,6 +21,10 @@ export interface TailResult {
   usageLines: string[];
   /** decoded session.start lines (only when `decodeStart`) */
   startLines: string[];
+  /** decoded session.shutdown lines of at most MAX_SHUTDOWN_BYTES (only when `decodeShutdown`) */
+  shutdownLines: string[];
+  /** session.shutdown lines too long to decode (only when `decodeShutdown`); totals may be short */
+  shutdownOversize: number;
   activity: number;
   suspect: number;
   /** lines over the size limit that may have been usage records (totals may be short) */
@@ -27,6 +40,8 @@ export interface TailerOptions {
   chunkBytes?: number;
   /** decode session.start lines for the project label (D25); default false */
   decodeStart?: boolean;
+  /** decode session.shutdown lines for session totals (D29); default false = never decoded */
+  decodeShutdown?: boolean;
 }
 
 interface Cursor {
@@ -61,6 +76,7 @@ export class LineTailer {
   /** inside an over-long line: discard bytes until the next \n */
   private skipping = false;
   private readonly decodeStart: boolean;
+  private readonly decodeShutdown: boolean;
 
   constructor(
     private readonly path: string,
@@ -69,6 +85,7 @@ export class LineTailer {
     this.maxCarryBytes = Math.max(1, opts.maxCarryBytes ?? 1_048_576);
     this.chunkBytes = Math.max(1, opts.chunkBytes ?? 262_144);
     this.decodeStart = opts.decodeStart === true;
+    this.decodeShutdown = opts.decodeShutdown === true;
   }
 
   get carryLength(): number {
@@ -79,6 +96,8 @@ export class LineTailer {
     const result: TailResult = {
       usageLines: [],
       startLines: [],
+      shutdownLines: [],
+      shutdownOversize: 0,
       activity: 0,
       suspect: 0,
       overlong: 0,
@@ -194,7 +213,8 @@ export class LineTailer {
 
   /** Counts a skipped over-long line by what its first bytes show it to be. */
   private countOverlong(buf: Buffer, start: number, end: number, out: TailResult): void {
-    if (isKnownNonUsage(buf, start, end)) out.overlongOther++;
+    if (this.decodeShutdown && isShutdownHead(buf, start, end)) out.shutdownOversize++;
+    else if (isKnownNonUsage(buf, start, end)) out.overlongOther++;
     else out.overlong++;
   }
 
@@ -205,6 +225,7 @@ export class LineTailer {
       // The whole line is in memory here, so also search it like classifyLine
       // does: a usage type nested deeper in the line makes it possibly-usage.
       if (hasUsageNeedle(buf, start, end)) out.overlong++;
+      else if (this.decodeShutdown && hasShutdownNeedle(buf, start, end)) out.shutdownOversize++;
       else this.countOverlong(buf, start, end, out);
       return;
     }
@@ -220,11 +241,23 @@ export class LineTailer {
         out.startLines.push(buf.toString("utf8", start, stop));
         break;
       }
+      case "shutdown": {
+        if (!this.decodeShutdown) break;
+        if (end - start > MAX_SHUTDOWN_BYTES) {
+          out.shutdownOversize++;
+          break;
+        }
+        const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
+        out.shutdownLines.push(buf.toString("utf8", start, stop));
+        break;
+      }
       case "activity":
         out.activity++;
         break;
       case "suspect":
-        out.suspect++;
+        // With session totals off, a line that only looks like a moved shutdown
+        // type is skipped, as it was before v0.4.
+        if (this.decodeShutdown || hasUsageNeedle(buf, start, end)) out.suspect++;
         break;
       case "skip":
         break;

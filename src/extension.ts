@@ -1,21 +1,25 @@
 // VS Code wiring: resolve the Copilot folder, run the monitor on a 500 ms
-// poll, and show snapshots in the status bar and the details panel. Reads
+// poll, and show snapshots in the status bar, the details panel and the side bar. Reads
 // local files only; nothing is written or persisted. The one network call is
 // the opt-in exchange rate (src/vscode/exchangeRate.ts), made only when a
 // non-USD currency is chosen.
 import * as os from "node:os";
+import { posix } from "node:path";
 import * as vscode from "vscode";
 import { resolveCopilotRoot } from "./core/config";
 import { Logger } from "./core/log";
 import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
-import { cleanRange, money } from "./core/format";
+import { cleanRange, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
-import { monthKey } from "./core/panelHtml";
+import { callsPhrase } from "./core/panel/shared";
+import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
+import { sidebarRows } from "./core/sidebarModel";
 import { nextLocalMidnight } from "./core/store";
 import type { Currency, Filter, Snapshot, ViewOptions } from "./core/types";
 import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
+import { SummaryView } from "./vscode/sidebar";
 import { StatusBar } from "./vscode/statusBar";
 
 const POLL_MS = 500;
@@ -29,13 +33,15 @@ function readCurrency(): string {
   return cleanCurrencyCode(vscode.workspace.getConfiguration(SECTION).get<unknown>("currency"));
 }
 
-/** Targets are entered in the chosen currency and held in USD; with no rate yet they are left out. */
+/** Targets are entered in the chosen currency and held in USD; with no rate yet they are left out.
+ * Also sets the display currency every cost formatter uses. */
 function readView(rate: Currency | undefined): ViewOptions {
   const c = vscode.workspace.getConfiguration(SECTION);
   const unit = c.get<string>("display") === "cost" ? "cost" : "tokens";
   const code = readCurrency();
   const cur = code !== DEFAULT_CURRENCY && rate?.code === code ? rate : undefined;
   const pending = code !== DEFAULT_CURRENCY && !cur ? code : undefined;
+  setDisplayCurrency(cur);
   const raw = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
   const range = pending ? undefined : rangeToUsd(raw, cur);
   return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }) };
@@ -45,9 +51,19 @@ function readProjects(): boolean {
   return vscode.workspace.getConfiguration(SECTION).get<boolean>("projectNames") !== false;
 }
 
+/** Session totals from session.shutdown lines (D29); on unless set to false. */
+function readTotals(): boolean {
+  return vscode.workspace.getConfiguration(SECTION).get<boolean>("sessionTotals") !== false;
+}
+
 /** Filter values come from the panel or a quick pick; cap and type-check them. */
 function filterValue(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 && v.length <= 200 ? v : undefined;
+}
+
+/** Basenames of the open workspace folders' paths (not their display names), in order. */
+function readFolders(): string[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((f) => posix.basename(f.uri.path)).filter((n) => n.length > 0);
 }
 
 function readHistory(): number {
@@ -59,7 +75,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const log = new Logger(sink);
   const status = new StatusBar("copilotUsageMonitor.showDetails");
   const panel = new DetailsPanel();
-  context.subscriptions.push(channel, status, panel);
+  const sidebar = new SummaryView();
+  /** basenames of the open workspace folders, for the side bar's "This workspace" group */
+  let folders = readFolders();
+  context.subscriptions.push(channel, status, panel, sidebar);
 
   let snapshot: Snapshot | undefined;
   let monitor: UsageMonitor | undefined;
@@ -73,6 +92,7 @@ export function activate(context: vscode.ExtensionContext): void {
   /** viewed month start, kept across monitor restarts; undefined = current */
   let selected: number | undefined;
   let projectsOn = readProjects();
+  let totalsOn = readTotals();
   /** active filter, kept across monitor restarts (D26) */
   let filter: Filter = {};
 
@@ -85,11 +105,13 @@ export function activate(context: vscode.ExtensionContext): void {
     snapshot = s;
     status.update(s, view);
     panel.update(s, view);
+    sidebar.update(s, view, folders);
   };
 
   const render = () => {
     status.update(snapshot, view);
     panel.update(snapshot, view);
+    sidebar.update(snapshot, view, folders);
   };
 
   /** "current", "YYYY-MM" or "pick"; anything else is ignored. */
@@ -102,8 +124,8 @@ export function activate(context: vscode.ExtensionContext): void {
       type Item = vscode.QuickPickItem & { key: string };
       const items: Item[] = months.map((h, i) => {
         const d = new Date(h.monthStartMs);
-        const est = h.totals && h.totals.nanoAiu.reported > 0 ? `${money(h.totals.nanoAiu.sum / 1e11, view.currency)} est.` : "no per-call records";
-        const calls = h.totals ? `${h.totals.records} calls` : "";
+        const est = h.totals && h.totals.nanoAiu.reported > 0 ? `${money(h.totals.nanoAiu.sum / 1e11)} est.` : "no per-call records";
+        const calls = h.totals ? callsPhrase(h.totals.calls, h.totals.callsMissing) : "";
         return {
           label: `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`,
           description: [i === 0 ? "this month" : "", calls, est].filter(Boolean).join(" · "),
@@ -125,15 +147,16 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.show();
   };
 
-  /** ("project" | "tool", value); an empty value clears that filter; no args opens a picker. */
-  const setFilter = async (kind?: unknown, value?: unknown) => {
+  /** ("project" | "tool", value, section?); an empty value clears that filter; no args opens a
+   * picker. A valid section id (the side bar's project rows) also switches the panel to it. */
+  const setFilter = async (kind?: unknown, value?: unknown, section?: unknown) => {
     const m = monitor;
     if (!m) return;
     if (kind === undefined) {
       type Item = vscode.QuickPickItem & { filterKind?: "project" | "tool"; value?: string };
       const month = snapshot?.month;
       const items: Item[] = [{ label: "Clear all filters", filterKind: undefined }];
-      for (const p of month?.projects ?? []) items.push({ label: p.label ?? p.name, description: `project · ${p.calls} calls`, filterKind: "project", value: p.name });
+      for (const p of month?.projects ?? []) items.push({ label: p.label ?? p.name, description: `project · ${callsPhrase(p.calls, p.callsMissing)}`, filterKind: "project", value: p.name });
       for (const t of month?.tools ?? []) items.push({ label: t.name, description: `tool · ${t.builtIn ? "built-in" : "added"} · ${t.uses} uses`, filterKind: "tool", value: t.name });
       const pick = await vscode.window.showQuickPick(items, { placeHolder: "Filter the month view by project or tool" });
       if (!pick || monitor !== m) return;
@@ -151,7 +174,17 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     m.setFilter(filter);
-    panel.show();
+    panel.show(isSectionId(section) ? section : undefined);
+  };
+
+  /** A section id switches the panel to it; no argument opens a picker; anything else is ignored (D30). */
+  const showSection = async (arg?: unknown) => {
+    if (arg === undefined) {
+      const pick = await vscode.window.showQuickPick(sectionPickItems(panel.section), { placeHolder: "Section of the Copilot usage panel" });
+      if (pick) panel.show(pick.id);
+      return;
+    }
+    if (isSectionId(arg)) panel.show(arg);
   };
 
   const setUnit = async (arg?: unknown) => {
@@ -197,13 +230,14 @@ export function activate(context: vscode.ExtensionContext): void {
     stop();
     const { root, source } = resolve();
     rootKey = `${source}\u0000${root}`;
-    const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn });
+    const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
     if (selected !== undefined) m.selectMonth(selected);
     if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
     monitor = m;
     snapshot = undefined;
-    status.update(undefined);
-    panel.update(undefined);
+    status.update(undefined, view);
+    panel.update(undefined, view);
+    sidebar.update(undefined, view, folders);
     void m.refresh({ full: true });
     poll = setInterval(() => void m.refresh(), POLL_MS);
     armMidnight();
@@ -253,6 +287,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.toggleUnit", () => setUnit()),
     vscode.commands.registerCommand("copilotUsageMonitor.setFilter", setFilter),
     vscode.commands.registerCommand("copilotUsageMonitor.filter", () => setFilter()),
+    vscode.commands.registerCommand("copilotUsageMonitor.showSection", showSection),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      folders = readFolders();
+      render();
+    }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView(rate);
@@ -266,9 +305,11 @@ export function activate(context: vscode.ExtensionContext): void {
         rootChanged = `${source}\u0000${root}` !== rootKey;
       }
       const p = readProjects();
-      if (rootChanged || h !== history || p !== projectsOn) {
+      const t = readTotals();
+      if (rootChanged || h !== history || p !== projectsOn || t !== totalsOn) {
         history = h;
         projectsOn = p;
+        totalsOn = t;
         if (!p) delete filter.project;
         start();
       }
@@ -282,6 +323,29 @@ export function activate(context: vscode.ExtensionContext): void {
         tooltip: status.tooltip,
         panelOpen: panel.isOpen,
         panelTitle: panel.title,
+        panelSection: panel.section,
+        panelRenders: panel.renders,
+        panelActive: panel.active,
+        panelHeld: panel.held,
+        statusA11y: status.accessibilityLabel,
+        sidebar: {
+          visible: sidebar.visible,
+          renders: sidebar.renders,
+          state: sidebar.state,
+          unitWord: sidebar.unitWord,
+          html: sidebar.lastHtml,
+          options: sidebar.webviewOptions && {
+            enableScripts: sidebar.webviewOptions.enableScripts,
+            enableForms: sidebar.webviewOptions.enableForms,
+            enableCommandUris: sidebar.webviewOptions.enableCommandUris,
+            localResourceRoots: sidebar.webviewOptions.localResourceRoots?.map(String),
+          },
+          folders,
+          rows: sidebarRows(sidebar.current).map((r) => ({ id: r.id, label: r.label, value: r.value, spoken: r.spoken, link: r.link })),
+          groups: sidebar.current.groups.map((g) => g.id),
+          insights: sidebar.current.insights?.link,
+          health: sidebar.current.health?.link,
+        },
         snapshot,
         view,
       })),

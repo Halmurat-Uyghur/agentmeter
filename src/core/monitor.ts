@@ -4,11 +4,12 @@
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
-import { isIdLabel, MAX_WORKSPACE_BYTES, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
+import { isIdLabel, MAX_WORKSPACE_BYTES, parseShutdownLine, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
 import type { Logger } from "./log";
-import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, sessionSummaries, toolSummaries, UsageStore } from "./store";
+import { computeInsights, promptConventions } from "./insights";
+import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
-import type { Filter, Health, MonthView, Snapshot, UsageRecord } from "./types";
+import type { Filter, GroupSummary, Health, MonthView, SessionSummary, Snapshot, UsageRecord } from "./types";
 
 export interface MonitorOptions {
   root: string;
@@ -23,9 +24,15 @@ export interface MonitorOptions {
   historyMonths?: number;
   /** decode each log's session.start line for a project label (D25); default false */
   readProjects?: boolean;
+  /** decode session.shutdown lines and count sessions without per-call records from their
+   * session totals (D29); default false here, the extension passes its setting (default on) */
+  readTotals?: boolean;
 }
 
 export const MAX_HISTORY_MONTHS = 24;
+
+/** Session rows a snapshot keeps for the viewed month; the panel shows 10 and folds the rest (D32). */
+export const SESSION_ROWS = 50;
 
 /** Clamps a history setting to 1..MAX_HISTORY_MONTHS; anything invalid is 1. */
 export function clampHistory(n: unknown): number {
@@ -41,6 +48,10 @@ interface FileState {
   unrecognized: number;
   overlong: number;
   overlongOther: number;
+  /** session.shutdown lines too long to decode */
+  shutdownOversize: number;
+  /** a session.shutdown line of this log gave session totals */
+  hasTotals: boolean;
   /** activity / usage lines over the whole file (since the last reset) */
   activity: number;
   usage: number;
@@ -100,6 +111,7 @@ export class UsageMonitor {
   /** month start of the viewed month; undefined = follow the current month */
   private selectedMonth: number | undefined;
   private readonly readProjects: boolean;
+  private readonly readTotals: boolean;
   private filter: Filter = {};
 
   private readonly store = new UsageStore();
@@ -132,6 +144,7 @@ export class UsageMonitor {
     this.onSnapshot = o.onSnapshot;
     this.historyMonths = clampHistory(o.historyMonths ?? 1);
     this.readProjects = o.readProjects === true;
+    this.readTotals = o.readTotals === true;
   }
 
   /**
@@ -258,12 +271,14 @@ export class UsageMonitor {
       if (this.files.has(c.eventsPath)) continue;
       this.files.set(c.eventsPath, {
         folderId: c.folderId,
-        tailer: new LineTailer(c.eventsPath, { decodeStart: this.readProjects }),
+        tailer: new LineTailer(c.eventsPath, { decodeStart: this.readProjects, decodeShutdown: this.readTotals }),
         primed: false,
         malformed: 0,
         unrecognized: 0,
         overlong: 0,
         overlongOther: 0,
+        shutdownOversize: 0,
+        hasTotals: false,
         activity: 0,
         usage: 0,
         windowActivity: 0,
@@ -280,7 +295,15 @@ export class UsageMonitor {
       return { added: 0, changed: true };
     }
     const changed =
-      r.reset || r.error !== f.error || r.usageLines.length > 0 || r.activity > 0 || r.suspect > 0 || r.overlong > 0 || r.overlongOther > 0;
+      r.reset ||
+      r.error !== f.error ||
+      r.usageLines.length > 0 ||
+      r.shutdownLines.length > 0 ||
+      r.shutdownOversize > 0 ||
+      r.activity > 0 ||
+      r.suspect > 0 ||
+      r.overlong > 0 ||
+      r.overlongOther > 0;
     if (r.error !== undefined && f.error === undefined)
       this.log.error("read", r.error);
     f.error = r.error;
@@ -288,7 +311,8 @@ export class UsageMonitor {
     // as history (like a first read) so old activity never looks like new.
     if (r.reset) {
       this.store.resetFile(path);
-      f.malformed = f.unrecognized = f.overlong = f.overlongOther = 0;
+      f.malformed = f.unrecognized = f.overlong = f.overlongOther = f.shutdownOversize = 0;
+      f.hasTotals = false;
       delete f.project;
       delete f.title;
       delete f.titleMtimeMs;
@@ -317,7 +341,17 @@ export class UsageMonitor {
       } else if (p.kind === "malformed") f.malformed++;
       else if (p.kind === "unrecognized") f.unrecognized++;
     }
+    // Each shutdown line carries the session's running totals: the last one wins.
+    for (const line of r.shutdownLines) {
+      const p = parseShutdownLine(line, f.folderId);
+      if (p.kind === "totals") {
+        if (this.store.setSessionTotals(f.folderId, path, p.records)) added += p.records.length;
+        f.hasTotals = true;
+      } else if (p.kind === "malformed") f.malformed++;
+      else if (p.kind === "unrecognized") f.unrecognized++;
+    }
     f.unrecognized += r.suspect;
+    f.shutdownOversize += r.shutdownOversize;
     f.overlong += r.overlong;
     f.overlongOther += r.overlongOther;
     f.activity += r.activity;
@@ -361,22 +395,39 @@ export class UsageMonitor {
   private snapshot(nowMs: number, dayStartMs: number): Snapshot {
     const isToday = (ms: number) => ms >= dayStartMs;
     const today = this.store.totals((r) => isToday(r.timestampMs));
+    // Unfiltered, like Today: the last 7 local days (open-ended) and the 7 before them.
+    const last7Start = localDaysBefore(new Date(nowMs), 6);
+    const prior7Start = localDaysBefore(new Date(nowMs), 13);
+    const last7 = this.store.totals((r) => r.timestampMs >= last7Start);
+    const prior7 = this.store.totals((r) => r.timestampMs >= prior7Start && r.timestampMs < last7Start);
     const latest = this.store.latest();
 
     let malformed = 0;
     let unrecognized = 0;
     let overlong = 0;
     let overlongOther = 0;
+    let shutdownOversize = 0;
+    /** oversize shutdown lines in logs without per-call records: only there was the total needed */
+    let shutdownOversizeNeeded = 0;
     let unreadableFiles = 0;
     let silentLive = false;
     let sessionsWithoutUsage = 0;
+    let sessionsFromTotals = 0;
+    // Store-derived, so a total hidden by per-call records never counts as coverage.
+    const fromTotals = this.store.sessionTotalSessions();
     for (const f of this.files.values()) {
       malformed += f.malformed;
       unrecognized += f.unrecognized;
       overlong += f.overlong;
       overlongOther += f.overlongOther;
+      shutdownOversize += f.shutdownOversize;
+      if (f.usage === 0) shutdownOversizeNeeded += f.shutdownOversize;
       if (f.error !== undefined) unreadableFiles++;
-      if (f.activity === 0 || f.usage > 0) continue;
+      if ((f.activity === 0 && !f.hasTotals) || f.usage > 0) continue;
+      if (fromTotals.has(f.folderId)) {
+        sessionsFromTotals++;
+        continue;
+      }
       const live = this.candidates.get(f.folderId)?.live === true;
       const flags =
         live &&
@@ -398,13 +449,17 @@ export class UsageMonitor {
             ? "no-data"
             : "ok"),
       rootSource: this.rootSource,
-      partial: unreadableFiles + malformed + overlong > 0,
+      // A log with per-call records hides its session total anyway, so an unread
+      // shutdown line there loses nothing (review 3); Data health still counts it.
+      partial: unreadableFiles + malformed + overlong + shutdownOversizeNeeded > 0,
       unrecognized,
       malformed,
       overlong,
       overlongOther,
       unreadableFiles,
       sessionsWithoutUsage,
+      sessionsFromTotals,
+      shutdownOversize,
     };
 
     const monthStart = localMonthStart(new Date(nowMs));
@@ -448,10 +503,57 @@ export class UsageMonitor {
     const keep = (r: UsageRecord) => byProject(r) && byTool(r);
     const history = byMonth(this.store, starts, keep);
     const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
-    month.projects = month.projects.map((g) => {
+    // The month before the viewed one, when it is inside the window (A2): a past month
+    // reuses its history bucket; the current month is compared up to the same point.
+    const vi = starts.indexOf(month.monthStartMs);
+    if (vi > 0) {
+      const priorStart = starts[vi - 1]!;
+      if (month.isCurrent) {
+        // Same day of the month and local time of day (DST-safe), clamped to the month end.
+        const p = new Date(priorStart);
+        const lastDay = new Date(p.getFullYear(), p.getMonth() + 1, 0).getDate();
+        const same = new Date(p.getFullYear(), p.getMonth(), Math.min(nowDate.getDate(), lastDay), nowDate.getHours(), nowDate.getMinutes(), nowDate.getSeconds(), nowDate.getMilliseconds()).getTime();
+        const toMs = nowDate.getDate() > lastDay ? month.monthStartMs : Math.min(same, month.monthStartMs);
+        const totals = this.store.totals((r) => r.timestampMs >= priorStart && r.timestampMs < toMs && keep(r));
+        month.prior = { monthStartMs: priorStart, toMs, ...(totals !== undefined && { totals }) };
+      } else {
+        const totals = history[vi - 1]?.totals;
+        month.prior = { monthStartMs: priorStart, toMs: month.monthStartMs, ...(totals !== undefined && { totals }) };
+      }
+    }
+    // Unfiltered per-day figures over the window: heatmap, Yesterday, 30-day bars (A2).
+    const activity = dailyActivity(this.store, starts[0]!, dayStartMs);
+    const withTitle = (g: GroupSummary): GroupSummary => {
       const t = titles.get(g.name);
       return t === undefined ? g : { ...g, label: t.title };
+    };
+    month.projects = month.projects.map(withTitle);
+    // The current month with no filter (D31): the status bar and the side bar read these.
+    // Without a filter they equal the newest history bucket and the current month's
+    // project table (which ignores the project filter), so those passes are reused.
+    const current = starts.at(-1)!;
+    const thisMonth = project === undefined && tool === undefined ? history.at(-1)?.totals : this.store.totals((r) => r.timestampMs >= current);
+    const thisMonthProjects =
+      month.isCurrent && tool === undefined ? month.projects : projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf).map(withTitle);
+    // Unfiltered per-project figures for today and the last 7 days, one pass (A1 side bar).
+    const recentP = recentProjects(this.store, last7Start, dayStartMs, projectOf);
+    const todayProjects = recentP.today.map(withTitle);
+    const last7Projects = recentP.last7.map(withTitle);
+    // Display label of a session row: its folder's title, else its project label.
+    const folderTitles = new Map<string, string>();
+    for (const f of this.files.values()) if (f.title !== undefined) folderTitles.set(f.folderId, f.title);
+    const labelOf = (folderId: string | undefined) => (folderId === undefined ? undefined : (folderTitles.get(folderId) ?? projects.get(folderId)));
+    month.sessions = month.sessions.map((x) => {
+      const label = labelOf(x.folderId);
+      return label === undefined ? x : { ...x, label };
     });
+    for (const i of month.insights?.items ?? []) {
+      if (i.id !== "context-growth") continue;
+      i.top = i.top.map((t) => {
+        const label = labelOf(month.sessions.find((x) => x.sessionId === t.sessionId)?.folderId ?? t.sessionId);
+        return label === undefined ? t : { ...t, label };
+      });
+    }
     const filter = project !== undefined || tool !== undefined ? { ...this.filter } : undefined;
 
     return {
@@ -464,6 +566,13 @@ export class UsageMonitor {
       month,
       history,
       ...(filter && { filter }),
+      ...(last7 !== undefined && { last7 }),
+      ...(prior7 !== undefined && { prior7 }),
+      ...(thisMonth !== undefined && { thisMonth }),
+      thisMonthProjects,
+      activity,
+      todayProjects,
+      last7Projects,
     };
   }
 
@@ -485,7 +594,7 @@ export class UsageMonitor {
         monthStartMs: current,
         isCurrent: true,
         days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
-        sessions: sessionSummaries(this.store, current, Number.POSITIVE_INFINITY, 10, keep),
+        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, totals?.nanoAiu.sum ?? 0),
         projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
         tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
         ...(totals !== undefined && { totals }),
@@ -499,11 +608,41 @@ export class UsageMonitor {
       monthStartMs: past,
       isCurrent: false,
       days: daysOfMonth(this.store, past, lastDay, false, keep),
-      sessions: sessionSummaries(this.store, past, end, 10, keep),
+      ...this.sessionsAndInsights(past, end, keep, byProject, totals?.nanoAiu.sum ?? 0),
       projects: projectSummaries(this.store, past, end, projectOf, byTool),
       tools: toolSummaries(this.store, past, end, byProject),
       ...(totals !== undefined && { totals }),
     };
+  }
+
+  /** Session rows (at most SESSION_ROWS), the session counts and the insights for [fromMs, toMs). */
+  private sessionsAndInsights(
+    fromMs: number,
+    toMs: number,
+    keep: (r: UsageRecord) => boolean,
+    byProject: (r: UsageRecord) => boolean,
+    monthNanoAiu: number,
+  ): Pick<MonthView, "sessions" | "sessionCount" | "totalsSessions" | "insights" | "cache"> {
+    const calls = this.store.records((r) => r.kind === "call");
+    // The cache-read share uses the same per-model prompt convention as Insights (N4).
+    const all: SessionSummary[] = sessionSummaries(this.store, fromMs, toMs, Number.POSITIVE_INFINITY, keep, promptConventions(calls));
+    const inMonth = (r: UsageRecord) => r.timestampMs >= fromMs && r.timestampMs < toMs;
+    // The tools table ignores the tool filter, so its "no tool data" note counts totals by project only.
+    const totalsSessions = new Set(this.store.records((r) => r.kind === "sessionTotal" && inMonth(r) && byProject(r)).map((r) => r.sessionId)).size;
+    const insights = computeInsights({ sessions: all, monthRecords: calls.filter((r) => inMonth(r) && keep(r)), allRecords: calls, monthNanoAiu });
+    // The cache-reuse ring (A2) sums every session of the month, not only the rows kept.
+    const prompt = { sum: 0, reported: 0, missing: 0 };
+    const cacheRead = { sum: 0, reported: 0, missing: 0 };
+    for (const x of all) {
+      for (const [into, from] of [[prompt, x.input], [cacheRead, x.cacheRead]] as const) {
+        if (!from) continue;
+        into.sum += from.sum;
+        into.reported += from.reported;
+        into.missing += from.missing;
+      }
+    }
+    const cache = prompt.reported > 0 || cacheRead.reported > 0 ? { cache: { prompt, cacheRead } } : {};
+    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, totalsSessions, insights, ...cache };
   }
 
   /** Pinned folder; else the live candidate with the newest record; else the newest folder today. */

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { cleanCurrencyCode, parseRate, rangeToUsd } from "../../src/core/currency";
-import { costLabel, costNotes, formatRange, formatUsd, money, tooltipMarkdown } from "../../src/core/format";
+import { afterEach } from "vitest";
+import { costLabel, costNotes, formatRange, formatUsd, money, setDisplayCurrency, tooltipMarkdown } from "../../src/core/format";
 import type { Currency, Metric } from "../../src/core/types";
 
 const CAD: Currency = { code: "CAD", rate: 1.4, date: "2026-11-06" };
 const m = (sum: number, reported = 1, missing = 0): Metric => ({ sum, reported, missing });
 
 describe("currency", () => {
+  afterEach(() => setDisplayCurrency(undefined));
+
   it("money converts and uses the currency symbol; USD unchanged", () => {
     expect(money(10)).toBe("$10.00");
     expect(money(10, { code: "USD", rate: 1, date: "2026-11-06" })).toBe("$10.00");
@@ -27,8 +30,12 @@ describe("currency", () => {
   });
 
   it("labels and notes", () => {
-    expect(costLabel({ unit: "cost" })).toBe("USD (est.)");
-    expect(costLabel({ unit: "cost", currency: CAD })).toBe("CAD (est.)");
+    expect(costLabel()).toBe("USD (est.)");
+    setDisplayCurrency(CAD);
+    expect(costLabel()).toBe("CAD (est.)");
+    expect(money(10)).toBe("CA$14.00");
+    setDisplayCurrency({ code: "USD", rate: 1, date: "2026-11-06" });
+    expect(money(10)).toBe("$10.00");
     expect(costNotes({ unit: "cost", currency: CAD })[1]).toContain("1 USD = 1.4 CAD");
     expect(costNotes({ unit: "cost", currencyPending: "CAD" })[1]).toContain("No CAD exchange rate yet");
     expect(costNotes({ unit: "cost" })).toHaveLength(1);

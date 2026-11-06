@@ -1,30 +1,38 @@
 # Copilot Usage Monitor (Local)
 
-A free, open-source VS Code extension that shows **your own GitHub Copilot usage, in tokens or estimated USD, as observed in Copilot's session logs on this computer**. It puts a status-bar item and a details panel in VS Code. It stores nothing and has no runtime dependencies. It makes no network calls, unless you choose a display currency other than USD (see [Currency](#currency)).
+A free, open-source VS Code extension that shows **your own GitHub Copilot usage, in tokens or estimated USD, as observed in Copilot's session logs on this computer**. It puts a status-bar item, a side bar summary and a details panel in VS Code. It reads no credentials, stores nothing and has no runtime dependencies. It makes no network calls, unless you choose a display currency other than USD (see [Currency](#currency)).
 
 Not affiliated with, endorsed by or supported by GitHub or Microsoft.
 
 ## What it shows
 
-- **Status bar:** `Local today: 1.5M tok`. That is input plus output tokens for today, from local midnight. In USD view it shows this month's estimate instead, for example `Local Nov: $12.40 / $20.00–$60.00`. Click it to open the panel.
-- **Details panel** ("Copilot Usage (Local)"):
-  - Today, the current Copilot session and the viewed month.
+- **Status bar:** `Local today: 1.5M tok`. That is input plus output tokens for today, from local midnight. In USD view it shows this month's estimate instead, for example `Local Nov: $12.40 / $20.00–$60.00`. The month figure is never filtered. The tooltip says when a figure includes session totals. Click it to open the panel.
+- **Side bar** (the graph icon in the activity bar, "Copilot Usage (Local)" → **Summary**): a compact summary in small groups, label on the left and figure on the right, in the Tokens / USD (est.) unit. Nothing in it is filtered.
+  - **This workspace · *folder***: Today and Last 7 days for the project that matches an open workspace folder (by folder name, or the repository part of `owner/repo`). Hidden when nothing matches.
+  - **All projects**: Today, Last 7 days and This month, with a small marker for your target state (under, in range or over).
+  - **Top projects, last 7 days** (5) and **Top models, last 7 days** (5). Click a project to filter the panel to it and open Projects (click again to clear); click a model to open Models.
+  - **Insights**: "N findings · Review" when the panel's month has any. A data-health note appears only when data is partial or the log format changed.
+  - **Open dashboard** opens the details panel; the link under it switches the unit. Hover a row for its calls, session totals and other details. Title buttons: Open panel, Switch unit, Refresh.
+  - While loading, or when no logs are found or the folder cannot be read, the view says so and names the `copilotUsageMonitor.copilotHome` setting.
+- **Details panel** ("Copilot Usage (Local)"): a left-hand section menu (a wrapping row of links when the panel is narrow), with the month picker, the Tokens / USD (est.) switch and any filter chips at the top of every section. Pick a section by clicking it, from a side bar row, or with **Copilot Usage: Show Section…**. Month, unit and filter changes keep the section you are on.
+  - **Overview:** tiles for Today, the current session, the last 7 days (with the change against the 7 days before, as ▲ or ▼; no arrow when either week has nothing logged, and no comparison when the 7 days before reach back past the first month read) and the viewed month (with your target range, if set). Then the **monthly trend**: one bar per month; click a bar to open that month.
+  - **Daily:** today in detail (input, output, cache read, cache write, reasoning, model time, AIU (as logged), USD (est.) and calls), the **daily trend** (one bar per day of the viewed month, a dashed line at the average per active day and the peak day highlighted) and a month calendar of daily tokens or USD. Session totals count on the day the session ended.
+  - **Sessions:** the current session, then the viewed month's sessions, largest first: the top 10, with the rest folded under "Show N more". A ▲ marks sessions whose last 5 calls cost 3× or more than their first 5, which means the context kept growing and a fresh session would likely be cheaper. Rows counted from a session total carry a "session total" tag.
+  - **Models:** the viewed month's per-model table, with each model's share, estimated USD and USD per call (from per-call records only).
+  - **Projects:** usage per GitHub repository, else folder name. Click a row to filter the month view, trend and tables to that project; click the chip's ✕ to clear.
+  - **Tools:** each tool the model used, built-in or added by MCP servers, plugins and extensions (added tools summarised per server or plugin). Click a row to filter by that tool. Session totals have no tool data, so a tool filter leaves them out.
+  - **Insights:** sessions that grew costly and models with low cache reuse in the viewed month. Built from per-call records only; session totals are left out.
+  - **Data health:** what was read, what was skipped (including sessions counted from session totals) and what is not counted.
   - **Month picker:** step back through up to 24 months of history (12 by default) with ‹ ›, or pick one from a list. Today and the current session stay live while you look at an old month.
-  - **Tokens / USD (est.) switch** for every figure.
-  - **Monthly trend:** one bar per month. Click a bar to open that month.
-  - **Daily trend:** one bar per day of the viewed month, with a dashed line at the average per active day and the peak day highlighted. Follows the project or tool filter.
   - **Personal target range** (optional): say how much you mean to use per month, for example $20–$60. The status bar icon shows whether this month is under (↓), in (✓) or over (🔥, amber) the range. It never stops Copilot and never pops up.
-  - **By project and by tool:** see which repositories and which tools (built-in, or added by MCP servers, plugins and extensions) your usage goes to. Click any row to filter the whole month view, trend and tables to it; click the chip's ✕ to clear. Today and the status bar are never filtered. Long tables show their top 10 rows and fold the rest under "Show N more"; an active filter row always stays visible. Added tools are summarised per server or plugin.
-  - **Costliest sessions:** the month's top 10 sessions by estimated USD. A ▲ marks sessions whose last 5 calls cost 3× or more than their first 5, which means the context kept growing and a fresh session would likely be cheaper.
-  - Per-metric tiles: input, output, cache read, cache write, reasoning, model time, AIU (as logged), USD (est.) and calls.
-  - A per-model table with estimated USD per call, and a month calendar of daily tokens or USD.
-  - A data-health section.
+  - Today, the current session, the last 7 days and the status bar are never filtered. Long tables show their top 10 rows and fold the rest; an active filter row always stays visible.
 - **Updates** within about half a second of Copilot finishing a model call. Copilot writes one usage record per completed model call, so figures move in steps, not token by token.
 
 How to read the numbers:
 
 - `—` means the log did not report a value. It is never shown as `0`.
 - `*` means a figure may be incomplete, for example because a log could not be read or some records lacked the field. Hover the figure for the reason.
+- **session total** marks a session from Copilot before 1.0.99. Those builds write no per-call records, only one total per model when the session ends, so the whole session counts once, on the day it ended. It has no per-call, growth or tool figures. Older Copilot also logged no AI credits there, so its USD shows `—`, never `$0.00`; its tokens and calls still count.
 - "AIU (as logged)" is the raw `totalNanoAiu / 1e9` value Copilot writes into its own log.
 - "USD (est.)" is that AIU × $0.01. GitHub prices Copilot per token, converts the price to AI credits and charges $0.01 per credit. Checked against GitHub's published per-model price table, the logged AIU matched to four decimal places. It is still an estimate: it covers only calls logged on this computer and it is not an invoice.
 
@@ -38,7 +46,7 @@ How to read the numbers:
   - Copilot Chat surfaces that don't write these logs
   - github.com, mobile, JetBrains
   - other computers
-- **Copilot 1.0.99 or newer.** Older Copilot versions write no per-call records. Their sessions are listed as "sessions without per-call data" and add nothing to the totals, so the status bar may show `—` every day until Copilot updates.
+- **Older Copilot is counted coarsely.** Before 1.0.99, Copilot writes one total per session when it ends. Those sessions count on their end day, show nothing while still open (or if they crashed) and have no estimated USD. Turn `sessionTotals` off to leave them out.
 - **Local day.** "Today" starts at local midnight on this computer, while GitHub's own day may follow UTC.
 - **Format changes.** If Copilot changes its log format, the status bar shows a warning icon and the panel says "Format changed". It does not quietly show smaller numbers.
 
@@ -50,7 +58,7 @@ The extension is not on the Marketplace yet. Build a `.vsix` and install it:
 npm ci
 npm run build
 npm run package
-code --install-extension copilot-usage-monitor-0.3.2.vsix
+code --install-extension copilot-usage-monitor-0.4.0.vsix
 ```
 
 Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
@@ -66,6 +74,7 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated cost you mean to use per month, in the chosen currency. |
 | `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated cost you mean to use per month, in the chosen currency. |
 | `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name; a folder named by an ID shows the session title instead). Off: every call is "(no project)" and neither the start line nor `workspace.yaml` is read. |
+| `copilotUsageMonitor.sessionTotals` | `true` | Count sessions from Copilot before 1.0.99 from the per-model total written when a session ends ("session total"). Off: `session.shutdown` lines are skipped without being decoded, as in 0.3. Machine-scoped. |
 
 VS Code launched from the macOS Dock or Finder does not see variables set in `.zshrc`. If you set `COPILOT_HOME` there, also set `copilotUsageMonitor.copilotHome`.
 
@@ -78,6 +87,7 @@ Commands:
 - **Copilot Usage: Switch Tokens / USD (est.)** flips the unit.
 - **Copilot Usage: Choose Currency…** picks the display currency.
 - **Copilot Usage: Filter by Project or Tool…** picks a filter (or clears all).
+- **Copilot Usage: Show Section…** opens the panel at a section (Overview, Daily, Sessions, Models, Projects, Tools, Insights or Data health).
 
 ## Currency
 
@@ -91,12 +101,15 @@ Estimated cost is always worked out in USD, from Copilot's logged AI credits. Se
 ## What it reads
 
 - **Files opened:** only `<copilot folder>/session-state/<session id>/events.jsonl` for sessions written within the history window (`historyMonths`, 12 months by default). Everything else in the folder is only listed. Lock-file names are used to tell live sessions apart. The one other file ever opened is that session's `workspace.yaml`, and only when `projectNames` is on and the project folder name is an ID (a UUID or long hex): at most 16 KB is read (a larger file is ignored), and only its `name:` line is kept. Nothing else is opened.
-- **Line filtering:** each line is checked by its first bytes. Only `session.usage_record` lines are decoded and parsed, plus, when `projectNames` is on, each log's single `session.start` line (under 16 KB; larger ones are skipped). Prompts, replies, tool output and file contents are skipped without being decoded.
+- **Line filtering:** each line is checked by its first bytes. Only `session.usage_record` lines are decoded and parsed, plus, when `projectNames` is on, each log's single `session.start` line (under 16 KB; larger ones are skipped), and, when `sessionTotals` is on, `session.shutdown` lines (up to 64 KB; a longer one is not decoded and is listed under Data health). Prompts, replies, tool output and file contents are skipped without being decoded.
+- **Session totals:** from a `session.shutdown` line, per model, only the five token counts (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`), `requests.count` and `totalNanoAiu` are kept, plus the line's timestamp and `sessionStartTime`. The line (at most 64 KB) is decoded whole; the keys `filesModified`, `accountingSnapshot`, `agentMetrics`, `providerModelMetrics`, `usageAccountingWatermarks` and `currentModel` are removed during parsing and never copied, and nothing else on the line (such as `requests.cost`, `totalApiDurationMs` or `codeChanges`) is ever copied. When a session, or its session folder, also has per-call records, its session total is hidden, so nothing is counted twice; a later shutdown line replaces an earlier one instead of adding to it.
 - **Project label:** from `session.start` only `context.repository` (if it looks like `owner/repo`) or the last folder name of `context.gitRoot` / `context.cwd` is kept. The full path, branch, commits and everything else on that line are dropped. When that folder name is an ID (a UUID or long hex), the session title is shown instead: only the `name:` line of that session's `workspace.yaml` (under 16 KB), capped at 60 characters, with control, bidi and zero-width characters removed. The title is a display label only: sessions are still grouped and filtered by that folder, so two sessions in one folder stay one row (labelled with the most recently active session's title) and a title can never merge into another project's row. Copilot writes a short title there; for a session you never renamed it can be the start of your first prompt.
 - **Tool use:** the per-call `toolCounts` map (tool name → number of invocations). Tool arguments and output are never read.
-- **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp and the project label, in memory only. Nothing is written to disk and no usage data is sent anywhere. The only network request is the optional exchange rate described under [Currency](#currency).
+- **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp, the project label and, for session totals, the call count and session start time, in memory only. Nothing is written to disk and no usage data is sent anywhere.
 - **Output channel:** the "Copilot Usage Monitor" output channel gets counts, error codes and timings only, never log content or paths.
-- **Panel:** the details panel runs no scripts and loads no remote resources. Its only links are VS Code command links, and the panel allows exactly three commands: show a month, set the unit, and set a filter.
+- **Panel:** the details panel runs no scripts and loads no remote resources. Its only links are VS Code command links, and the panel allows exactly four commands: show a month, show a section, set the unit, and set a filter. The selected section is kept in memory only.
+- **Side bar:** a web view with the same rules as the panel: no scripts, no local or remote resources, the same content security policy, and only four command links (open the panel, show a section, set the project filter, switch the unit). It shows figures the extension already holds and opens no other file; every name from the logs is escaped. Open workspace folder names are used only to pick the "This workspace" project and are never stored.
+- **No credentials, no network:** unlike tools that read your sign-in tokens, this extension never reads credentials. It works only from the log files above. Its one network request is the optional exchange rate described under [Currency](#currency); with the default USD it never uses the network.
 - **Settings:** the unit switch saves `copilotUsageMonitor.display` in your VS Code user settings. That is the only thing the extension ever writes.
 
 Automated tests enforce these rules. They scan the source and the bundle for network, persistence and telemetry APIs, allowing exactly one `fetch`, in `src/vscode/exchangeRate.ts`, pinned to the exchange-rate URL. They also check the exact files inside the `.vsix`, and that a canary string in synthetic logs never reaches the UI or the output channel.
