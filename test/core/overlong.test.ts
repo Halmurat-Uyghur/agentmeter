@@ -142,4 +142,34 @@ describe("over-long lines: chunk boundaries and limits", () => {
     expect(r.overlong).toBe(1);
     expect(r.overlongOther).toBe(0);
   });
+
+  it("an over-long shutdown line counts as shutdownOversize when shutdown lines are read (whole and split head)", async () => {
+    const line = `{"type":"session.shutdown","p":"${pad(5000)}"}`;
+    for (const decodeShutdown of [true, false]) {
+      await writeFile(file, line + "\n");
+      const whole = await new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 1 << 20, decodeShutdown }).read();
+      expect({ decodeShutdown, o: whole.shutdownOversize, other: whole.overlongOther, overlong: whole.overlong }).toEqual({
+        decodeShutdown,
+        o: decodeShutdown ? 1 : 0,
+        other: decodeShutdown ? 0 : 1,
+        overlong: 0,
+      });
+    }
+    for (let at = 1; at < TYPE_HEAD_BYTES + 2; at++) {
+      await writeFile(file, "");
+      const t = new LineTailer(file, { maxCarryBytes: 1024, decodeShutdown: true });
+      await appendFile(file, line.slice(0, at));
+      const r1 = await t.read();
+      await appendFile(file, line.slice(at) + "\n");
+      const r2 = await t.read();
+      expect({ at, o: r1.shutdownOversize + r2.shutdownOversize, other: r1.overlongOther + r2.overlongOther, overlong: r1.overlong + r2.overlong }).toEqual({ at, o: 1, other: 0, overlong: 0 });
+    }
+  });
+
+  it("a nested shutdown type in an over-long line is not silently non-data when shutdown lines are read", async () => {
+    await writeFile(file, `{"type":"wrapper","data":{"type":"session.shutdown","p":"${pad(5000)}"}}\n`);
+    const r = await new LineTailer(file, { maxCarryBytes: 1024, chunkBytes: 1 << 20, decodeShutdown: true }).read();
+    expect(r.shutdownOversize).toBe(1);
+    expect(r.overlongOther).toBe(0);
+  });
 });

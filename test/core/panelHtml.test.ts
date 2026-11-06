@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, LOCAL_BANNER, NOT_COVERED, STREAMING_NOTE } from "../../src/core/format";
-import { escapeHtml, renderPanelHtml } from "../../src/core/panelHtml";
+import { formatDuration, LOCAL_BANNER, NOT_COVERED, SESSION_TOTAL_NOTE, STREAMING_NOTE } from "../../src/core/format";
+import { escapeHtml, renderPanelHtml, SECTIONS } from "../../src/core/panelHtml";
 import {
   byLocalDay,
   heatLevel,
@@ -17,6 +17,8 @@ const none = (): Metric => m(0, 0, 0);
 function counts(o: Partial<Counts> = {}): Counts {
   return {
     records: 2,
+    calls: 2,
+    sessionTotals: 0,
     input: m(1_200_000, 2),
     output: m(300_000, 2),
     cacheRead: m(500, 2),
@@ -24,6 +26,8 @@ function counts(o: Partial<Counts> = {}): Counts {
     reasoning: m(30, 2),
     durationMs: m(83_000, 2),
     nanoAiu: m(4e9, 2),
+    callsMissing: 0,
+    callNanoAiu: o.nanoAiu ?? m(4e9, 2),
     ...o,
   };
 }
@@ -41,6 +45,8 @@ function health(o: Partial<Health> = {}): Health {
     overlongOther: 0,
     unreadableFiles: 0,
     sessionsWithoutUsage: 0,
+    sessionsFromTotals: 0,
+    shutdownOversize: 0,
     ...o,
   };
 }
@@ -77,6 +83,7 @@ function text(html: string): string {
   const titles = [...html.matchAll(/ title="([^"]*)"/g)].map((x) => x[1]).join(" ");
   return (html + " " + titles)
     .replace(/<style>[\s\S]*?<\/style>/g, " ")
+    .replace(/<span class="sr">[^<]*<\/span>/g, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
@@ -97,7 +104,7 @@ describe("month helpers", () => {
   it("byLocalDay has one entry per elapsed day, undefined for empty days", () => {
     const store = new UsageStore();
     const rec = (key: string, ts: number): UsageRecord => ({
-      key, keySource: "usageId", sessionId: "s", folderId: "s", timestampMs: ts, tokens: { input: 10, output: 5 },
+      key, keySource: "usageId", kind: "call", sessionId: "s", folderId: "s", timestampMs: ts, tokens: { input: 10, output: 5 },
     });
     store.add(rec("a", new Date(2026, 10, 2, 9).getTime()), "f");
     store.add(rec("b", new Date(2026, 10, 2, 23, 59).getTime()), "f");
@@ -140,52 +147,72 @@ describe("month helpers", () => {
 
 describe("renderPanelHtml", () => {
   it("partial reason for over-long lines reads as a sentence (singular and plural)", () => {
-    const one = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 1 }) }), "x"));
+    const one = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 1 }) }), "x", undefined, "daily"));
     expect(one).toContain("1 over-long line that may contain usage was skipped.");
-    const many = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 3 }) }), "x"));
+    const many = text(renderPanelHtml(snap({ health: health({ partial: true, overlong: 3 }) }), "x", undefined, "daily"));
     expect(many).toContain("3 over-long lines that may contain usage were skipped.");
   });
 
   it("hides the over-long non-usage row when there are none", () => {
-    const t = text(renderPanelHtml(snap(), "x"));
+    const t = text(renderPanelHtml(snap(), "x", undefined, "health"));
     expect(t).not.toContain("Over-long lines skipped (not usage)");
     expect(t).toContain("Over-long lines skipped (may be usage)");
   });
 
   it("over-long non-usage lines are listed but not flagged as partial", () => {
-    const t = text(renderPanelHtml(snap({ health: health({ overlongOther: 37 }) }), "x"));
+    const t = text(renderPanelHtml(snap({ health: health({ overlongOther: 37 }) }), "x", undefined, "health"));
     expect(t).toMatch(/Over-long lines skipped \(not usage\)\s+37/);
     expect(t).not.toContain("Totals may be incomplete");
     expect(t).not.toContain("Partial data");
   });
 
-  it("is static, locked down and carries the banner", () => {
-    const html = renderPanelHtml(snap(), "vscode-webview://abc");
-    expect(html).not.toMatch(/<script/i);
-    expect(html).not.toMatch(/https?:\/\//i);
-    expect(html).not.toMatch(/@import|url\(|@font-face/i);
-    expect(html).toContain("default-src 'none'");
-    expect(html).toContain(escapeHtml(LOCAL_BANNER));
-    expect(html).toContain(escapeHtml(STREAMING_NOTE));
-    for (const n of NOT_COVERED) expect(html).toContain(escapeHtml(n));
+  it("is static, locked down and carries the banner on every section", () => {
+    for (const section of SECTIONS) {
+      const html = renderPanelHtml(snap(), "vscode-webview://abc", undefined, section);
+      expect(html, section).not.toMatch(/<script/i);
+      expect(html, section).not.toMatch(/https?:\/\//i);
+      expect(html, section).not.toMatch(/@import|url\(|@font-face/i);
+      expect(html, section).toContain("default-src 'none'");
+      expect(html, section).toContain(escapeHtml(LOCAL_BANNER));
+      expect(html, section).toContain(escapeHtml(STREAMING_NOTE));
+    }
+    const health = renderPanelHtml(snap(), "x", undefined, "health");
+    for (const n of NOT_COVERED) expect(health).toContain(escapeHtml(n));
   });
 
-  it("has every section in order", () => {
-    const t = text(renderPanelHtml(snap(), "x"));
-    const order = ["Copilot Usage", "Local", "Today", "Current session", "November", "AIU (as logged)",
-      "Daily trend — November 2026", "Today in detail", "Current session", "Today by model", "Daily tokens — November 2026", "Data health", "Not covered"];
+  it("overview shows its blocks in order and nothing from other sections", () => {
+    const t = text(renderPanelHtml(snap({ history: [{ monthStartMs: new Date(2026, 10, 1).getTime(), totals: totals() }] }), "x"));
+    const order = ["Copilot Usage", "Local", "Overview", "Today", "Yesterday", "Daily activity", "Cache reuse", "Month to date", "Last 7 days", "Current session", "Daily tokens", "Monthly trend"];
     let at = 0;
     for (const s of order) {
       const i = t.indexOf(s, at);
       expect(i, s).toBeGreaterThanOrEqual(0);
       at = i + 1;
     }
+    for (const other of ["Today in detail", "Daily trend", "by model", "By project", "By tool", "Costliest sessions", "Not covered", "AIU (as logged)"]) expect(t).not.toContain(other);
+  });
+
+  it("each section holds its own blocks", () => {
+    const has: Record<string, string[]> = {
+      daily: ["Today in detail", "Daily trend November 2026", "Daily tokens November 2026"],
+      sessions: ["Current session", "Costliest sessions"],
+      models: ["November 2026 by model"],
+      projects: ["By project"],
+      tools: ["By tool"],
+      insights: ["Nothing to point out in November."],
+      health: ["Sessions counted from session totals", "Not covered"],
+    };
+    for (const [section, blocks] of Object.entries(has)) {
+      const t = text(renderPanelHtml(snap(), "x", undefined, section as (typeof SECTIONS)[number])).replace(/\s+/g, " ");
+      for (const b of blocks) expect(t, `${section}: ${b}`).toContain(b);
+      expect(t, section).not.toContain("Monthly trend");
+    }
   });
 
   it("daily trend: one bar per day of the month, future days empty, today marked", () => {
     const t = totals();
     const big = totals(undefined, { input: m(6_000_000, 2), output: m(0, 2) });
-    const html = renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, { 2: t, 3: big, 5: t }) } }), "x");
+    const html = renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, { 2: t, 3: big, 5: t }) } }), "x", undefined, "daily");
     const daily = html.slice(html.indexOf("Daily trend"), html.indexOf("</section>", html.indexOf("Daily trend")));
     expect(daily.match(/class="col[ "]/g)).toHaveLength(30);
     expect(daily.match(/class="col later"/g)).toHaveLength(25);
@@ -202,15 +229,15 @@ describe("renderPanelHtml", () => {
   });
 
   it("daily trend: USD view and empty month", () => {
-    const cost = text(renderPanelHtml(snap(), "x", { unit: "cost" })).replace(/\s+/g, " ");
-    expect(cost).toContain("Daily trend — November 2026");
+    const cost = text(renderPanelHtml(snap(), "x", { unit: "cost" }, "daily")).replace(/\s+/g, " ");
+    expect(cost).toContain("Daily trend November 2026");
     expect(cost).toContain("Avg / active day $0.040");
-    const empty = text(renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, {}), totals: undefined } }), "x"));
-    expect(empty).toContain("No usage records this month.");
+    const empty = text(renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, {}), totals: undefined } }), "x", undefined, "daily"));
+    expect(empty).toContain("No usage logged in November.");
   });
 
   it("calendar: 7 weekday headers, leading blanks, one today, future days", () => {
-    const html = renderPanelHtml(snap(), "x");
+    const html = renderPanelHtml(snap(), "x", undefined, "daily");
     expect(html.match(/class="dow"/g)).toHaveLength(7);
     // Nov 1 2026 is a Sunday → 6 blanks in a Monday-first grid.
     expect(html.match(/class="d pad"/g)).toHaveLength(6);
@@ -219,16 +246,17 @@ describe("renderPanelHtml", () => {
   });
 
   it("empty day renders —, never 0", () => {
-    const html = renderPanelHtml(snap(), "x");
-    expect(html).toMatch(/title="No usage records">1<small>—<\/small>/);
+    const html = renderPanelHtml(snap(), "x", undefined, "daily");
+    // a day with no record stays blank; its title says so (design #7)
+    expect(html).toMatch(/title="Nov 1: no usage records">1<small><span class="sr">no usage records<\/span><\/small>/);
     expect(html).not.toMatch(/>1<small>0<\/small>/);
   });
 
   it("unreported metrics render — and partial ones * with a reason", () => {
     const t = totals({ "model-a": counts({ reasoning: none(), cacheWrite: m(10, 1, 1) }) }, { reasoning: none(), cacheWrite: m(10, 1, 1) });
-    const html = renderPanelHtml(snap({ today: t }), "x");
-    expect(html).toMatch(/Reasoning<\/span><span class="v">—</);
-    expect(html).toMatch(/title="reported by 1 of 2 records"><span class="k">Cache write<\/span><span class="v">10<span class="star">\*<\/span>/);
+    const html = renderPanelHtml(snap({ today: t }), "x", undefined, "daily");
+    expect(html).toMatch(/Reasoning<\/span><span class="v"><span aria-hidden="true">—<\/span><span class="sr">not reported<\/span></);
+    expect(html).toMatch(/title="reported by 1 of 2 records"><span class="k">Cache write<\/span><span class="v">10<span class="star"[^>]*>\*<\/span>/);
     expect(html).toContain("Cache write: reported by 1 of 2 records.");
     expect(text(html)).not.toMatch(/Reasoning\s+0\b/);
   });
@@ -236,15 +264,15 @@ describe("renderPanelHtml", () => {
   it("partial health stars Today and names the reason", () => {
     const html = renderPanelHtml(snap({ health: health({ partial: true, unreadableFiles: 1 }) }), "x");
     expect(html).toContain("Partial data");
-    expect(html).toMatch(/<div class="big">1\.5M<span class="star">\*<\/span>/);
-    expect(html).toContain("1 log could not be read");
+    expect(html).toMatch(/<div class="big">1\.5M<span class="star"[^>]*>\*<\/span>/);
+    expect(renderPanelHtml(snap({ health: health({ partial: true, unreadableFiles: 1 }) }), "x", undefined, "daily")).toContain("1 log could not be read");
   });
 
   it("one row per model, hostile ids escaped everywhere", () => {
     const evil = `<img src=x onerror=1>"'`;
     const t = totals({ "model-a": counts(), "model-b": counts(), [evil]: counts() });
-    const html = renderPanelHtml(snap({ today: t }), "x");
-    expect(html.match(/<tr><td><span class="chipm/g)).toHaveLength(3);
+    const html = renderPanelHtml(snap({ month: { ...snap().month!, totals: t } }), "x", undefined, "models");
+    expect(html.match(/<tr><th scope="row"><span class="chipm/g)).toHaveLength(3);
     expect(html).not.toContain("<img");
     expect(html).not.toContain(`onerror=1>"`);
     expect(html).toContain("&lt;img src=x onerror=1&gt;&quot;&#39;");
@@ -261,10 +289,15 @@ describe("renderPanelHtml", () => {
   });
 
   it("no today and no month render dashes", () => {
-    const html = renderPanelHtml(snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, {}), sessions: [], projects: [], tools: [] } }), "x");
-    expect(html).toMatch(/<div class="big">—<\/div>/);
-    expect(html).toContain("No per-call records dated today.");
-    expect(html).not.toMatch(/class="d h[1-4]/);
+    const s = snap({ today: undefined, current: undefined, month: { monthStartMs: new Date(2026, 10, 1).getTime(), isCurrent: true, days: days(5, {}), sessions: [], projects: [], tools: [] } });
+    const html = renderPanelHtml(s, "x");
+    expect(html).toMatch(/<div class="big"><span aria-hidden="true">—<\/span><span class="sr">not reported<\/span><\/div>/);
+    expect(text(html)).toContain("No Copilot usage logged in November.");
+    expect(text(renderPanelHtml(s, "x", undefined, "models"))).toContain("No model usage logged in November.");
+    expect(text(renderPanelHtml(s, "x", undefined, "sessions"))).toContain("No current session.");
+    expect(text(renderPanelHtml(s, "x", undefined, "sessions"))).toContain("No sessions with usage in November.");
+    expect(text(renderPanelHtml(s, "x", undefined, "daily"))).toContain("Nothing logged today yet.");
+    expect(renderPanelHtml(s, "x", undefined, "daily")).not.toMatch(/class="d h[1-4]/);
   });
 
   it("copy check passes on visible text in every state", () => {
@@ -276,28 +309,83 @@ describe("renderPanelHtml", () => {
       snap({ health: health({ state: "permission" }) }),
       snap({ health: health({ state: "format-changed", unrecognized: 1 }) }),
       snap({ today: undefined, current: undefined }),
+      snap({ today: totals(undefined, { sessionTotals: 1 }), month: { ...snap().month!, totals: totals(undefined, { sessionTotals: 2 }) }, health: health({ partial: true, sessionsFromTotals: 2, shutdownOversize: 1 }) }),
     ];
     for (const s of states) {
-      const html = renderPanelHtml(s, "x");
-      const t = text(html).replace(LOCAL_BANNER, "");
-      expect(t).not.toMatch(COPY_RE);
-      expect(html).not.toMatch(/<script/i);
-      expect(html).not.toMatch(/\son\w+\s*=/i);
+      for (const view of [undefined, { unit: "cost" as const, range: { min: 1, max: 2 } }]) {
+        for (const section of SECTIONS) {
+          const html = renderPanelHtml(s, "x", view, section);
+          const t = text(html).replace(LOCAL_BANNER, "");
+          expect(t, section).not.toMatch(COPY_RE);
+          expect(html).not.toMatch(/<script/i);
+          expect(html).not.toMatch(/\son\w+\s*=/i);
+        }
+      }
     }
   });
 
   it("partial health stars every figure, including the current session, tiles, table and calendar", () => {
-    const html = renderPanelHtml(snap({ health: health({ partial: true, unreadableFiles: 1 }) }), "x");
-    expect(html).toMatch(/<div class="name">Current session<\/div>.*?<div class="big">1\.5M<span class="star">\*<\/span>/s);
-    expect(html).toMatch(/<span class="k">Input<\/span><span class="v">1\.2M<span class="star">\*/);
-    expect(html).toMatch(/<td class="num sum">1\.5M<span class="star">\*/);
-    expect(html).toMatch(/5<small>1\.5M<span class="star">\*/);
-    expect(html).not.toMatch(/\*<span class="star">\*/);
-    expect(html).not.toMatch(/\*\*/);
+    const s = snap({ health: health({ partial: true, unreadableFiles: 1 }) });
+    const all = SECTIONS.map((x) => renderPanelHtml(s, "x", undefined, x)).join("");
+    expect(renderPanelHtml(s, "x")).toMatch(/Current session<\/span><\/h3><div class="big">1\.5M<span class="star"[^>]*>\*<\/span>/s);
+    expect(renderPanelHtml(s, "x", undefined, "daily")).toMatch(/<span class="k">Input<\/span><span class="v">1\.2M<span class="star"[^>]*>\*/);
+    expect(renderPanelHtml(s, "x", undefined, "models")).toMatch(/<td class="num sum">1\.5M<span class="star"[^>]*>\*/);
+    expect(renderPanelHtml(s, "x", undefined, "daily")).toMatch(/5(?:<span class="sr"> \(today\)<\/span>)?<small>1\.5M<span class="star"[^>]*>\*/);
+    expect(all).not.toMatch(/\*<span class="star"[^>]*>\*/);
+    expect(all).not.toMatch(/\*\*/);
+  });
+
+  it("Calls figures read `calls`, not rows", () => {
+    const t = totals({ "model-a": counts({ records: 2, calls: 9 }) }, { records: 2, calls: 9 });
+    const s = snap({ today: t, current: { folderId: "3f2a91c0-0000-4000-8000-000000000001", live: true, pinned: false, totals: t }, month: { ...snap().month!, totals: t } });
+    const v = text(renderPanelHtml(s, "x"));
+    expect(v).toContain("input + output tokens · 9 calls");
+    expect(v).toContain("3f2a91c0 · live · 9 calls");
+    expect(renderPanelHtml(s, "x", undefined, "daily")).toMatch(/<span class="k">Calls<\/span><span class="v">9<\/span>/);
+    expect(renderPanelHtml(s, "x", undefined, "sessions")).toMatch(/<span class="k">Calls<\/span><span class="v">9<\/span>/);
+    expect(renderPanelHtml(s, "x", undefined, "models")).toMatch(/<td class="num">9<\/td><\/tr>/);
+  });
+
+  it("per call in the model table divides by per-call records only", () => {
+    const c = counts({ records: 3, calls: 12, sessionTotals: 1, nanoAiu: m(4e9, 2, 1) });
+    const html = renderPanelHtml(snap({ month: { ...snap().month!, totals: totals({ "model-a": c }, { records: 3, calls: 12, sessionTotals: 1 }) } }), "x", undefined, "models");
+    expect(text(html)).toContain("November 2026 includes 1 session total from older Copilot, each counted on the day its session ended.");
+    // $0.04 over the 2 per-call records, not over 12 calls
+    expect(html).toContain("$0.020");
+  });
+
+  it("month KPI and data health name session totals only when there are some", () => {
+    const plainHtml = SECTIONS.map((x) => renderPanelHtml(snap(), "x", undefined, x)).join("");
+    const plain = text(plainHtml);
+    expect(plain).not.toContain(SESSION_TOTAL_NOTE);
+    expect(plain).not.toMatch(/\d session totals?\b/);
+    expect(plain).toMatch(/Sessions counted from session totals\s+0/);
+    expect(plain).not.toContain("Session-end lines too long to read");
+
+    const mt = totals({ "model-a": counts({ sessionTotals: 3 }) }, { sessionTotals: 3 });
+    const s = snap({ month: { ...snap().month!, totals: mt }, health: health({ sessionsFromTotals: 3, shutdownOversize: 2, partial: true }) });
+    const html = renderPanelHtml(s, "x") + renderPanelHtml(s, "x", undefined, "daily") + renderPanelHtml(s, "x", undefined, "health");
+    const v = text(html);
+    expect(v).toContain("3 session totals");
+    expect(v).toContain(SESSION_TOTAL_NOTE);
+    expect(html).toContain(`title="${escapeHtml(SESSION_TOTAL_NOTE)}"`);
+    expect(v).toMatch(/Sessions counted from session totals\s+3/);
+    expect(v).toMatch(/Session-end lines too long to read\s+2/);
+    expect(v).toContain("2 session-end lines too long to read were skipped");
+    expect(v.split(LOCAL_BANNER).join("")).not.toMatch(COPY_RE);
+  });
+
+  it("a session-total row in the sessions table is tagged, with — per call and growth", () => {
+    const row = { sessionId: "abcd1234-0000", firstMs: DAY0, lastMs: DAY0 + 1000, calls: 6, tokens: m(7200, 1), nanoAiu: m(0, 0, 1), sessionTotal: true };
+    const html = renderPanelHtml(snap({ month: { ...snap().month!, sessions: [row] } }), "x", undefined, "sessions");
+    expect(html).toMatch(/<span class="tag total" title="[^"]+">session total<\/span>/);
+    expect(text(html)).toContain(SESSION_TOTAL_NOTE);
+    // calls come from the request count; growth is not available
+    expect(html).toMatch(/<td class="num">6<\/td>/);
+    expect(html).toMatch(/title="Not available for a session total[^"]*"><span aria-hidden="true">—<\/span><span class="sr">not reported<\/span><\/td>/);
   });
 
   it("canary never reaches the HTML", () => {
-    const html = renderPanelHtml(snap(), "x");
-    expect(html).not.toContain(CANARY);
+    for (const section of SECTIONS) expect(renderPanelHtml(snap(), "x", undefined, section)).not.toContain(CANARY);
   });
 });

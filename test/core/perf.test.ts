@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
-import { CANARY, jsonl, otherEvent, usageEvent } from "../fixtures/build";
+import type { Snapshot } from "../../src/core/types";
+import { CANARY, jsonl, otherEvent, shutdownEvent, usageEvent } from "../fixtures/build";
 
 let root: string;
 const id = (i: number) => `0000${String(i).padStart(4, "0")}-0000-4000-8000-${String(i).padStart(12, "0")}`;
@@ -31,8 +32,17 @@ beforeAll(async () => {
         size += line.length;
       }
     }
+    // Each log ends with a session total (3 models); its per-call records hide it (D29).
+    parts.push(jsonl([shutdownEvent({ models: { [`model-${i}`]: {}, "model-b": {}, "model-c": {} } })]));
     await writeFile(join(base, id(i), "events.jsonl"), parts.join(""));
   }
+  // 20 legacy logs counted from session totals only, plus one with a 2 MB shutdown line (counted, not decoded).
+  const turn = jsonl([otherEvent("assistant.turn_end")]);
+  for (let i = 40; i < 60; i++) {
+    await writeFile(join(base, id(i), "events.jsonl"), big + turn.repeat(3) + jsonl([shutdownEvent({ models: { "model-a": { totalNanoAiu: 0 }, "model-b": {} } })]));
+  }
+  const huge = JSON.stringify(shutdownEvent()).replace('"routine"', `"${CANARY.repeat(2_000_000 / CANARY.length)}"`);
+  await writeFile(join(base, id(60), "events.jsonl"), turn + huge + "\n");
 });
 
 afterAll(async () => {
@@ -44,7 +54,11 @@ describe("perf", () => {
     (globalThis as { gc?: () => void }).gc?.();
     const heap0 = process.memoryUsage().heapUsed;
     let snaps = 0;
-    const m = new UsageMonitor({ root, rootSource: "default", log: new Logger(() => {}), onSnapshot: () => snaps++ });
+    let last: Snapshot | undefined;
+    const m = new UsageMonitor({ root, rootSource: "default", log: new Logger(() => {}), onSnapshot: (x) => {
+      snaps++;
+      last = x;
+    }, readTotals: true });
 
     let t = performance.now();
     await m.refresh({ full: true });
@@ -64,6 +78,9 @@ describe("perf", () => {
     (globalThis as { gc?: () => void }).gc?.();
     const heapMb = (process.memoryUsage().heapUsed - heap0) / 1e6;
     console.log(`cold ${cold.toFixed(0)}ms, steady ${steady.toFixed(1)}ms, idle ${idleCpuMsPerPoll.toFixed(2)}ms cpu per poll (${(performance.now() - wall0).toFixed(0)}ms wall), heap +${heapMb.toFixed(1)}MB, snapshots ${snaps}`);
+    expect(last?.health).toMatchObject({ sessionsFromTotals: 20, shutdownOversize: 1, partial: true });
+    expect(last?.today?.sessionTotals).toBe(40);
+    expect(JSON.stringify(last)).not.toContain(CANARY);
     expect(cold).toBeLessThan(2000);
     expect(steady).toBeLessThan(50);
     // 500 ms poll → 1 % CPU means < 5 ms CPU per idle poll.
@@ -79,7 +96,7 @@ describe("perf", () => {
       lines.push(jsonl([usageEvent({ usageId: `busy-${i}`, id: `be-${i}`, sourceSessionId: id(299), model: `model-${i % 7}` })]));
     }
     await writeFile(join(dir, "events.jsonl"), lines.join(""));
-    const m = new UsageMonitor({ root, rootSource: "default", log: new Logger(() => {}), onSnapshot: () => {} });
+    const m = new UsageMonitor({ root, rootSource: "default", log: new Logger(() => {}), onSnapshot: () => {}, readTotals: true });
     await m.refresh({ full: true });
     await appendFile(join(dir, "events.jsonl"), jsonl([usageEvent({ usageId: "busy-new", sourceSessionId: id(299) })]));
     let t = performance.now();

@@ -2,10 +2,12 @@
 // line; parseUsageLine runs only on lines the gate called "usage" and copies
 // an allowlist of fields into a fresh object. parseStartLine runs only on the
 // small "start" line and keeps one short project label, never a path (D25).
+// parseShutdownLine runs only on bounded "shutdown" lines and keeps per-model
+// totals; content-bearing keys are dropped while parsing (D29).
 // Nothing else leaves this module.
-import type { ParseResult, Tokens, UsageRecord } from "./types";
+import type { ParseResult, ShutdownParseResult, Tokens, UsageRecord } from "./types";
 
-export type LineClass = "usage" | "start" | "activity" | "suspect" | "skip";
+export type LineClass = "usage" | "start" | "shutdown" | "activity" | "suspect" | "skip";
 
 // One definition of "what a usage line looks like"; every byte pattern below
 // (prefix, needles, the over-long type check) is derived from these.
@@ -20,11 +22,19 @@ const START_TYPE = "session.start";
 const START_PREFIX = typePrefix(START_TYPE);
 /** session.start lines are < 1 KB in practice; anything larger is not decoded. */
 export const MAX_START_BYTES = 16 * 1024;
+const SHUTDOWN_TYPE = "session.shutdown";
+const SHUTDOWN_PREFIX = typePrefix(SHUTDOWN_TYPE);
+/** Observed max 4 KB; the cap bounds memory and the transient exposure of the paths these lines carry. */
+export const MAX_SHUTDOWN_BYTES = 64 * 1024;
 // A real usage event whose keys were reordered or re-spaced. Inside a JSON string
 // value these quotes are escaped as \", so prompt or tool text can never match.
 const SUSPECT_NEEDLES = [
   Buffer.from(`${TYPE_KEY}${USAGE_TYPE}"`),
   Buffer.from(`"type": "${USAGE_TYPE}"`),
+];
+const SHUTDOWN_NEEDLES = [
+  Buffer.from(`${TYPE_KEY}${SHUTDOWN_TYPE}"`),
+  Buffer.from(`"type": "${SHUTDOWN_TYPE}"`),
 ];
 
 function startsWith(
@@ -48,7 +58,20 @@ export function classifyLine(
   if (startsWith(buf, start, end, USAGE_PREFIX)) return "usage";
   if (startsWith(buf, start, end, ACTIVITY_PREFIX)) return "activity";
   if (startsWith(buf, start, end, START_PREFIX)) return end - start <= MAX_START_BYTES ? "start" : "skip";
-  return hasUsageNeedle(buf, start, end) ? "suspect" : "skip";
+  // No size check here: the tailer counts an oversize shutdown line instead of decoding it.
+  if (startsWith(buf, start, end, SHUTDOWN_PREFIX)) return "shutdown";
+  return hasUsageNeedle(buf, start, end) || hasShutdownNeedle(buf, start, end) ? "suspect" : "skip";
+}
+
+/** True if buf[start, end) opens with `{"type":"session.shutdown"`. No decoding. */
+export function isShutdownHead(buf: Buffer, start: number, end: number): boolean {
+  return startsWith(buf, start, end, SHUTDOWN_PREFIX);
+}
+
+/** Like hasUsageNeedle, for the shutdown type. Raw byte search, no decoding. */
+export function hasShutdownNeedle(buf: Buffer, start: number, end: number): boolean {
+  const line = buf.subarray(start, end);
+  return SHUTDOWN_NEEDLES.some((needle) => line.indexOf(needle) !== -1);
 }
 
 /**
@@ -108,6 +131,15 @@ const MODEL_ID = /^[A-Za-z0-9._:\/-]{1,100}$/;
 /** Tool names: identifiers only (MCP tools look like server-tool or server/tool). */
 const TOOL_NAME = /^[A-Za-z0-9._:\/@-]{1,80}$/;
 const MAX_TOOLS = 64;
+/** Keys that resolve through the prototype chain; never used as a map key (D28). */
+const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** A log-supplied id that matches `re` and is not a prototype key (D28). */
+function safeKey(v: unknown, re: RegExp): v is string {
+  return typeof v === "string" && re.test(v) && !PROTO_KEYS.has(v);
+}
+/** Session ids: the same shape discover accepts for a session folder name. */
+const SESSION_ID = /^[0-9a-f-]{8,64}$/i;
 const REPO = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const FOLDER_NAME = /^[A-Za-z0-9 ._@+-]{1,80}$/;
 
@@ -190,6 +222,94 @@ export function parseWorkspaceName(text: string): string | undefined {
   return cps.length > MAX_TITLE_CHARS ? `${cps.slice(0, MAX_TITLE_CHARS - 1).join("").trimEnd()}…` : v;
 }
 
+/** Keys of a shutdown line that hold paths, names or allowance data; dropped while parsing. */
+const SHUTDOWN_DROP = new Set([
+  "filesModified",
+  "accountingSnapshot",
+  "agentMetrics",
+  "providerModelMetrics",
+  "usageAccountingWatermarks",
+  "currentModel",
+]);
+const MAX_MODELS = 64;
+
+/**
+ * Per-model totals of a session.shutdown line (D29). The line (at most
+ * MAX_SHUTDOWN_BYTES) is decoded whole; JSON.parse's reviver then removes the
+ * SHUTDOWN_DROP keys while it walks the parsed tree, so they are never copied,
+ * returned or logged. Per model, only the five usage token counts,
+ * requests.count and totalNanoAiu are copied into fresh objects, plus the
+ * line's timestamp and data.sessionStartTime. A model whose tokens are all
+ * zero and that logged no requests is dropped (it logged nothing). Never read:
+ * requests.cost, totalPremiumRequests, totalApiDurationMs, codeChanges, and
+ * everything else on the line.
+ */
+export function parseShutdownLine(line: string, folderId: string): ShutdownParseResult {
+  let event: unknown;
+  try {
+    event = JSON.parse(line, (k, v) => (SHUTDOWN_DROP.has(k) ? undefined : v));
+  } catch {
+    return { kind: "malformed" };
+  }
+  if (!isObject(event)) return { kind: "malformed" };
+  if (event.type !== SHUTDOWN_TYPE) return { kind: "ignored" };
+  const data = event.data;
+  const metrics = isObject(data) ? data.modelMetrics : undefined;
+  if (!isObject(data) || !isObject(metrics)) return { kind: "unrecognized", reason: "no-model-metrics" };
+  const timestampMs = typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+  if (!Number.isFinite(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
+  const entries = Object.entries(metrics);
+  if (entries.length === 0) return { kind: "empty" };
+
+  const started = count(data.sessionStartTime);
+  const out: UsageRecord[] = [];
+  let idle = 0;
+  for (const [i, [name, m]] of entries.entries()) {
+    if (out.length >= MAX_MODELS) break;
+    const usage = isObject(m) ? m.usage : undefined;
+    if (!isObject(m) || !isObject(usage)) continue;
+    const tokens: Tokens = {};
+    const input = count(usage.inputTokens);
+    const output = count(usage.outputTokens);
+    const cacheRead = count(usage.cacheReadTokens);
+    const cacheWrite = count(usage.cacheWriteTokens);
+    const reasoning = count(usage.reasoningTokens);
+    if (input !== undefined) tokens.input = input;
+    if (output !== undefined) tokens.output = output;
+    if (cacheRead !== undefined) tokens.cacheRead = cacheRead;
+    if (cacheWrite !== undefined) tokens.cacheWrite = cacheWrite;
+    if (reasoning !== undefined) tokens.reasoning = reasoning;
+    if (Object.keys(tokens).length === 0) continue;
+    const requests = isObject(m.requests) ? count(m.requests.count) : undefined;
+    // All-zero tokens and no requests: an entry that logged nothing, not a $0.00 row (N2).
+    if ((requests ?? 0) === 0 && Object.values(tokens).every((t) => t === 0)) {
+      idle++;
+      continue;
+    }
+    const model = safeKey(name, MODEL_ID) ? name : undefined;
+    const record: UsageRecord = {
+      // A rejected id never reaches the key; `#i` cannot collide with a valid model id.
+      key: `shutdown:${folderId}:${model ?? `#${i}`}`,
+      keySource: "shutdown",
+      kind: "sessionTotal",
+      sessionId: folderId,
+      folderId,
+      timestampMs,
+      tokens,
+    };
+    if (started !== undefined && started <= timestampMs) record.startedMs = started;
+    if (model !== undefined) record.model = model;
+    if (requests !== undefined) record.calls = requests;
+    let nanoAiu = count(m.totalNanoAiu);
+    // Builds before 1.0.99 wrote 0 here next to real token counts: not reported, not $0.
+    if (nanoAiu === 0 && Object.values(tokens).some((t) => t > 0)) nanoAiu = undefined;
+    if (nanoAiu !== undefined) record.nanoAiu = nanoAiu;
+    out.push(record);
+  }
+  if (out.length === 0) return idle > 0 ? { kind: "empty" } : { kind: "unrecognized", reason: "no-known-token-field" };
+  return { kind: "totals", records: out };
+}
+
 export function parseUsageLine(line: string, folderId: string): ParseResult {
   let event: unknown;
   try {
@@ -234,15 +354,16 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
   const record: UsageRecord = {
     key,
     keySource: usageId !== undefined ? "usageId" : "eventId",
-    sessionId: nonEmptyString(accounting.sourceSessionId) ?? folderId,
+    kind: "call",
+    // An id not shaped like a session folder name is not trusted: the folder stands in.
+    sessionId: safeKey(accounting.sourceSessionId, SESSION_ID) ? accounting.sourceSessionId : folderId,
     folderId,
     timestampMs,
     tokens,
   };
   const sequence = count(accounting.sequence);
   if (sequence !== undefined) record.sequence = sequence;
-  if (typeof usage.model === "string" && MODEL_ID.test(usage.model))
-    record.model = usage.model;
+  if (safeKey(usage.model, MODEL_ID)) record.model = usage.model;
   const durationMs = count(usage.duration);
   if (durationMs !== undefined) record.durationMs = durationMs;
   const nanoAiu = isObject(usage.copilotUsage)
@@ -250,11 +371,11 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     : undefined;
   if (nanoAiu !== undefined) record.nanoAiu = nanoAiu;
   if (isObject(usage.toolCounts)) {
-    const tools: Record<string, number> = {};
+    const tools: Record<string, number> = Object.create(null);
     let n = 0;
     for (const [name, v] of Object.entries(usage.toolCounts)) {
       const c = count(v);
-      if (c === undefined || c === 0 || !TOOL_NAME.test(name)) continue;
+      if (c === undefined || c === 0 || !safeKey(name, TOOL_NAME)) continue;
       if (++n > MAX_TOOLS) break;
       tools[name] = c;
     }

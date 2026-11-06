@@ -5,17 +5,61 @@ import { appendFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
-import { jsonl, sessionTree, usageEvent } from "../fixtures/build";
+import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
 
 const ROOT = join(tmpdir(), "copilot-usage-monitor-fixture");
 const LIVE = "0000aaaa-0000-4000-8000-000000000001";
 
+interface SidebarRow {
+  id: string;
+  label: string;
+  value: string;
+  spoken: string;
+  link?: { command: string; args: string[] };
+}
+
 interface TestState {
   statusText: string;
   tooltip: string;
+  statusA11y: string;
   panelOpen: boolean;
   panelTitle?: string;
+  panelSection: string;
+  panelRenders: number;
+  panelActive: boolean;
+  panelHeld: boolean;
+  sidebar: {
+    visible: boolean;
+    renders: number;
+    state: string;
+    unitWord: string;
+    html?: string;
+    folders: string[];
+    options?: { enableScripts?: boolean; enableForms?: boolean; enableCommandUris?: boolean | string[]; localResourceRoots?: string[] };
+    rows: SidebarRow[];
+    groups: string[];
+  };
+  snapshot?: { filter?: { project?: string; tool?: string } };
 }
+
+const SIDEBAR_COMMANDS = ["copilotUsageMonitor.showDetails", "copilotUsageMonitor.showSection", "copilotUsageMonitor.setFilter", "copilotUsageMonitor.toggleUnit"];
+const row = (s: TestState, id: string) => s.sidebar.rows.find((i) => i.id === id);
+/** The status bar figure in tokens view: "$(pulse) Local today: 1.2K tok" → "1.2K tok". */
+const statusFigure = (s: TestState) => s.statusText.replace(/^\$\([a-z-]+\) Local today: /, "");
+/** The value cell of a row in the last drawn HTML: the escaped figure after its label. */
+const drawn = (s: TestState, label: string) =>
+  new RegExp(`<span class="l">${label}</span>(?:<span class="mk[^"]*">[^<]*</span>)?<span class="v">((?:[^<]|<span[^>]*>[^<]*</span>)*)</span>`)
+    .exec(s.sidebar.html ?? "")?.[1]
+    ?.replace(/<span class="sr">[^<]*<\/span>/g, "")
+    .replace(/<[^>]+>/g, "");
+const showSidebar = () => vscode.commands.executeCommand("workbench.view.extension.copilotUsageMonitor");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let usageSeq = 0;
+const appendUsage = () =>
+  appendFile(
+    join(ROOT, "session-state", LIVE, "events.jsonl"),
+    jsonl([usageEvent({ usageId: `side-${++usageSeq}`, id: `se-${usageSeq}`, sourceSessionId: LIVE, inputTokens: 400_000 })]),
+  );
 
 const state = () => vscode.commands.executeCommand<TestState>("copilotUsageMonitor._testState");
 
@@ -81,15 +125,203 @@ suite("Copilot Usage Monitor", () => {
     assert.strictEqual(s.panelTitle, "Copilot Usage (Local)");
   });
 
+  test("showSection switches the panel's section; bad ids are ignored; other commands keep it", async () => {
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "sessions");
+    let s = await waitFor((x) => x.panelOpen && x.panelSection === "sessions");
+    for (const bad of ["bogus", "<img src=x>", "__proto__", 42, {}, ["overview"]]) {
+      await vscode.commands.executeCommand("copilotUsageMonitor.showSection", bad);
+    }
+    s = await state();
+    assert.strictEqual(s.panelSection, "sessions");
+    // Same section again: the unchanged document is not re-assigned.
+    const renders = s.panelRenders;
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "sessions");
+    assert.strictEqual((await state()).panelRenders, renders);
+    await vscode.commands.executeCommand("copilotUsageMonitor.selectMonth", "current");
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "tool", "");
+    await vscode.commands.executeCommand("copilotUsageMonitor.showDetails");
+    assert.strictEqual((await state()).panelSection, "sessions");
+    assert.strictEqual(config().inspect("showSection")?.globalValue, undefined);
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "overview");
+    await waitFor((x) => x.panelSection === "overview");
+  });
+
+  test("panel: while focused, usage lines redraw it at most once per 10 s; user actions and losing focus draw at once (A11y C1)", async () => {
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "overview");
+    let s = await waitFor((x) => x.panelOpen && x.panelActive && x.panelSection === "overview");
+    const renders = s.panelRenders;
+    // three model calls within the interval: the status bar follows, the focused panel is held
+    for (let i = 0; i < 3; i++) {
+      const before = (await state()).statusText;
+      await appendUsage();
+      await waitFor((x) => x.statusText !== before);
+    }
+    s = await state();
+    assert.strictEqual(s.panelRenders, renders, `no redraw while focused within 10 s (active ${s.panelActive}, held ${s.panelHeld})`);
+    assert.ok(s.panelHeld, "a redraw is held back");
+    // a section switch is the user's: drawn at once, with the latest figures
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "daily");
+    s = await waitFor((x) => x.panelSection === "daily");
+    assert.strictEqual(s.panelRenders, renders + 1);
+    assert.ok(!s.panelHeld);
+    // another call is held; moving focus to an editor draws it at once
+    const before = s.statusText;
+    await appendUsage();
+    s = await waitFor((x) => x.statusText !== before && x.panelHeld);
+    assert.strictEqual(s.panelRenders, renders + 1);
+    const doc = await vscode.workspace.openTextDocument({ content: "focus elsewhere" });
+    await vscode.window.showTextDocument(doc, vscode.ViewColumn.Active);
+    s = await waitFor((x) => !x.panelActive && !x.panelHeld, 3000);
+    assert.strictEqual(s.panelRenders, renders + 2, "one redraw when the panel loses focus");
+    await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "overview");
+    await waitFor((x) => x.panelSection === "overview");
+  });
+
+  test("side bar: contributions are present", async () => {
+    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const c = ext.packageJSON.contributes;
+    assert.strictEqual(c.viewsContainers.activitybar[0].id, "copilotUsageMonitor");
+    assert.strictEqual(c.viewsContainers.activitybar[0].icon, "$(graph)");
+    assert.strictEqual(c.views.copilotUsageMonitor[0].id, "copilotUsageMonitor.summary");
+    assert.strictEqual(c.views.copilotUsageMonitor[0].type, "webview");
+    assert.strictEqual(c.viewsWelcome, undefined);
+    const all = await vscode.commands.getCommands(true);
+    assert.ok(all.includes("copilotUsageMonitor.summary.focus"), "VS Code registered the view's focus command");
+    assert.ok(all.includes("workbench.view.extension.copilotUsageMonitor"), "VS Code registered the container");
+  });
+
+  test("side bar: focusing the view draws a no-script page that matches the snapshot and the status bar", async () => {
+    await showSidebar();
+    const s = await waitFor((x) => x.sidebar.visible && x.sidebar.state === "ready" && (x.sidebar.html ?? "").includes("All projects"), 5000);
+    assert.deepStrictEqual(s.sidebar.options, { enableScripts: false, enableForms: false, enableCommandUris: SIDEBAR_COMMANDS, localResourceRoots: [] });
+    assert.strictEqual(s.sidebar.unitWord, "tokens");
+    // no workspace folder is open in the test host, so there is no "This workspace" group
+    assert.deepStrictEqual(s.sidebar.folders, []);
+    assert.deepStrictEqual(s.sidebar.groups, ["all", "projects", "models"]);
+    assert.deepStrictEqual(s.sidebar.rows.filter((i) => !i.id.includes("/")).map((i) => i.label), ["Today", "Last 7 days", "This month"]);
+    const today = row(s, "today")!;
+    assert.strictEqual(today.value, statusFigure(s), `${today.value} vs ${s.statusText}`);
+    assert.strictEqual(drawn(s, "Today"), statusFigure(s));
+    assert.match(today.spoken, /^Today: [\d.]+ (thousand|million) tokens/);
+    assert.match(s.statusA11y, /^Copilot usage, local today: /);
+    const html = s.sidebar.html!;
+    assert.ok(html.includes("Open dashboard"));
+    assert.ok(html.includes("Top projects, last 7 days") && html.includes("Top models, last 7 days"));
+    assert.ok(!/<script/i.test(html));
+    assert.ok(html.includes(`content="default-src 'none'; style-src `));
+    for (const [, href] of html.matchAll(/\shref="([^"]*)"/g)) {
+      const cmd = /^command:([\w.]+)(\?|$)/.exec(href!)?.[1];
+      assert.ok(cmd && SIDEBAR_COMMANDS.includes(cmd), href);
+    }
+    assert.ok(!JSON.stringify(s.sidebar).includes(CANARY));
+    // the CSP names the webview's resource origin; nothing else in the page or model is a URL
+    assert.ok(!JSON.stringify({ ...s.sidebar, html: html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, "") }).includes("http"));
+  });
+
+  test("side bar: the page is redrawn within 2 s of a usage line while visible, once per change", async () => {
+    await showSidebar();
+    await waitFor((x) => x.sidebar.visible);
+    await sleep(400); // let a pending debounced redraw land
+    for (let i = 0; i < 3; i++) {
+      const before = await state();
+      const t0 = Date.now();
+      await appendUsage();
+      // the figure changed and the page was redrawn (250 ms debounce)
+      const s = await waitFor((x) => drawn(x, "Today") !== drawn(before, "Today") && x.sidebar.renders > before.sidebar.renders, 5000);
+      assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0} ms`);
+      assert.strictEqual(s.sidebar.renders, before.sidebar.renders + 1, "one redraw per change");
+      assert.strictEqual(drawn(s, "Today"), statusFigure(s));
+    }
+    // idle: no redraws without a change
+    await sleep(400);
+    const renders = (await state()).sidebar.renders;
+    await sleep(1500);
+    assert.strictEqual((await state()).sidebar.renders, renders);
+  });
+
+  test("side bar: no redraws while hidden; one when shown again", async () => {
+    await showSidebar();
+    await waitFor((x) => x.sidebar.visible);
+    // Showing another side bar container hides ours.
+    await vscode.commands.executeCommand("workbench.view.explorer");
+    let s = await waitFor((x) => !x.sidebar.visible);
+    const renders = s.sidebar.renders;
+    const html = s.sidebar.html;
+    for (let i = 0; i < 3; i++) {
+      // The model keeps up while hidden (the figure always moves); only the redraw is held back.
+      const before = row(s, "today")!.value;
+      await appendUsage();
+      s = await waitFor((x) => row(x, "today")!.value !== before);
+    }
+    await sleep(600);
+    s = await state();
+    assert.strictEqual(s.sidebar.renders, renders, "no redraw while hidden");
+    assert.strictEqual(s.sidebar.html, html);
+    await showSidebar();
+    s = await waitFor((x) => x.sidebar.visible && x.sidebar.renders > renders);
+    await sleep(600);
+    s = await state();
+    assert.strictEqual(s.sidebar.renders, renders + 1, "exactly one redraw on show");
+    assert.strictEqual(drawn(s, "Today"), statusFigure(s));
+  });
+
+  test("side bar: links open the matching section; a project row toggles the filter", async () => {
+    let s = await state();
+    const run = (c: { command: string; args: string[] }) => vscode.commands.executeCommand(c.command, ...c.args);
+    await run(row(s, "today")!.link!);
+    await waitFor((x) => x.panelOpen && x.panelSection === "daily");
+    await run(row(s, "models/0")!.link!);
+    await waitFor((x) => x.panelSection === "models");
+    await run(row(s, "month")!.link!);
+    await waitFor((x) => x.panelSection === "overview");
+    const project = row(s, "projects/0")!;
+    assert.strictEqual(project.link!.command, "copilotUsageMonitor.setFilter");
+    const todayBefore = row(s, "today")!.value;
+    await run(project.link!);
+    s = await waitFor((x) => x.panelSection === "projects" && x.snapshot?.filter?.project === project.link!.args[1]);
+    s = await waitFor((x) => row(x, "projects/0")!.link!.args[1] === "");
+    assert.strictEqual(row(s, "today")!.value, todayBefore, "Today is never filtered");
+    assert.deepStrictEqual(row(s, "projects/0")!.link!.args, ["project", "", "projects"]);
+    await run(row(s, "projects/0")!.link!);
+    await waitFor((x) => x.snapshot?.filter === undefined);
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "overview");
+  });
+
+  test("side bar: switching the unit updates the rows and the status bar together", async () => {
+    await showSidebar();
+    try {
+      await vscode.commands.executeCommand("copilotUsageMonitor.toggleUnit");
+      const s = await waitFor((x) => x.sidebar.unitWord === "USD (est.)" && x.statusText.includes(" Local ") && !x.statusText.endsWith("tok"));
+      const figure = s.statusText.replace(/^\$\([a-z-]+\) Local [A-Z][a-z]{2}: /, "");
+      // " est." is said once in the footer, not on every row (design #6)
+      assert.strictEqual(row(s, "month")!.value, figure.split(" / ")[0]!, `${row(s, "month")!.value} vs ${s.statusText}`);
+      assert.match(row(s, "today")!.value, /^(\$[\d.,]+\*?|—)$/);
+      assert.match(s.statusA11y, /^Copilot usage, local this month, estimated: /);
+      const html = (await waitFor((x) => (x.sidebar.html ?? "").includes("Show tokens"))).sidebar.html!;
+      assert.ok(html.includes('href="command:copilotUsageMonitor.toggleUnit"'));
+    } finally {
+      await vscode.commands.executeCommand("copilotUsageMonitor.setUnit", "tokens");
+      await config().update("display", undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.sidebar.unitWord === "tokens" && x.statusText.endsWith("tok"));
+  });
+
   test("no-dir tooltip names the setting, and a setting change re-roots", async () => {
     await config().update("copilotHome", join(ROOT, "missing"), vscode.ConfigurationTarget.Global);
     try {
       const s = await waitFor((x) => x.statusText === "$(circle-slash) Copilot logs not found");
       assert.match(s.tooltip, /copilotUsageMonitor\.copilotHome/);
+      // the side bar shows the in-page state: no rows, the setting named
+      await showSidebar();
+      const side = await waitFor((x) => x.sidebar.state === "no-dir" && (x.sidebar.html ?? "").includes("No Copilot session logs were found"));
+      assert.deepStrictEqual(side.sidebar.rows, []);
+      assert.ok(side.sidebar.html!.includes("copilotUsageMonitor.copilotHome"));
+      assert.ok(!side.sidebar.html!.includes("All projects"));
     } finally {
       await config().update("copilotHome", undefined, vscode.ConfigurationTarget.Global);
     }
-    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:"));
+    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:") && x.sidebar.state === "ready");
   });
 
   test("USD view and a target range change the status bar; the panel links are allowlisted", async () => {

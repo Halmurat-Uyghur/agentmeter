@@ -2,8 +2,8 @@
 // session logs, never an account statement: "—" means nothing was reported,
 // "*" means some contributing records did not report the field.
 
-import { addMetrics } from "./store";
-import type { Counts, Health, Metric, RangeState, Snapshot, ViewOptions } from "./types";
+import { addMetrics, localDaysBefore } from "./store";
+import type { Counts, Health, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
@@ -14,11 +14,18 @@ export const STREAMING_NOTE =
 export const COST_NOTE =
   "Cost is an estimate: Copilot's own logged AI credits × $0.01, GitHub's published rate. It matches GitHub's per-model token prices, but it is not an invoice.";
 
+/** Hover text for the "session total" marker (O3, verbatim). */
+export const SESSION_TOTAL_NOTE =
+  "Session total: Copilot before 1.0.99 writes one total when a session ends instead of a record per model call. The whole session is counted on the day it ended. Per-call figures, growth and tool use are not available for it.";
+
+/** Short form of SESSION_TOTAL_NOTE for tooltips (O3). */
+export const SESSION_TOTAL_SHORT = "Session total: counted once, on the day the session ended (older Copilot).";
+
 export const DEFAULT_VIEW: ViewOptions = { unit: "tokens" };
 
 export const NOT_COVERED: string[] = [
   "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
-  "Sessions from Copilot before 1.0.99 have no per-call records; they are listed as sessions without per-call data and add nothing to the totals.",
+  "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated USD), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
   '"Today" starts at local midnight on this computer; GitHub\'s own day may follow UTC.',
 ];
 
@@ -94,19 +101,34 @@ export const RANGE_LABEL: Record<RangeState, string> = {
   over: "over target",
 };
 
-const RANGE_ICON: Record<RangeState, string> = {
-  none: "$(pulse)",
-  under: "$(arrow-down)",
-  in: "$(pass)",
-  over: "$(flame)",
+const RANGE_ICON_ID: Record<RangeState, string> = {
+  none: "pulse",
+  under: "arrow-down",
+  in: "pass",
+  over: "flame",
 };
 
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** Range state of the current month in `s` (never a selected past month). */
+/**
+ * The current calendar month's totals, never filtered and never a selected past
+ * month (D31): `thisMonth`. Snapshots built without it (older tests) fall back to
+ * the newest history month, which the monitor filters, so the monitor always sets it.
+ */
+export function thisMonthTotals(s: Snapshot): Totals | undefined {
+  if ("thisMonth" in s) return s.thisMonth;
+  return s.history?.at(-1)?.totals ?? (s.month?.isCurrent ? s.month.totals : undefined);
+}
+
+/** Range state of the current month in `s` (unfiltered; never a selected past month). */
 export function currentRangeState(s: Snapshot, view: ViewOptions): RangeState {
-  const cur = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
-  return rangeState(cur?.totals ? usd(cur.totals.nanoAiu) : undefined, view.range);
+  const t = thisMonthTotals(s);
+  return rangeState(t ? usd(t.nanoAiu) : undefined, view.range);
+}
+
+/** Codicon id for a range state; the status bar and the side bar share it (D31). */
+export function rangeIconId(state: RangeState): string {
+  return RANGE_ICON_ID[state];
 }
 
 export function partialNote(m: Metric): string | undefined {
@@ -118,26 +140,82 @@ function star(s: string): string {
   return s === DASH || s.endsWith("*") ? s : s + "*";
 }
 
+/** The parts of the status bar text for a snapshot with data; the side bar reuses them (D31). */
+export interface StatusParts {
+  /** codicon id: the range state, or "warning" when the log format changed */
+  icon: string;
+  /** "today" in tokens; the month's short name in USD */
+  place: string;
+  /** "1.5M* tok", "—", "$12.40*" */
+  figure: string;
+  /** " / $20.00–$60.00" in USD with a range set, else "" */
+  suffix: string;
+  state: RangeState;
+}
+
+export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): StatusParts {
+  // The icon is chosen independently, so a format change that stops every
+  // record from parsing (no `today`) still shows the warning.
+  const state = currentRangeState(s, view);
+  const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
+  if (view.unit === "cost") {
+    // The current month, unfiltered (D31): a project or tool filter never reaches the status bar.
+    const t = thisMonthTotals(s);
+    let n = t ? formatUsd(t.nanoAiu) : DASH;
+    if (s.health.partial) n = star(n);
+    const place = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
+    return { icon, place, figure: n, suffix: state === "none" ? "" : ` / ${formatRange(view.range)}`, state };
+  }
+  if (!s.today) return { icon, place: "today", figure: DASH, suffix: "", state };
+  let n = formatCount(addMetrics(s.today.input, s.today.output));
+  if (s.health.partial) n = star(n);
+  return { icon, place: "today", figure: `${n} tok`, suffix: "", state };
+}
+
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "$(sync~spin) Copilot usage: loading";
   if (s.health.state === "no-dir")
     return "$(circle-slash) Copilot logs not found";
   if (s.health.state === "permission") return "$(lock) Copilot logs unreadable";
-  // The icon is chosen independently, so a format change that stops every
-  // record from parsing (no `today`) still shows the warning.
-  const state = currentRangeState(s, view);
-  const icon = s.health.state === "format-changed" ? "$(warning)" : RANGE_ICON[state];
-  if (view.unit === "cost") {
-    const cur = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
-    const name = MONTH_ABBR[new Date(cur?.monthStartMs ?? s.dayStartMs).getMonth()]!;
-    let n = cur?.totals ? formatUsd(cur.totals.nanoAiu) : DASH;
-    if (s.health.partial) n = star(n);
-    return `${icon} Local ${name}: ${n}${state === "none" ? "" : ` / ${formatRange(view.range)}`}`;
-  }
-  if (!s.today) return `${icon} Local today: ${DASH}`;
-  let n = formatCount(addMetrics(s.today.input, s.today.output));
-  if (s.health.partial) n = star(n);
-  return `${icon} Local today: ${n} tok`;
+  const p = statusParts(s, view);
+  return `$(${p.icon}) Local ${p.place}: ${p.figure}${p.suffix}`;
+}
+
+/**
+ * Words for a screen reader (D33): "1.5M* tok" → "1.5 million tokens (may be
+ * incomplete)", "—" → "not reported", "$12.40" → "12.40 US dollars". No icon syntax.
+ */
+export function spoken(text: string): string {
+  return text
+    .replace(/\$\(([a-z-]+)(~[a-z]+)?\)\s*/g, "")
+    .replace(/—/g, "not reported")
+    .replace(/([\dMK])\*/g, "$1 (may be incomplete)")
+    .replace(/\$(\d[\d,]*(?:\.\d+)?)/g, "$1 US dollars")
+    .replace(/(\d(?:\.\d)?)M\b/g, "$1 million")
+    .replace(/(\d(?:\.\d)?)K\b/g, "$1 thousand")
+    .replace(/\btok\b/g, "tokens")
+    .replace(/\best\./g, "estimated")
+    .replace(/–/g, " to ")
+    .replace(/▲/g, "up")
+    .replace(/▼/g, "down")
+    .replace(/×/g, " times")
+    .replace(/<(?=\d)/g, "less than ")
+    .replace(/ · /g, ", ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** The status bar item's spoken label (D33); same figures as statusText, in words. */
+export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
+  if (!s) return "Copilot usage: loading";
+  if (s.health.state === "no-dir") return "Copilot logs not found. Opens details.";
+  if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
+  const p = statusParts(s, view);
+  const place = view.unit === "cost" ? `this month, estimated` : "today";
+  const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
+  if (p.state !== "none") parts.push(`${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
+  if (s.health.state === "format-changed") parts.push("the log format may have changed");
+  return parts.join(", ") + ". Opens details.";
 }
 
 /** Backslash-escapes every ASCII punctuation character (all are escapable in
@@ -185,6 +263,8 @@ function healthLines(h: Health): string[] {
       reasons.push(`- ${h.malformed} malformed line(s) were skipped.`);
     if (h.overlong > 0)
       reasons.push(`- ${h.overlong} over-long line(s) that may contain usage were skipped.`);
+    if (h.shutdownOversize > 0)
+      reasons.push(`- ${h.shutdownOversize} session-end line(s) too long to read were skipped.`);
     out.push(reasons.join("\n"));
   }
   if (h.overlongOther > 0) {
@@ -192,10 +272,11 @@ function healthLines(h: Health): string[] {
       `Data health: ${h.overlongOther} over-long line(s) that are not usage were skipped; totals are unaffected.`,
     );
   }
+  if (h.sessionsFromTotals > 0) {
+    out.push(`${h.sessionsFromTotals} session(s) counted from session totals. ${SESSION_TOTAL_SHORT}`);
+  }
   if (h.sessionsWithoutUsage > 0) {
-    out.push(
-      `${h.sessionsWithoutUsage} session(s) without per-call data (older Copilot) are not in the totals.`,
-    );
+    out.push(`${h.sessionsWithoutUsage} session(s) without usage data are not in the totals.`);
   }
   return out;
 }
@@ -208,7 +289,8 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   }
 
   if (s.today) {
-    parts.push(["**Local today**", ...countsLines(s.today)].join("  \n"));
+    const incl = s.today.sessionTotals > 0 ? ` (incl. ${s.today.sessionTotals} session total${s.today.sessionTotals === 1 ? "" : "s"})` : "";
+    parts.push([`**Local today**${incl}`, ...countsLines(s.today)].join("  \n"));
   } else if (s.health.state !== "no-dir" && s.health.state !== "permission") {
     parts.push(`**Local today**: ${DASH}`);
   }
@@ -240,9 +322,9 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     }
   }
 
-  const thisMonth = s.history?.at(-1) ?? (s.month?.isCurrent ? s.month : undefined);
+  const thisMonth = thisMonthTotals(s);
   if (view.unit === "cost" || view.range) {
-    const spent = thisMonth?.totals ? formatUsd(thisMonth.totals.nanoAiu) : DASH;
+    const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
     if (view.range) {
       const state = currentRangeState(s, view);
@@ -254,6 +336,40 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   parts.push(...healthLines(s.health));
   return parts.join("\n\n");
 }
+
+/**
+ * The last 7 days against the 7 before, as ▲/▼ and a multiplier (D32; the copy
+ * gate bans the percent sign). Undefined when neither week has a figure. An
+ * arrow appears only when both weeks have a figure; when one has none the text
+ * is neutral. `priorRead` false (the 7 days before start before the history
+ * window, see weekCoverage) gives no comparison at all.
+ */
+export function weekChange(cur: number | undefined, prior: number | undefined, priorRead = true): string | undefined {
+  const c = cur ?? 0;
+  const p = prior ?? 0;
+  if (!priorRead) return c > 0 ? "no comparison" : undefined;
+  if (c <= 0 && p <= 0) return undefined;
+  if (p <= 0) return "nothing logged in the 7 days before";
+  if (c <= 0) return "nothing logged yet";
+  const r = c / p;
+  const x = r >= 10 ? String(Math.round(r)) : r.toFixed(1);
+  if (x === "1.0") return "about the same as the 7 days before";
+  return `${r > 1 ? "▲" : "▼"} ${x}× the 7 days before`;
+}
+
+/** Which of the two weeks behind weekChange start before the history window (the first
+ * month read, `copilotUsageMonitor.historyMonths`), so they hold fewer than 7 days of logs. */
+export function weekCoverage(s: Pick<Snapshot, "dayStartMs" | "history">): { last7Short: boolean; prior7Short: boolean } {
+  const windowStart = s.history?.[0]?.monthStartMs;
+  if (windowStart === undefined) return { last7Short: false, prior7Short: false };
+  const day = new Date(s.dayStartMs);
+  return { last7Short: windowStart > localDaysBefore(day, 6), prior7Short: windowStart > localDaysBefore(day, 13) };
+}
+
+export const WEEK_SHORT_NOTE =
+  "Logs are read from the 1st of the month only (copilotUsageMonitor.historyMonths), so this covers fewer than 7 days.";
+export const PRIOR_SHORT_NOTE =
+  "No comparison: the 7 days before start before the first month of logs read (copilotUsageMonitor.historyMonths).";
 
 /** Model time as "18m 22s" / "42s" / "1h 03m"; "—" when unreported, "*" when partial. */
 export function formatDuration(m: Metric): string {

@@ -16,11 +16,14 @@ import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
 import { parseUsageLine } from "../../src/core/extract";
 import type { Snapshot } from "../../src/core/types";
+import { renderPanelHtml, SECTIONS } from "../../src/core/panelHtml";
+import { statusText, tooltipMarkdown } from "../../src/core/format";
 import {
   CANARY,
   jsonl,
   otherEvent,
   sessionTree,
+  shutdownEvent,
   usageEvent,
 } from "../fixtures/build";
 
@@ -278,20 +281,20 @@ describe("UsageMonitor", () => {
     });
   });
 
-  it("legacy only: no-data, today undefined", async () => {
+  it("legacy only, empty session totals: no-data, today undefined", async () => {
     await sessionTree(root, [
       {
         id: A,
         lines: jsonl([
           turnEnd(),
           turnEnd(),
-          otherEvent("session.shutdown", { timestamp: at(9) }),
+          shutdownEvent({ models: {}, timestamp: at(9) }),
         ]),
       },
     ]);
-    make();
+    make({ readTotals: true });
     await monitor.refresh({ full: true });
-    expect(last().health.state).toBe("no-data");
+    expect(last().health).toMatchObject({ state: "no-data", unrecognized: 0, sessionsWithoutUsage: 1, sessionsFromTotals: 0 });
     expect(last().today).toBeUndefined();
   });
 
@@ -600,6 +603,210 @@ describe("UsageMonitor", () => {
     await monitor.refresh();
     expect(last().current!.folderId).toBe(B);
     expect(last().current!.pinned).toBe(true);
+  });
+
+  it("a __proto__ model line does not stop snapshots (D28)", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) }]);
+    make();
+    await monitor.refresh({ full: true });
+    const evil = usageEvent({ model: "__proto__", usageId: "evil", id: "evil", sourceSessionId: A, timestamp: at(9, 30) }) as Record<string, any>;
+    evil.data.usage.toolCounts = JSON.parse('{"__proto__":1,"constructor":1}');
+    await appendFile(events(A), jsonl([evil]));
+    await monitor.refresh();
+    expect(last().today?.records).toBe(2);
+    expect(Object.keys(last().today!.byModel).sort()).toStrictEqual(["(unknown model)", "model-a"]);
+    expect(logLines.join("\n")).not.toContain("EXCEPTION");
+    expect(({} as Record<string, unknown>).records).toBeUndefined();
+  });
+
+  // ---- session totals from session.shutdown (D29)
+
+  const legacy = (id: string, ts = at(9), o: Parameters<typeof shutdownEvent>[0] = {}) =>
+    jsonl([turnEnd(), turnEnd(), turnEnd(), shutdownEvent({ timestamp: ts, ...o })]);
+
+  it("legacy session total counted on its shutdown day", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    const s = last();
+    expect(s.today).toBeDefined();
+    expect(s.today!.calls).toBe(6);
+    expect(s.today!.records).toBe(1);
+    expect(s.today!.sessionTotals).toBe(1);
+    expect(s.today!.input.sum).toBe(6000);
+    expect(s.today!.nanoAiu.sum).toBe(12_000_000_000);
+    expect(s.health).toMatchObject({ state: "ok", sessionsFromTotals: 1, sessionsWithoutUsage: 0, unrecognized: 0, partial: false });
+    expect(s.current).toMatchObject({ folderId: A, live: false });
+    expect(s.current!.totals!.sessionTotals).toBe(1);
+    expect(s.month!.sessions[0]).toMatchObject({ sessionId: A, sessionTotal: true, calls: 6 });
+  });
+
+  it("legacy zero AIU stays unreported: tokens counted, USD not", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A, at(9), { models: { "model-a": { totalNanoAiu: 0 } } }) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today!.input.sum).toBe(6000);
+    expect(last().today!.nanoAiu).toEqual({ sum: 0, reported: 0, missing: 1 });
+    expect(statusText(last(), { unit: "cost" })).not.toContain("$0.00");
+  });
+
+  it("a session with usage records and a shutdown is counted once", async () => {
+    const lines = jsonl([rec(A, 1), rec(A, 2), shutdownEvent({ timestamp: at(9, 30), models: { "model-a": { inputTokens: 2000, outputTokens: 400, requests: 2 } } })]);
+    await sessionTree(root, [{ id: A, lines }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today).toMatchObject({ records: 2, calls: 2, sessionTotals: 0 });
+    expect(last().today!.input.sum).toBe(2000);
+    expect(last().health.sessionsFromTotals).toBe(0);
+  });
+
+  it("two shutdown lines count once: the last one wins", async () => {
+    const lines = legacy(A, at(8)) + jsonl([otherEvent("session.resume", { timestamp: at(8, 30) }), turnEnd(), shutdownEvent({ timestamp: at(9), models: { "model-a": { inputTokens: 9000 } } })]);
+    await sessionTree(root, [{ id: A, lines }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today).toMatchObject({ records: 1, calls: 6, sessionTotals: 1 });
+    expect(last().today!.input.sum).toBe(9000);
+  });
+
+  it("shutdown, then later usage records for the same session: the total is hidden", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today!.sessionTotals).toBe(1);
+    const n = snaps.length;
+    await appendFile(events(A), jsonl([rec(A, 1, at(9, 40))]));
+    await monitor.refresh();
+    expect(snaps.length).toBe(n + 1);
+    expect(last().today).toMatchObject({ records: 1, calls: 1, sessionTotals: 0 });
+    expect(last().health.sessionsFromTotals).toBe(0);
+  });
+
+  it("a shutdown dated yesterday feeds the month, not today", async () => {
+    const yesterday = new Date(2026, 0, 14, 18, 0, 0).toISOString();
+    await sessionTree(root, [{ id: A, lines: legacy(A, yesterday) }, { id: B, lines: jsonl([rec(B, 1)]) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today).toMatchObject({ records: 1, sessionTotals: 0 });
+    expect(last().month!.totals).toMatchObject({ records: 2, calls: 7, sessionTotals: 1 });
+    expect(last().month!.days[13]!.totals!.sessionTotals).toBe(1);
+  });
+
+  it("readTotals off: shutdown lines are never decoded (v0.3 numbers)", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A) }]);
+    const toStr = vi.spyOn(Buffer.prototype, "toString");
+    make();
+    await monitor.refresh({ full: true });
+    const decoded = toStr.mock.results.map((r) => String(r.value));
+    toStr.mockRestore();
+    expect(decoded.some((d) => d.includes("session.shutdown"))).toBe(false);
+    expect(last().today).toBeUndefined();
+    expect(last().health).toMatchObject({ state: "no-data", sessionsWithoutUsage: 1, sessionsFromTotals: 0, shutdownOversize: 0 });
+  });
+
+  it("an unrecognized shutdown line raises format-changed; earlier records still count", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) }, { id: B, lines: jsonl([turnEnd(), shutdownEvent({ timestamp: at(9), models: null })]) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ state: "format-changed", unrecognized: 1 });
+    expect(last().today!.records).toBe(1);
+  });
+
+  it("a malformed shutdown line marks partial", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) + '{"type":"session.shutdown","data":{\n' }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ partial: true, malformed: 1 });
+  });
+
+  it("an oversize shutdown line marks partial and is not decoded", async () => {
+    const big = JSON.stringify(shutdownEvent({ timestamp: at(9) })).replace('"routine"', `"${CANARY.repeat(5000)}"`);
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) }, { id: B, lines: jsonl([turnEnd()]) + big + "\n" }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ partial: true, shutdownOversize: 1, sessionsWithoutUsage: 1 });
+    expect(last().today!.records).toBe(1);
+    expect(JSON.stringify(last())).not.toContain(CANARY);
+  });
+
+  it("an oversize shutdown line in a log with per-call records does not mark partial (review 3)", async () => {
+    const big = JSON.stringify(shutdownEvent({ timestamp: at(9, 30) })).replace('"routine"', `"${CANARY.repeat(5000)}"`);
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1), rec(A, 2)]) + big + "\n" }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ partial: false, shutdownOversize: 1 });
+    expect(last().today!.records).toBe(2);
+    expect(statusText(last(), { unit: "tokens" })).not.toContain("*");
+  });
+
+  it("per-call records whose sourceSessionId is not the folder still hide that folder's total (review 1)", async () => {
+    // Folder B holds calls attributed to session A (a resumed or forked session) and B's own shutdown.
+    const lines = jsonl([rec(A, 1), rec(A, 2), shutdownEvent({ timestamp: at(9, 30), models: { "model-a": { inputTokens: 9000, requests: 9 } } })]);
+    await sessionTree(root, [{ id: B, lines }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today).toMatchObject({ records: 2, calls: 2, sessionTotals: 0 });
+    expect(last().today!.input.sum).toBe(2000);
+    expect(last().health.sessionsFromTotals).toBe(0);
+  });
+
+  it("truncation and rewrite of a legacy log replaces its totals", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today!.input.sum).toBe(6000);
+    await writeFile(events(A), jsonl([shutdownEvent({ timestamp: at(9), models: { "model-b": { inputTokens: 5 } } })]));
+    await monitor.refresh();
+    expect(Object.keys(last().today!.byModel)).toStrictEqual(["model-b"]);
+    expect(last().today!.input.sum).toBe(5);
+  });
+
+  it("month rollover forgets last month's session totals", async () => {
+    const jan20 = new Date(2026, 0, 20, 12, 0, 0);
+    await sessionTree(root, [{ id: A, lines: legacy(A, jan20.toISOString()), mtime: jan20 }]);
+    clock = new Date(2026, 0, 31, 23, 0, 0).getTime();
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().month!.totals!.sessionTotals).toBe(1);
+    expect(last().health.sessionsFromTotals).toBe(1);
+    clock = new Date(2026, 1, 1, 1, 0, 0).getTime();
+    await monitor.refresh();
+    expect(last().month!.totals).toBeUndefined();
+    expect(last().health.sessionsFromTotals).toBe(0);
+  });
+
+  it("readTotals on still opens only events.jsonl", async () => {
+    await sessionTree(root, [{ id: A, lines: legacy(A) }, { id: B, lines: jsonl([rec(B, 1)]) }]);
+    for (const id of [A, B]) await writeFile(join(root, "session-state", id, "workspace.yaml"), CANARY);
+    const open = vi.spyOn(fs.promises, "open");
+    const readFile = vi.spyOn(fs.promises, "readFile");
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().today!.sessionTotals).toBe(1);
+    for (const p of open.mock.calls.map((c) => String(c[0]))) expect(p).toMatch(/session-state\/[0-9a-f-]+\/events\.jsonl$/);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("canary: session totals never carry log content into snapshots, HTML, tooltips or logs", async () => {
+    await sessionTree(root, [
+      { id: A, lines: jsonl([otherEvent("session.start"), rec(A, 1), turnEnd()]), lockPid: LIVE_PID },
+      { id: B, lines: legacy(B, at(8), { models: { "model-a": {}, "model-b": { totalNanoAiu: 0 } } }) },
+      { id: C, lines: legacy(C, at(7), { models: {} }) },
+    ]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    await appendFile(events(A), jsonl([shutdownEvent({ timestamp: at(9, 50) })]));
+    await monitor.refresh();
+    expect(last().today!.sessionTotals).toBe(2);
+    for (const s of snaps) {
+      expect(JSON.stringify(s)).not.toContain(CANARY);
+      for (const view of [{ unit: "tokens" as const }, { unit: "cost" as const, range: { max: 5 } }]) {
+        for (const section of SECTIONS) expect(renderPanelHtml(s, "csp", view, section)).not.toContain(CANARY);
+        expect(tooltipMarkdown(s, view)).not.toContain(CANARY);
+        expect(statusText(s, view)).not.toContain(CANARY);
+      }
+    }
+    expect(logLines.join("\n")).not.toContain(CANARY);
   });
 
   it("canary: no emitted snapshot contains log content", async () => {

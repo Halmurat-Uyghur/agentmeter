@@ -117,3 +117,89 @@ export async function sessionTree(
     if (s.mtime !== undefined) await utimes(events, s.mtime, s.mtime);
   }
 }
+
+/** One model's totals in a `session.shutdown` line (`requests` is requests.count). */
+export interface ShutdownModel {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
+  requests: number;
+  totalNanoAiu: number;
+}
+
+export interface ShutdownFixture {
+  /** model id → totals; `null` omits modelMetrics, `{}` writes an empty one */
+  models: Record<string, Partial<ShutdownModel>> | null;
+  totalNanoAiu: number;
+  totalApiDurationMs: number;
+  /** epoch ms; default one hour before `timestamp` */
+  sessionStartTime: number;
+  id: string;
+  timestamp: string;
+}
+
+/** The usage fixture's numbers × 6, with requests.count 6. */
+export const SHUTDOWN_DEFAULTS: ShutdownModel = {
+  inputTokens: 6000,
+  outputTokens: 1200,
+  cacheReadTokens: 3000,
+  cacheWriteTokens: 300,
+  reasoningTokens: 180,
+  requests: 6,
+  totalNanoAiu: 12_000_000_000,
+};
+
+/**
+ * A `session.shutdown` event; `type` is always the first key. Every field the
+ * extension must never keep is present and CANARY-filled: paths in
+ * filesModified, aiCreditsStatus, currentModel, agentMetrics, watermarks.
+ */
+export function shutdownEvent(o: Partial<ShutdownFixture> = {}): object {
+  const timestamp = o.timestamp ?? new Date().toISOString();
+  const models = o.models === undefined ? { "model-a": {} } : o.models;
+  const modelMetrics =
+    models === null
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(models).map(([name, m]) => {
+            const v = { ...SHUTDOWN_DEFAULTS, ...m };
+            return [
+              name,
+              {
+                requests: { count: v.requests, cost: 0.25 },
+                usage: {
+                  inputTokens: v.inputTokens,
+                  outputTokens: v.outputTokens,
+                  cacheReadTokens: v.cacheReadTokens,
+                  cacheWriteTokens: v.cacheWriteTokens,
+                  reasoningTokens: v.reasoningTokens,
+                },
+                totalNanoAiu: v.totalNanoAiu,
+              },
+            ];
+          }),
+        );
+  const totalNanoAiu = o.totalNanoAiu ?? SHUTDOWN_DEFAULTS.totalNanoAiu;
+  return compact({
+    type: "session.shutdown",
+    id: o.id ?? "e-shutdown",
+    parentId: null,
+    timestamp,
+    data: {
+      shutdownType: "routine",
+      totalPremiumRequests: 3,
+      totalApiDurationMs: o.totalApiDurationMs ?? 9000,
+      sessionStartTime: o.sessionStartTime ?? Date.parse(timestamp) - 3_600_000,
+      codeChanges: { linesAdded: 1, linesRemoved: 2, filesModified: [CANARY, `/${CANARY}/src/x.ts`] },
+      modelMetrics,
+      totalNanoAiu,
+      currentModel: CANARY,
+      currentTokens: 1234,
+      accountingSnapshot: { aiCreditsStatus: CANARY, currentModel: CANARY, sessionStartTime: CANARY, modelMetrics },
+      agentMetrics: { main: { modelMetrics, totalNanoAiu }, [CANARY]: { note: CANARY } },
+      usageAccountingWatermarks: { [CANARY]: 1 },
+    },
+  });
+}
