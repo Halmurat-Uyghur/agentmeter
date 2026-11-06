@@ -29,6 +29,8 @@ Present but deliberately **not read**: `modelDisplayName`, `cost` (meaning undoc
 
 **`session.start` (since v0.3, D25, only with `projectNames` on).** One per log, first line, at most 829 bytes observed (lines over 16 KB are not decoded). `data.context` keys: `cwd` 39/39, `gitRoot` 33, `branch` 33, `headCommit` 30, `repository` 29, `hostType` 29, `repositoryHost` 29, `baseCommit` 27 (all strings). Only a label is kept: `repository` when it matches `owner/repo`, else the last segment of `gitRoot` or `cwd`.
 
+**`workspace.yaml` `name:` (since v0.3.2, only with `projectNames` on).** Read only when the label above is an ID (UUID or 16–64 hex chars), only after that log changed, and only if the file is under 16 KB. Only the top-level `name:` line is kept, one line, control characters removed, capped at 60 characters. Every other key (`cwd`, `git_root`, `branch`, `repository`, `summary`, ...) is ignored.
+
 **Gate safety:** the substring `"session.usage_record"` and `"assistant.turn_end"` occur in 0 lines of any other type.
 
-**Never read:** `user.message`, `assistant.message`, `tool.*`, `hook.*`, `system.message`, any `session.start` field other than the project label above (branch, commits, full paths, prompt), `codeChanges.filesModified`, `session.db`, `workspace.yaml`, `vscode.metadata.json`, `config.json`, `mcp-config.json`, `run/ws.token`, or any other file under the Copilot folder.
+**Never read:** `user.message`, `assistant.message`, `tool.*`, `hook.*`, `system.message`, any `session.start` field other than the project label above (branch, commits, full paths, prompt), `codeChanges.filesModified`, `session.db`, any `workspace.yaml` key other than `name` (above), `vscode.metadata.json`, `config.json`, `mcp-config.json`, `run/ws.token`, or any other file under the Copilot folder.

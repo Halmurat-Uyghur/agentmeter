@@ -466,7 +466,7 @@ function projectsBox(s: Snapshot, view: ViewOptions): string {
     return { keep, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>` };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
-  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name; full paths are never read.${escapeHtml(note)}</div></section>`;
+  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read.${escapeHtml(note)}</div></section>`;
 }
 
 /** Per-tool table for the viewed month; each row filters to calls that used that tool (D26). */

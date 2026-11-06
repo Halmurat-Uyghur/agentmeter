@@ -143,6 +143,33 @@ export function parseStartLine(line: string): string | undefined {
   return undefined;
 }
 
+/** A folder name that is an ID (UUID or long hex), which means nothing to a person. */
+const ID_LABEL = /^(?=.*[0-9])[0-9a-f]+(?:-[0-9a-f]+)*$/i;
+export function isIdLabel(label: string): boolean {
+  return label.length >= 16 && label.length <= 64 && ID_LABEL.test(label);
+}
+
+/** workspace.yaml files are ~200 bytes; anything larger is not read. */
+export const MAX_WORKSPACE_BYTES = 16 * 1024;
+export const MAX_TITLE_CHARS = 60;
+
+/**
+ * The session title from workspace.yaml: the top-level `name:` value only, on one
+ * line, without control characters, at most MAX_TITLE_CHARS long. Every other key
+ * (cwd, git_root, branch, ...) is ignored.
+ */
+export function parseWorkspaceName(text: string): string | undefined {
+  const m = /^name:[ \t]*(.*)$/m.exec(text);
+  if (!m) return undefined;
+  let v = m[1]!.trim();
+  if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1).replace(/''/g, "'");
+  else if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1).replace(/\\(["\\])/g, "$1");
+  else if (/^[|>]/.test(v)) return undefined; // a block scalar: not a title
+  v = v.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (v.length === 0) return undefined;
+  return v.length > MAX_TITLE_CHARS ? `${v.slice(0, MAX_TITLE_CHARS - 1).trimEnd()}…` : v;
+}
+
 export function parseUsageLine(line: string, folderId: string): ParseResult {
   let event: unknown;
   try {

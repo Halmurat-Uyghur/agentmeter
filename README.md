@@ -49,7 +49,7 @@ The extension is not on the Marketplace yet. Build a `.vsix` and install it:
 npm ci
 npm run build
 npm run package
-code --install-extension copilot-usage-monitor-0.3.1.vsix
+code --install-extension copilot-usage-monitor-0.3.2.vsix
 ```
 
 Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
@@ -63,7 +63,7 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.display` | `"tokens"` | `"tokens"` or `"cost"` (estimated USD). The panel switch and the command change it. |
 | `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated USD you mean to use per month. |
 | `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated USD you mean to use per month. |
-| `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name). Off: every call is "(no project)" and the start line is not read. |
+| `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name; a folder named by an ID shows the session title instead). Off: every call is "(no project)" and neither the start line nor `workspace.yaml` is read. |
 
 VS Code launched from the macOS Dock or Finder does not see variables set in `.zshrc`. If you set `COPILOT_HOME` there, also set `copilotUsageMonitor.copilotHome`.
 
@@ -80,7 +80,7 @@ Commands:
 
 - **Files opened:** only `<copilot folder>/session-state/<session id>/events.jsonl` for sessions written within the history window (`historyMonths`, 12 months by default). Everything else in the folder is only listed. Lock-file names are used to tell live sessions apart, and nothing else is opened.
 - **Line filtering:** each line is checked by its first bytes. Only `session.usage_record` lines are decoded and parsed, plus, when `projectNames` is on, each log's single `session.start` line (under 16 KB; larger ones are skipped). Prompts, replies, tool output and file contents are skipped without being decoded.
-- **Project label:** from `session.start` only `context.repository` (if it looks like `owner/repo`) or the last folder name of `context.gitRoot` / `context.cwd` is kept. The full path, branch, commits and everything else on that line are dropped.
+- **Project label:** from `session.start` only `context.repository` (if it looks like `owner/repo`) or the last folder name of `context.gitRoot` / `context.cwd` is kept. The full path, branch, commits and everything else on that line are dropped. When that folder name is an ID (a UUID or long hex), the session title is shown instead: only the `name:` line of that session's `workspace.yaml` (under 16 KB), capped at 60 characters. Copilot writes a short title there; for a session you never renamed it can be the start of your first prompt.
 - **Tool use:** the per-call `toolCounts` map (tool name → number of invocations). Tool arguments and output are never read.
 - **Fields kept:** model id, token counts, model time, AIU as logged, tool names with counts, usage id, sequence, session id, timestamp and the project label, in memory only. Nothing is written to disk and nothing is sent anywhere.
 - **Output channel:** the "Copilot Usage Monitor" output channel gets counts, error codes and timings only, never log content or paths.

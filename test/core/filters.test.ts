@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyLine, MAX_START_BYTES, parseStartLine, parseUsageLine } from "../../src/core/extract";
+import { classifyLine, isIdLabel, MAX_START_BYTES, MAX_TITLE_CHARS, parseStartLine, parseUsageLine, parseWorkspaceName } from "../../src/core/extract";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
 import { PANEL_COMMANDS, renderPanelHtml, toolGroup } from "../../src/core/panelHtml";
@@ -41,6 +41,29 @@ describe("extract: session.start → project label only", () => {
     const label = parseStartLine(start({ cwd: "/srv/someone/secret/proj" }))!;
     expect(label).toBe("proj");
     expect(label).not.toContain("/");
+  });
+});
+
+describe("extract: session title for ID-named folders", () => {
+  it("isIdLabel: UUIDs and long hex only", () => {
+    expect(isIdLabel("a5ba938d-3495-450d-94f0-cdab4c64c501")).toBe(true);
+    expect(isIdLabel("0123456789abcdef0123")).toBe(true);
+    expect(isIdLabel("dt_cibc_spark_api")).toBe(false);
+    expect(isIdLabel("acme/web")).toBe(false);
+    expect(isIdLabel("deadbeef")).toBe(false); // too short
+    expect(isIdLabel("abcdef-abcdef-abcdef")).toBe(false); // no digit: a word, not an id
+  });
+  it("parseWorkspaceName: the top-level name only, one line, capped", () => {
+    expect(parseWorkspaceName("id: x\ncwd: /srv/secret\nname: Build And Create Zip File\nuser_named: false\n")).toBe("Build And Create Zip File");
+    expect(parseWorkspaceName("name: 'it''s quoted'\n")).toBe("it's quoted");
+    expect(parseWorkspaceName('name: "say \\"hi\\""\n')).toBe('say "hi"');
+    expect(parseWorkspaceName("name: |\n  block\n")).toBeUndefined();
+    expect(parseWorkspaceName("  name: nested\n")).toBeUndefined();
+    expect(parseWorkspaceName("cwd: /a\n")).toBeUndefined();
+    expect(parseWorkspaceName("name:   \n")).toBeUndefined();
+    const long = parseWorkspaceName(`name: ${"x".repeat(200)}\n`)!;
+    expect(long.length).toBe(MAX_TITLE_CHARS);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
 
@@ -150,6 +173,35 @@ describe("monitor: project labels and filters", () => {
     const json = JSON.stringify(snaps);
     expect(json).not.toContain(CANARY);
     expect(json).not.toContain("/srv/");
+  });
+
+  it("a folder named by an ID shows the session title from workspace.yaml", async () => {
+    const C = "0000cccc-0000-4000-8000-000000000003";
+    const D = "0000dddd-0000-4000-8000-000000000004";
+    await sessionTree(root, [
+      { id: C, lines: start({ cwd: `/srv/x/${CANARY}/a5ba938d-3495-450d-94f0-cdab4c64c501` }) + "\n" + usageWithTools({ bash: 1 }, { usageId: "c1", sourceSessionId: C, timestamp: ts(8), totalNanoAiu: 1e9 }) + "\n" },
+      { id: D, lines: start({ cwd: "/srv/x/33887a44-aeb6-43ec-b802-689f688a9d41" }) + "\n" + usageWithTools({ bash: 1 }, { usageId: "d1", sourceSessionId: D, timestamp: ts(8), totalNanoAiu: 1e9 }) + "\n" },
+    ]);
+    await writeFile(join(root, "session-state", C, "workspace.yaml"), `id: ${C}\ncwd: /srv/x/${CANARY}\nname: Fix Login Bug\nbranch: ${CANARY}\n`);
+    // D has no workspace.yaml: it keeps the folder name.
+    const m = make(true);
+    await m.refresh({ full: true });
+    const names = snaps.at(-1)!.month!.projects.map((p) => p.name);
+    expect(names).toContain("Fix Login Bug");
+    expect(names).toContain("33887a44-aeb6-43ec-b802-689f688a9d41");
+    expect(names).toContain("acme/web"); // real names are never replaced
+    expect(JSON.stringify(snaps)).not.toContain(CANARY);
+  });
+
+  it("readProjects off: workspace.yaml is never read", async () => {
+    const C = "0000cccc-0000-4000-8000-000000000003";
+    await sessionTree(root, [
+      { id: C, lines: start({ cwd: "/srv/x/a5ba938d-3495-450d-94f0-cdab4c64c501" }) + "\n" + usageWithTools({ bash: 1 }, { usageId: "c1", sourceSessionId: C, timestamp: ts(8), totalNanoAiu: 1e9 }) + "\n" },
+    ]);
+    await writeFile(join(root, "session-state", C, "workspace.yaml"), "name: Fix Login Bug\n");
+    const m = make(false);
+    await m.refresh({ full: true });
+    expect(JSON.stringify(snaps)).not.toContain("Fix Login Bug");
   });
 
   it("readProjects off: every call is (no project)", async () => {

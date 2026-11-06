@@ -2,9 +2,9 @@
 // Snapshot whenever what it would show changes. Missing data stays undefined,
 // incomplete data sets `health.partial`, and only error codes are logged.
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
-import { parseStartLine, parseUsageLine } from "./extract";
+import { isIdLabel, MAX_WORKSPACE_BYTES, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
 import type { Logger } from "./log";
 import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
@@ -50,6 +50,10 @@ interface FileState {
   error?: ReadErrorCode;
   /** project label from this log's session.start line (D25) */
   project?: string;
+  /** session title from workspace.yaml, read only when `project` is an ID */
+  title?: string;
+  /** mtime of the workspace.yaml last read for `title` */
+  titleMtimeMs?: number;
 }
 
 const REDISCOVER_MS = 10_000;
@@ -265,6 +269,8 @@ export class UsageMonitor {
       this.store.resetFile(path);
       f.malformed = f.unrecognized = f.overlong = f.overlongOther = 0;
       delete f.project;
+      delete f.title;
+      delete f.titleMtimeMs;
       f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
@@ -278,6 +284,10 @@ export class UsageMonitor {
         this.dirty = true;
       }
     }
+    // A folder named by an ID says nothing: show the session's title instead.
+    // Checked only when the log moved, so idle polls touch no extra file.
+    if (f.project !== undefined && isIdLabel(f.project) && (r.startLines.length > 0 || r.usageLines.length > 0 || r.activity > 0))
+      await this.readTitle(path, f);
     for (const line of r.usageLines) {
       const p = this.parse(line, f.folderId);
       if (p.kind === "usage") {
@@ -297,6 +307,24 @@ export class UsageMonitor {
     }
     if (r.error === undefined) f.primed = true;
     return { added, changed };
+  }
+
+  /** Reads the `name:` of the session's workspace.yaml when that file changed. */
+  private async readTitle(eventsPath: string, f: FileState): Promise<void> {
+    const ws = join(dirname(eventsPath), "workspace.yaml");
+    try {
+      const st = await fs.promises.lstat(ws);
+      if (!st.isFile() || st.size > MAX_WORKSPACE_BYTES || st.mtimeMs === f.titleMtimeMs) return;
+      const title = parseWorkspaceName(await fs.promises.readFile(ws, "utf8"));
+      f.titleMtimeMs = st.mtimeMs;
+      if (title !== f.title) {
+        if (title === undefined) delete f.title;
+        else f.title = title;
+        this.dirty = true;
+      }
+    } catch {
+      // No workspace.yaml (older Copilot) or unreadable: keep the folder name.
+    }
   }
 
   private snapshot(nowMs: number, dayStartMs: number): Snapshot {
@@ -370,7 +398,7 @@ export class UsageMonitor {
     const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
     const projects = new Map<string, string>();
-    for (const f of this.files.values()) if (f.project !== undefined) projects.set(f.folderId, f.project);
+    for (const f of this.files.values()) if (f.project !== undefined) projects.set(f.folderId, f.title ?? f.project);
     const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
     const { project, tool } = this.filter;
     const byProject = (r: UsageRecord) => project === undefined || projectOf(r) === project;

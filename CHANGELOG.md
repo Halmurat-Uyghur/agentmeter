@@ -2,7 +2,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.3.2 - 2026-11-06
+
+### Changed
+
+- A project whose folder is named by an ID (a UUID or long hex) now shows the session title instead, read from the `name:` line of that session's `workspace.yaml`. Only with `projectNames` on; repository and normal folder names are unchanged.
 
 ### Fixed
 
