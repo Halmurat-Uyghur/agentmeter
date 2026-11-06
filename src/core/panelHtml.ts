@@ -331,7 +331,8 @@ function partialReasons(h: Health): string {
   const parts: string[] = [];
   if (h.unreadableFiles > 0) parts.push(`${plural(h.unreadableFiles, "log")} could not be read`);
   if (h.malformed > 0) parts.push(`${plural(h.malformed, "malformed line")} skipped`);
-  if (h.overlong > 0) parts.push(`${plural(h.overlong, "over-long line")} skipped`);
+  if (h.overlong > 0)
+    parts.push(`${plural(h.overlong, "over-long line")} that may contain usage ${h.overlong === 1 ? "was" : "were"} skipped`);
   return `Totals may be incomplete: ${parts.join("; ")}.`;
 }
 
@@ -544,7 +545,8 @@ ${fact("Unreadable logs", h.unreadableFiles, true)}
 ${fact("Sessions without per-call data", h.sessionsWithoutUsage)}
 ${fact("Lines in an unknown format", h.unrecognized, true)}
 ${fact("Malformed lines", h.malformed, true)}
-${fact("Over-long lines skipped", h.overlong, true)}
+${fact("Over-long lines skipped (may be usage)", h.overlong, true)}
+${h.overlongOther > 0 ? fact("Over-long lines skipped (not usage)", h.overlongOther) : ""}
 </div><h2 style="margin-top:14px">Not covered</h2><ul class="plain">${NOT_COVERED.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul></section>`;
 }
 

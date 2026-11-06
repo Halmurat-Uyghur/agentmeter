@@ -171,7 +171,7 @@ function totals(o: Partial<Counts> = {}): Totals {
   return { ...counts(o), byModel: { "model-a": counts(o) } };
 }
 function health(o: Partial<Health> = {}): Health {
-  return { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, ...o };
+  return { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, ...o };
 }
 
 const NOV = new Date(2026, 10, 1).getTime();

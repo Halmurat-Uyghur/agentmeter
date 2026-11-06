@@ -3,7 +3,7 @@
 // classifyLine on raw bytes, and decodes only the lines it calls "usage".
 // Truncation, rotation and in-place rewrites reset the cursor to offset 0.
 import * as fs from "node:fs";
-import { classifyLine } from "./extract";
+import { classifyLine, hasUsageNeedle, isKnownNonUsage, TYPE_HEAD_BYTES } from "./extract";
 
 export type ReadErrorCode = "ENOENT" | "EACCES" | "EPERM" | "EIO" | "OTHER";
 
@@ -14,7 +14,10 @@ export interface TailResult {
   startLines: string[];
   activity: number;
   suspect: number;
+  /** lines over the size limit that may have been usage records (totals may be short) */
   overlong: number;
+  /** lines over the size limit whose type shows they are not usage records */
+  overlongOther: number;
   reset: boolean;
   error?: ReadErrorCode;
 }
@@ -79,6 +82,7 @@ export class LineTailer {
       activity: 0,
       suspect: 0,
       overlong: 0,
+      overlongOther: 0,
       reset: false,
     };
     let handle: fs.promises.FileHandle | undefined;
@@ -163,9 +167,23 @@ export class LineTailer {
     if (pos >= data.length) return;
     const rest = data.length - pos;
     if (this.carry.length + rest > this.maxCarryBytes) {
+      // The line's first bytes are the carry (if any) followed by data[pos..].
+      // Only this head is held: the rest of the line is never in memory, so a
+      // usage type nested deeper in it can't be seen here (unlike in gate(),
+      // which holds the whole line). A line whose head names another type is
+      // counted as overlongOther; that is an inherent limit of streaming.
+      const head =
+        this.carry.length >= TYPE_HEAD_BYTES
+          ? this.carry.subarray(0, TYPE_HEAD_BYTES)
+          : this.carry.length > 0
+            ? Buffer.concat([
+                this.carry,
+                data.subarray(pos, pos + TYPE_HEAD_BYTES - this.carry.length),
+              ])
+            : data.subarray(pos, pos + TYPE_HEAD_BYTES);
+      this.countOverlong(head, 0, head.length, out);
       this.carry = EMPTY;
       this.skipping = true;
-      out.overlong++;
       return;
     }
     // Copy so the carry does not pin the whole chunk in memory.
@@ -174,11 +192,20 @@ export class LineTailer {
       this.carry.length > 0 ? Buffer.concat([this.carry, piece]) : piece;
   }
 
+  /** Counts a skipped over-long line by what its first bytes show it to be. */
+  private countOverlong(buf: Buffer, start: number, end: number, out: TailResult): void {
+    if (isKnownNonUsage(buf, start, end)) out.overlongOther++;
+    else out.overlong++;
+  }
+
   /** buf[start, end) is one complete line without its \n. */
   private gate(buf: Buffer, start: number, end: number, out: TailResult): void {
     // Same limit whether the line arrived in one chunk or several.
     if (end - start > this.maxCarryBytes) {
-      out.overlong++;
+      // The whole line is in memory here, so also search it like classifyLine
+      // does: a usage type nested deeper in the line makes it possibly-usage.
+      if (hasUsageNeedle(buf, start, end)) out.overlong++;
+      else this.countOverlong(buf, start, end, out);
       return;
     }
     switch (classifyLine(buf, start, end)) {

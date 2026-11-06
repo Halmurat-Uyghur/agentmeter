@@ -324,6 +324,23 @@ describe("UsageMonitor", () => {
     expect(last().today?.records).toBe(1);
   });
 
+  it("an over-long non-usage line is reported but does not mark partial", async () => {
+    const big = `{"type":"tool.execution_complete","data":{"text":"${"z".repeat(1_100_000)}"}}\n`;
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) + big + jsonl([rec(A, 2)]) }]);
+    make();
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ partial: false, overlong: 0, overlongOther: 1 });
+    expect(last().today?.records).toBe(2);
+  });
+
+  it("an over-long usage line marks partial", async () => {
+    const big = `{"type":"session.usage_record","data":{"text":"${"z".repeat(1_100_000)}"}}\n`;
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) + big }]);
+    make();
+    await monitor.refresh({ full: true });
+    expect(last().health).toMatchObject({ partial: true, overlong: 1, overlongOther: 0 });
+  });
+
   it("no-dir recovers to ok after the folder appears", async () => {
     make();
     await monitor.refresh({ full: true });

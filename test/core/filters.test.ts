@@ -196,7 +196,7 @@ describe("panel: project and tool tables", () => {
     generatedAtMs: 0,
     dayStartMs: new Date(2026, 10, 5).getTime(),
     sessions: [],
-    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
+    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
     month: {
       monthStartMs: new Date(2026, 10, 1).getTime(),
       isCurrent: true,
@@ -243,7 +243,7 @@ describe("panel: long lists fold (D27)", () => {
     generatedAtMs: 0,
     dayStartMs: new Date(2026, 10, 5).getTime(),
     sessions: [],
-    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
+    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
     month: {
       monthStartMs: new Date(2026, 10, 1).getTime(),
       isCurrent: true,
