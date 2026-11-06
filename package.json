@@ -1,7 +1,7 @@
 {
   "name": "copilot-usage-monitor",
   "displayName": "Copilot Usage Monitor (Local)",
-  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Month history, trend, per-project and per-tool views and a personal target range. No network, nothing stored. Not affiliated with GitHub or Microsoft.",
+  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No network, no credentials read, nothing stored. Not affiliated with GitHub or Microsoft.",
   "keywords": [
     "copilot",
     "usage",
@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -57,38 +57,81 @@
   },
   "homepage": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor#readme",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilotUsageMonitor",
+          "title": "Copilot Usage (Local)",
+          "icon": "$(graph)"
+        }
+      ]
+    },
+    "views": {
+      "copilotUsageMonitor": [
+        {
+          "type": "webview",
+          "id": "copilotUsageMonitor.summary",
+          "name": "Summary",
+          "contextualTitle": "Copilot Usage (Local)",
+          "icon": "$(graph)",
+          "visibility": "visible"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "copilotUsageMonitor.showDetails",
-        "title": "Copilot Usage: Show Local Details"
+        "title": "Show Local Details",
+        "shortTitle": "Open panel",
+        "category": "Copilot Usage",
+        "icon": "$(dashboard)"
       },
       {
         "command": "copilotUsageMonitor.pinSession",
-        "title": "Copilot Usage: Pin Session…"
+        "title": "Pin Session…",
+        "category": "Copilot Usage",
+        "icon": "$(pinned)"
       },
       {
         "command": "copilotUsageMonitor.refresh",
-        "title": "Copilot Usage: Refresh"
+        "title": "Refresh",
+        "category": "Copilot Usage",
+        "icon": "$(refresh)"
       },
       {
         "command": "copilotUsageMonitor.selectMonth",
-        "title": "Copilot Usage: Show Month…"
+        "title": "Show Month…",
+        "category": "Copilot Usage",
+        "icon": "$(calendar)"
       },
       {
         "command": "copilotUsageMonitor.toggleUnit",
-        "title": "Copilot Usage: Switch Tokens / USD (est.)"
+        "title": "Switch Tokens / USD (est.)",
+        "shortTitle": "Switch unit",
+        "category": "Copilot Usage",
+        "icon": "$(arrow-swap)"
       },
       {
         "command": "copilotUsageMonitor.setUnit",
-        "title": "Copilot Usage: Set Unit"
+        "title": "Set Unit",
+        "category": "Copilot Usage"
       },
       {
         "command": "copilotUsageMonitor.filter",
-        "title": "Copilot Usage: Filter by Project or Tool…"
+        "title": "Filter by Project or Tool…",
+        "category": "Copilot Usage",
+        "icon": "$(filter)"
       },
       {
         "command": "copilotUsageMonitor.setFilter",
-        "title": "Copilot Usage: Set Filter"
+        "title": "Set Filter",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.showSection",
+        "title": "Show Section…",
+        "category": "Copilot Usage",
+        "icon": "$(list-flat)"
       }
     ],
     "configuration": {
@@ -142,6 +185,12 @@
           "type": "boolean",
           "default": true,
           "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. A folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading both."
+        },
+        "copilotUsageMonitor.sessionTotals": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Count sessions from Copilot before 1.0.99, which have no per-call records, from the per-model total Copilot writes when a session ends. Only the token counts, call count and logged AI credits are kept; file paths and other fields on that line are dropped while reading. Turn off to skip those lines without reading them."
         }
       }
     },
@@ -154,6 +203,43 @@
         {
           "command": "copilotUsageMonitor.setFilter",
           "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "copilotUsageMonitor.showDetails",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@1"
+        },
+        {
+          "command": "copilotUsageMonitor.toggleUnit",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@2"
+        },
+        {
+          "command": "copilotUsageMonitor.refresh",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@3"
+        },
+        {
+          "command": "copilotUsageMonitor.filter",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@1"
+        },
+        {
+          "command": "copilotUsageMonitor.selectMonth",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@2"
+        },
+        {
+          "command": "copilotUsageMonitor.showSection",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@3"
+        },
+        {
+          "command": "copilotUsageMonitor.pinSession",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@4"
         }
       ]
     }

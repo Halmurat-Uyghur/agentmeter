@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CANARY, jsonl, otherEvent, sessionTree, usageEvent } from "../fixtures/build";
+import { CANARY, jsonl, otherEvent, sessionTree, shutdownEvent, usageEvent } from "../fixtures/build";
 
 describe("fixtures", () => {
   it("serialises a usage event with type first", () => {
@@ -13,6 +13,22 @@ describe("fixtures", () => {
     const line = JSON.stringify(otherEvent("user.message"));
     expect(line).toMatch(/^\{"type":"user\.message"/);
     expect(line).toContain(CANARY);
+  });
+
+  it("serialises a shutdown event with type first and canaries in every content field", () => {
+    const line = JSON.stringify(shutdownEvent());
+    expect(line).toMatch(/^\{"type":"session\.shutdown"/);
+    const e = JSON.parse(line);
+    expect(e.data.codeChanges.filesModified[0]).toBe(CANARY);
+    expect(e.data.accountingSnapshot.aiCreditsStatus).toBe(CANARY);
+    expect(e.data.currentModel).toBe(CANARY);
+    expect(Object.keys(e.data.agentMetrics)).toContain(CANARY);
+    expect(e.data.modelMetrics["model-a"].requests.count).toBe(6);
+  });
+
+  it("shutdown models: {} writes an empty modelMetrics, null omits it", () => {
+    expect(JSON.stringify(shutdownEvent({ models: {} }))).toContain('"modelMetrics":{}');
+    expect(JSON.parse(JSON.stringify(shutdownEvent({ models: null }))).data).not.toHaveProperty("modelMetrics");
   });
 
   it("omits keys set to undefined", () => {

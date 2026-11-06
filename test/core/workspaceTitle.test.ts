@@ -76,7 +76,8 @@ describe("monitor: session title lifecycle", () => {
   /** What the "By project" table shows: the display label (title) else the key (folder). */
   const names = () => snaps.at(-1)!.month!.projects.map((p) => [p.label ?? p.name, p.sessions]);
   const keys = () => snaps.at(-1)!.month!.projects.map((p) => p.name);
-  const html = () => renderPanelHtml(snaps.at(-1)!, "x");
+  /** The Projects section, where the project rows and (as chrome) the filter chips are. */
+  const html = () => renderPanelHtml(snaps.at(-1)!, "x", undefined, "projects");
   const ws = (id: string) => join(root, "session-state", id, "workspace.yaml");
   const ev = (id: string) => join(root, "session-state", id, "events.jsonl");
 
@@ -202,7 +203,7 @@ describe("monitor: session title lifecycle", () => {
     const m = make();
     await m.refresh({ full: true });
     // The row shows the title but its link filters by the folder key.
-    expect(html()).toContain(`${encodeURIComponent(JSON.stringify(["project", ID1]))}" title="Show only this project">Fix Login Bug</a>`);
+    expect(html()).toContain(`${encodeURIComponent(JSON.stringify(["project", ID1]))}" aria-label="Fix Login Bug. Show only this project" title="Show only this project">Fix Login Bug</a>`);
     m.setFilter({ project: ID1 });
     await m.refresh();
     expect(snaps.at(-1)!.month!.totals?.records).toBe(1);

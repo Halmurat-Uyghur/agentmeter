@@ -17,7 +17,7 @@ import {
 } from "../../src/core/format";
 import { Logger } from "../../src/core/log";
 import { clampHistory, UsageMonitor } from "../../src/core/monitor";
-import { escapeHtml, GROWTH_FLAG, monthKey, PANEL_COMMANDS, renderPanelHtml } from "../../src/core/panelHtml";
+import { escapeHtml, GROWTH_FLAG, monthKey, PANEL_COMMANDS, renderPanelHtml, SECTIONS } from "../../src/core/panelHtml";
 import { byMonth, daysOfMonth, monthStarts, sessionSummaries, UsageStore } from "../../src/core/store";
 import type { Counts, Health, Metric, Snapshot, Totals, UsageRecord } from "../../src/core/types";
 import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
@@ -31,6 +31,7 @@ function rec(key: string, ts: number, o: Partial<UsageRecord> = {}): UsageRecord
   return {
     key,
     keySource: "usageId",
+    kind: "call",
     sessionId: "s1",
     folderId: "s1",
     timestampMs: ts,
@@ -157,6 +158,8 @@ describe("USD and target range", () => {
 function counts(o: Partial<Counts> = {}): Counts {
   return {
     records: 4,
+    calls: 4,
+    sessionTotals: 0,
     input: m(1_000_000, 4),
     output: m(20_000, 4),
     cacheRead: m(900_000, 4),
@@ -164,6 +167,8 @@ function counts(o: Partial<Counts> = {}): Counts {
     reasoning: m(0, 4),
     durationMs: m(60_000, 4),
     nanoAiu: m(3_000e9, 4), // $30
+    callsMissing: 0,
+    callNanoAiu: o.nanoAiu ?? m(3_000e9, 4),
     ...o,
   };
 }
@@ -171,7 +176,7 @@ function totals(o: Partial<Counts> = {}): Totals {
   return { ...counts(o), byModel: { "model-a": counts(o) } };
 }
 function health(o: Partial<Health> = {}): Health {
-  return { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, ...o };
+  return { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, shutdownOversize: 0, ...o };
 }
 
 const NOV = new Date(2026, 10, 1).getTime();
@@ -248,7 +253,8 @@ describe("status bar with USD and target", () => {
 // ---------------------------------------------------------------- panel
 
 function text(html: string): string {
-  return html.replace(/<style>[\s\S]*?<\/style>/g, " ").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+  return html.replace(/<style>[\s\S]*?<\/style>/g, " ").replace(/<span class="sr">[^<]*<\/span>/g, " ")
+    .replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
 }
 
 describe("panel: navigation, trend, target, sessions", () => {
@@ -256,10 +262,13 @@ describe("panel: navigation, trend, target, sessions", () => {
     const html = renderPanelHtml(snap(), "x", RANGE);
     const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((x) => x[1]!.replace(/&amp;/g, "&"));
     expect(hrefs.length).toBeGreaterThan(4);
-    for (const h of hrefs) {
+    // The skip link is the only non-command href.
+    expect(hrefs.filter((h) => !h.startsWith("command:"))).toEqual(["#main"]);
+    for (const h of hrefs.filter((x) => x.startsWith("command:"))) {
       const cmd = /^command:([\w.]+)\?/.exec(h)?.[1];
       expect(PANEL_COMMANDS as readonly string[]).toContain(cmd);
     }
+    expect(hrefs).toContain(`command:copilotUsageMonitor.showSection?${encodeURIComponent(JSON.stringify(["sessions"]))}`);
     expect(hrefs).toContain(`command:copilotUsageMonitor.selectMonth?${encodeURIComponent(JSON.stringify([monthKey(OCT)]))}`);
     expect(hrefs).toContain(`command:copilotUsageMonitor.setUnit?${encodeURIComponent(JSON.stringify(["tokens"]))}`);
     expect(html).not.toMatch(/<script/i);
@@ -268,12 +277,13 @@ describe("panel: navigation, trend, target, sessions", () => {
 
   it("nav: no next on the current month; prev and next on a middle month", () => {
     const cur = renderPanelHtml(snap(), "x");
-    expect(cur).toMatch(/<span class="btn off">›<\/span>/);
+    expect(cur).toContain('<span class="btn off"><span aria-hidden="true">›</span><span class="sr">No later month</span></span>');
     const mid = renderPanelHtml(snap({ month: { ...snap().month!, monthStartMs: OCT, isCurrent: false } }), "x");
-    expect(mid).toMatch(/<a class="btn" href="[^"]*%222026-09%22[^"]*" title="Previous month">‹<\/a>/);
-    expect(mid).toMatch(/<a class="btn" href="[^"]*%222026-11%22[^"]*" title="Next month">›<\/a>/);
+    expect(mid).toMatch(/<a class="btn" href="[^"]*%222026-09%22[^"]*" title="Previous month" aria-label="Previous month"><span aria-hidden="true">‹<\/span><\/a>/);
+    expect(mid).toMatch(/<a class="btn" href="[^"]*%222026-11%22[^"]*" title="Next month" aria-label="Next month"><span aria-hidden="true">›<\/span><\/a>/);
     expect(text(mid)).toContain("This month");
-    expect(text(mid)).toContain("October 2026 by model");
+    const midModels = renderPanelHtml(snap({ month: { ...snap().month!, monthStartMs: OCT, isCurrent: false } }), "x", undefined, "models");
+    expect(text(midModels)).toContain("October 2026 by model");
   });
 
   it("trend: one column per month, selected outlined, empty month has no bar, target band in USD", () => {
@@ -288,19 +298,20 @@ describe("panel: navigation, trend, target, sessions", () => {
   });
 
   it("USD view: KPIs in dollars, cost note shown, target card", () => {
-    const t = text(renderPanelHtml(snap(), "x", RANGE));
+    const html = renderPanelHtml(snap(), "x", RANGE);
+    const t = text(html);
     expect(t).toContain("$30.00");
-    expect(t).toContain("Target $20.00–$60.00");
-    expect(t).toContain("In range");
+    expect(t).toContain("Target $20.00–$60.00: In range");
+    expect(html).toContain('class="card mtd st-in"');
     expect(t).toContain("not an invoice");
-    expect(t).toContain("Daily USD (est.)");
+    expect(text(renderPanelHtml(snap(), "x", RANGE, "daily"))).toContain("Daily USD (est.)");
   });
 
   it("costliest sessions: short ids, growth flag, escaped hostile ids", () => {
     const evil = `<img src=x onerror=1>${CANARY}`;
     const base = snap();
     const s = snap({ month: { ...base.month!, sessions: [...base.month!.sessions, { sessionId: evil, firstMs: NOV, lastMs: NOV, calls: 1, topModel: evil, tokens: m(1, 1), nanoAiu: m(1, 1) }] } });
-    const html = renderPanelHtml(s, "x");
+    const html = renderPanelHtml(s, "x", undefined, "sessions");
     expect(html).toContain(">3f2a91c0<");
     expect(html).toContain(`6.2× ▲`);
     expect(GROWTH_FLAG).toBe(3);
@@ -311,8 +322,10 @@ describe("panel: navigation, trend, target, sessions", () => {
 
   it("copy check: no account-statement words or % in any unit", () => {
     for (const view of [undefined, COST, RANGE]) {
-      const t = text(renderPanelHtml(snap(), "x", view)).replace(LOCAL_BANNER, "");
-      expect(t).not.toMatch(/\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i);
+      for (const section of SECTIONS) {
+        const t = text(renderPanelHtml(snap(), "x", view, section)).replace(LOCAL_BANNER, "");
+        expect(t, section).not.toMatch(/\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i);
+      }
     }
   });
 });
@@ -397,5 +410,140 @@ describe("monitor: history window and month selection", () => {
     const mon = make(3);
     await mon.refresh({ full: true });
     expect(JSON.stringify(snaps)).not.toContain(CANARY);
+  });
+});
+
+// ---------------------------------------------------------------- v0.4 (D32)
+
+describe("sessionSummaries: v0.4 fields", () => {
+  it("sums input and cache read for the cache-read share, and keeps the folder", () => {
+    const st = new UsageStore();
+    st.add(rec("a", 1, { sessionId: "s", folderId: "fold", tokens: { input: 1000, output: 10, cacheRead: 600 } }), "f");
+    st.add(rec("b", 2, { sessionId: "s", folderId: "fold", tokens: { input: 1000, output: 10 } }), "f");
+    const [s] = sessionSummaries(st, 0, Infinity);
+    expect(s!.input).toEqual(m(2000, 2));
+    expect(s!.cacheRead).toEqual(m(600, 1, 1));
+    expect(s!.folderId).toBe("fold");
+  });
+
+  it("excess = AIU above the first 5 calls' mean, clamped at 0 per call", () => {
+    const st = new UsageStore();
+    const costs = [1, 1, 1, 1, 1, 6, 6, 6, 6, 6, 0.5].map((x) => x * 1e9);
+    costs.forEach((c, i) => st.add(rec(`g${i}`, i, { sessionId: "grow", nanoAiu: c }), "f"));
+    const [s] = sessionSummaries(st, 0, Infinity);
+    expect(s!.excessNanoAiu).toBeCloseTo(25e9);
+  });
+
+  it("no excess without growth", () => {
+    const st = new UsageStore();
+    for (let i = 0; i < 9; i++) st.add(rec(`s${i}`, i, { sessionId: "short" }), "f");
+    expect(sessionSummaries(st, 0, Infinity)[0]!.excessNanoAiu).toBeUndefined();
+  });
+});
+
+describe("monitor: v0.4 last 7 days, session rows, insights", () => {
+  const A = "0000aaaa-0000-4000-8000-000000000001";
+  const B = "0000bbbb-0000-4000-8000-000000000002";
+  let root: string;
+  let snaps: Snapshot[];
+  const now = new Date(2026, 10, 20, 10).getTime();
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "cum-v04-"));
+    snaps = [];
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const make = () =>
+    new UsageMonitor({ root, rootSource: "default", now: () => new Date(now), isLive: () => false, log: new Logger(() => {}), onSnapshot: (s) => snaps.push(s), historyMonths: 2 });
+  const at = (d: number, h = 9) => new Date(2026, 10, d, h).toISOString();
+
+  it("last7 covers today and the 6 days before; prior7 the 7 days before that; both ignore the filter", async () => {
+    await sessionTree(root, [
+      {
+        id: A,
+        lines: jsonl([
+          usageEvent({ usageId: "a1", id: "e1", sourceSessionId: A, timestamp: at(20) }),
+          usageEvent({ usageId: "a2", id: "e2", sourceSessionId: A, timestamp: at(14, 0) }),
+          usageEvent({ usageId: "a3", id: "e3", sourceSessionId: A, timestamp: at(13, 23) }),
+          usageEvent({ usageId: "a4", id: "e4", sourceSessionId: A, timestamp: at(7) }),
+          usageEvent({ usageId: "a5", id: "e5", sourceSessionId: A, timestamp: at(6, 23) }),
+        ]),
+      },
+    ]);
+    const mon = make();
+    await mon.refresh({ full: true });
+    let s = snaps.at(-1)!;
+    expect(s.last7!.records).toBe(2);
+    expect(s.prior7!.records).toBe(2);
+    mon.setFilter({ tool: "no-such-tool" });
+    await mon.refresh();
+    s = snaps.at(-1)!;
+    expect(s.month!.totals).toBeUndefined();
+    expect(s.last7!.records).toBe(2);
+    expect(s.prior7!.records).toBe(2);
+  });
+
+  it("thisMonth and thisMonthProjects ignore the filter and a selected past month (D31); the USD status bar follows", async () => {
+    await sessionTree(root, [
+      {
+        id: A,
+        lines: jsonl([
+          usageEvent({ usageId: "a1", id: "e1", sourceSessionId: A, timestamp: at(20), totalNanoAiu: 3e9 }),
+          usageEvent({ usageId: "a2", id: "e2", sourceSessionId: A, timestamp: at(2), totalNanoAiu: 2e9 }),
+          usageEvent({ usageId: "a0", id: "e0", sourceSessionId: A, timestamp: new Date(2026, 9, 15).toISOString(), totalNanoAiu: 9e9 }),
+        ]),
+      },
+    ]);
+    const mon = make();
+    await mon.refresh({ full: true });
+    let s = snaps.at(-1)!;
+    expect(s.thisMonth!.records).toBe(2);
+    expect(s.thisMonth!.nanoAiu.sum).toBe(5e9);
+    expect(s.thisMonthProjects!.map((p) => p.calls)).toEqual([2]);
+    const before = statusText(s, { unit: "cost" });
+    expect(before).toContain("$0.050");
+    mon.setFilter({ tool: "no-such-tool" });
+    mon.selectMonth(new Date(2026, 9, 1).getTime());
+    await mon.refresh();
+    s = snaps.at(-1)!;
+    expect(s.month!.isCurrent).toBe(false);
+    expect(s.history!.at(-1)!.totals).toBeUndefined(); // filtered
+    expect(s.thisMonth!.records).toBe(2);
+    expect(s.thisMonthProjects!.map((p) => p.calls)).toEqual([2]);
+    expect(statusText(s, { unit: "cost" })).toBe(before);
+  });
+
+  it("last7 and prior7 are absent when nothing was logged in them", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([usageEvent({ usageId: "a1", sourceSessionId: A, timestamp: at(1) })]) }]);
+    await make().refresh({ full: true });
+    const s = snaps.at(-1)!;
+    expect(s.last7).toBeUndefined();
+    expect(s.prior7).toBeUndefined();
+    expect(s.thisMonth!.records).toBe(1);
+  });
+
+  it("keeps up to 50 session rows, counts every session and labels them by project", async () => {
+    const sessions = Array.from({ length: 53 }, (_, i) => {
+      const id = `0000${String(i).padStart(4, "0")}-0000-4000-8000-${String(i).padStart(12, "0")}`;
+      return { id, lines: jsonl([usageEvent({ usageId: `u${i}`, id: `e${i}`, sourceSessionId: id, timestamp: at(19), totalNanoAiu: (i + 1) * 1e9 })]) };
+    });
+    await sessionTree(root, sessions);
+    await make().refresh({ full: true });
+    const s = snaps.at(-1)!;
+    expect(s.month!.sessions).toHaveLength(50);
+    expect(s.month!.sessionCount).toBe(53);
+    expect(s.month!.insights).toBeDefined();
+    expect(s.month!.insights!.coverage).toEqual({ callSessions: 53, totalsOnlySessions: 0 });
+  });
+
+  it("the month carries insights: a session that grew costly fires I2", async () => {
+    const lines = (id: string, costs: number[]) =>
+      jsonl(costs.map((c, i) => usageEvent({ usageId: `${id}-${i}`, id: `${id}-e${i}`, sequence: i + 1, sourceSessionId: id, timestamp: new Date(2026, 10, 19, 9, i).toISOString(), totalNanoAiu: c })));
+    const grow = [1, 1, 1, 1, 1, 9, 9, 9, 9, 9].map((x) => x * 1e10);
+    await sessionTree(root, [{ id: B, lines: lines(B, grow) }]);
+    await make().refresh({ full: true });
+    const items = snaps.at(-1)!.month!.insights!.items;
+    expect(items.map((x) => x.id)).toEqual(["context-growth"]);
   });
 });

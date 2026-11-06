@@ -10,7 +10,7 @@ import { PANEL_COMMANDS, renderPanelHtml, toolGroup } from "../../src/core/panel
 import { byMonth, NO_PROJECT, projectSummaries, toolSummaries, UsageStore } from "../../src/core/store";
 import { LineTailer } from "../../src/core/tailer";
 import type { Snapshot, UsageRecord } from "../../src/core/types";
-import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
+import { CANARY, jsonl, sessionTree, shutdownEvent, usageEvent } from "../fixtures/build";
 
 const start = (context: object, extra: object = {}) =>
   JSON.stringify({ type: "session.start", id: "s", parentId: null, timestamp: "2026-01-15T10:00:00.000Z", data: { copilotVersion: "1.0.100-1", context, prompt: CANARY, ...extra } });
@@ -108,7 +108,7 @@ describe("tailer: start lines only when asked", () => {
 });
 
 function rec(key: string, o: Partial<UsageRecord> = {}): UsageRecord {
-  return { key, keySource: "usageId", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
+  return { key, keySource: "usageId", kind: "call", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
 }
 
 describe("store: projects and tools", () => {
@@ -242,6 +242,28 @@ describe("monitor: project labels and filters", () => {
     expect(s.filter).toBeUndefined();
     expect(s.month!.totals!.records).toBe(3);
   });
+
+  it("session totals: the project filter keeps them, the tool filter drops them (D29)", async () => {
+    const L = "0000eeee-0000-4000-8000-000000000005";
+    await sessionTree(root, [
+      { id: L, lines: start({ cwd: "/srv/x/code/tools-cli" }) + "\n" + jsonl([shutdownEvent({ timestamp: ts(11) })]) },
+    ]);
+    const m = new UsageMonitor({ root, rootSource: "default", now: () => new Date(now), isLive: () => false, log: new Logger(() => {}), onSnapshot: (x) => snaps.push(x), readProjects: true, readTotals: true });
+    await m.refresh({ full: true });
+    let s = snaps.at(-1)!;
+    expect(s.month!.projects.find((p) => p.name === "tools-cli")).toMatchObject({ sessions: 2, calls: 7 });
+    m.setFilter({ project: "tools-cli" });
+    await m.refresh();
+    s = snaps.at(-1)!;
+    expect(s.month!.totals).toMatchObject({ records: 2, calls: 7, sessionTotals: 1 });
+    expect(s.month!.sessions.map((x) => x.sessionId).sort()).toEqual([B, L].sort());
+    m.setFilter({ tool: "view" });
+    await m.refresh();
+    s = snaps.at(-1)!;
+    expect(s.month!.totals).toMatchObject({ records: 1, calls: 1, sessionTotals: 0 });
+    expect(s.month!.sessions.map((x) => x.sessionId)).toEqual([B]);
+    expect(s.today!.sessionTotals).toBe(1); // Today ignores the filter
+  });
 });
 
 describe("panel: project and tool tables", () => {
@@ -250,7 +272,7 @@ describe("panel: project and tool tables", () => {
     generatedAtMs: 0,
     dayStartMs: new Date(2026, 10, 5).getTime(),
     sessions: [],
-    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
+    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, shutdownOversize: 0 },
     month: {
       monthStartMs: new Date(2026, 10, 1).getTime(),
       isCurrent: true,
@@ -269,7 +291,7 @@ describe("panel: project and tool tables", () => {
   });
 
   it("rows link to setFilter; only allowlisted commands; names escaped", () => {
-    const html = renderPanelHtml(base(), "x");
+    const html = renderPanelHtml(base(), "x", undefined, "projects") + renderPanelHtml(base(), "x", undefined, "tools");
     expect(html).toContain("By project");
     expect(html).toContain("By tool");
     expect(html).toContain(`href="command:copilotUsageMonitor.setFilter?${encodeURIComponent(JSON.stringify(["project", "acme/web"])).replace(/&/g, "&amp;")}"`);
@@ -280,13 +302,18 @@ describe("panel: project and tool tables", () => {
   });
 
   it("active filter: chips with clear links, active row highlighted, trend marked filtered", () => {
-    const html = renderPanelHtml({ ...base(), filter: { project: "acme/web", tool: "bash" } }, "x");
-    expect(html).toMatch(/class="fchip"[^>]*>Project: <b>acme\/web<\/b> ✕/);
-    expect(html).toMatch(/class="fchip"[^>]*>Tool: <b>bash<\/b> ✕/);
-    expect(html).toContain(encodeURIComponent(JSON.stringify(["project", ""])));
-    expect(html.match(/<tr class="on">/g)).toHaveLength(2);
-    expect(html).toContain("· filtered ·");
-    expect(html).toContain("Today and the status bar are not filtered.");
+    const f = { ...base(), filter: { project: "acme/web", tool: "bash" } };
+    // Chips are chrome: on every section.
+    for (const section of ["overview", "projects", "health"] as const) {
+      const html = renderPanelHtml(f, "x", undefined, section);
+      expect(html).toMatch(/class="fchip"[^>]*aria-label="Clear project filter: acme\/web">Project: <b>acme\/web<\/b><span aria-hidden="true"> ✕<\/span>/);
+      expect(html).toMatch(/class="fchip"[^>]*aria-label="Clear tool filter: bash">Tool: <b>bash<\/b><span aria-hidden="true"> ✕<\/span>/);
+      expect(html).toContain(encodeURIComponent(JSON.stringify(["project", ""])));
+      expect(html).toContain("Today, the last 7 days, daily activity and the status bar are not filtered.");
+    }
+    const rows = renderPanelHtml(f, "x", undefined, "projects") + renderPanelHtml(f, "x", undefined, "tools");
+    expect(rows.match(/<tr class="on">/g)).toHaveLength(2);
+    expect(renderPanelHtml(f, "x")).toContain("· filtered ·");
   });
 });
 
@@ -297,7 +324,7 @@ describe("panel: long lists fold (D27)", () => {
     generatedAtMs: 0,
     dayStartMs: new Date(2026, 10, 5).getTime(),
     sessions: [],
-    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0 },
+    health: { state: "ok", rootSource: "default", partial: false, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, shutdownOversize: 0 },
     month: {
       monthStartMs: new Date(2026, 10, 1).getTime(),
       isCurrent: true,
@@ -313,21 +340,21 @@ describe("panel: long lists fold (D27)", () => {
   });
 
   it("shows 10 rows, folds the rest into a script-free details", () => {
-    const html = renderPanelHtml(snap(), "x");
-    const tools = html.slice(html.indexOf("By tool"), html.indexOf("Costliest sessions"));
+    const html = renderPanelHtml(snap(), "x", undefined, "tools");
+    const tools = html.slice(html.indexOf("By tool"));
     const [visible, folded] = tools.split('<details class="more">');
     expect(visible!.match(/<tr>/g)!.length - 1).toBe(10); // minus the header row
     expect(folded).toContain("<summary>Show 15 more</summary>");
     expect(folded!.match(/<tr>/g)!.length - 1).toBe(15);
     expect(html).not.toMatch(/<script/i);
     // short lists do not fold
-    const projects = html.slice(html.indexOf("By project"), html.indexOf("By tool"));
-    expect(projects).not.toContain("<details");
+    const projects = renderPanelHtml(snap(), "x", undefined, "projects");
+    expect(projects.slice(projects.indexOf("By project"))).not.toContain("<details");
   });
 
   it("an active filter row beyond the top 10 stays visible", () => {
-    const html = renderPanelHtml(snap({ tool: "mcp__jira__t9" }), "x");
-    const tools = html.slice(html.indexOf("By tool"), html.indexOf("Costliest sessions"));
+    const html = renderPanelHtml(snap({ tool: "mcp__jira__t9" }), "x", undefined, "tools");
+    const tools = html.slice(html.indexOf("By tool"));
     const [visible, folded] = tools.split('<details class="more">');
     expect(visible).toContain("mcp__jira__t9");
     expect(visible).toContain('<tr class="on">');
@@ -336,7 +363,7 @@ describe("panel: long lists fold (D27)", () => {
   });
 
   it("added tools are summarised per server or plugin", () => {
-    const html = renderPanelHtml(snap(), "x");
+    const html = renderPanelHtml(snap(), "x", undefined, "tools");
     expect(html).toContain("25 added tools from 2 servers or plugins: github-mcp-server (14 tools, 14 uses), jira (11 tools, 11 uses).");
   });
 });

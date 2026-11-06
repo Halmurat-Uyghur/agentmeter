@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   LOCAL_BANNER,
   NOT_COVERED,
+  currentRangeState,
+  rangeIconId,
+  spoken,
+  statusAccessibilityLabel,
+  SESSION_TOTAL_NOTE,
+  SESSION_TOTAL_SHORT,
   STREAMING_NOTE,
   escapeMarkdown,
   formatAiu,
@@ -9,6 +15,8 @@ import {
   partialNote,
   statusText,
   tooltipMarkdown,
+  weekChange,
+  weekCoverage,
 } from "../../src/core/format";
 import type {
   Counts,
@@ -28,6 +36,8 @@ const none = (): Metric => m(0, 0, 0);
 function counts(input: Metric, output: Metric, records = 2): Counts {
   return {
     records,
+    calls: records,
+    sessionTotals: 0,
     input,
     output,
     cacheRead: none(),
@@ -35,6 +45,8 @@ function counts(input: Metric, output: Metric, records = 2): Counts {
     reasoning: none(),
     durationMs: none(),
     nanoAiu: none(),
+    callsMissing: 0,
+    callNanoAiu: none(),
   };
 }
 
@@ -60,6 +72,8 @@ function health(o: Partial<Health> = {}): Health {
     overlongOther: 0,
     unreadableFiles: 0,
     sessionsWithoutUsage: 0,
+    sessionsFromTotals: 0,
+    shutdownOversize: 0,
     ...o,
   };
 }
@@ -258,6 +272,13 @@ const STATES: [string, Snapshot | undefined][] = [
     "hostile model",
     snap({ today: totals(IN, OUT, { [hostile]: counts(IN, OUT) }) }),
   ],
+  [
+    "session totals",
+    snap({
+      today: { ...totals(IN, OUT), sessionTotals: 2, calls: 14 },
+      health: health({ partial: true, shutdownOversize: 2, sessionsFromTotals: 3, sessionsWithoutUsage: 1 }),
+    }),
+  ],
 ];
 
 describe("tooltipMarkdown", () => {
@@ -293,6 +314,24 @@ describe("tooltipMarkdown", () => {
     expect(md).toContain("2 log file(s) could not be read");
     expect(md).toContain("3 malformed line(s)");
     expect(md).toContain("4 over-long line(s) that may contain usage were skipped.");
+  });
+
+  it("session totals: today names them, health counts them, oversize lines are a partial reason", () => {
+    const md = tooltipMarkdown(
+      snap({
+        today: { ...totals(IN, OUT), sessionTotals: 2 },
+        health: health({ partial: true, shutdownOversize: 1, sessionsFromTotals: 3, sessionsWithoutUsage: 1 }),
+      }),
+    );
+    expect(md).toContain("(incl. 2 session totals)");
+    expect(md).toContain("- 1 session-end line(s) too long to read were skipped.");
+    expect(md).toContain(`3 session(s) counted from session totals. ${SESSION_TOTAL_SHORT}`);
+    expect(md).toContain("1 session(s) without usage data are not in the totals.");
+  });
+
+  it("no session-total wording without session totals", () => {
+    const md = tooltipMarkdown(snap());
+    expect(md).not.toMatch(/session total/i);
   });
 
   it("over-long non-usage lines are listed under data health without marking partial", () => {
@@ -389,6 +428,8 @@ describe("copy check", () => {
   it("constants and notes pass too", () => {
     for (const text of [
       STREAMING_NOTE,
+      SESSION_TOTAL_NOTE,
+      SESSION_TOTAL_SHORT,
       ...NOT_COVERED,
       partialNote(m(1, 1, 1)) ?? "",
     ]) {
@@ -404,9 +445,111 @@ describe("copy check", () => {
     expect(all).toMatch(/JetBrains/);
   });
 
+  it("weekChange: ▲/▼ with a multiplier, never a percent sign", () => {
+    expect(weekChange(undefined, undefined)).toBeUndefined();
+    expect(weekChange(0, 0)).toBeUndefined();
+    expect(weekChange(140, 100)).toBe("▲ 1.4× the 7 days before");
+    expect(weekChange(60, 100)).toBe("▼ 0.6× the 7 days before");
+    expect(weekChange(1230, 100)).toBe("▲ 12× the 7 days before");
+    expect(weekChange(102, 100)).toBe("about the same as the 7 days before");
+    expect(weekChange(5, undefined)).toBe("nothing logged in the 7 days before");
+    expect(weekChange(undefined, 5)).toBe("nothing logged yet");
+    for (const t of [weekChange(140, 100), weekChange(60, 100), weekChange(5, 0), weekChange(0, 5), weekChange(5, 5, false)]) expect(t).not.toMatch(banned);
+  });
+
+  it("weekChange: no arrow when either week has nothing logged (review 5)", () => {
+    for (const [c, p] of [[5, undefined], [5, 0], [undefined, 5], [0, 5]] as const) {
+      const t = weekChange(c, p)!;
+      expect(t).toBeDefined();
+      expect(t).not.toMatch(/[▲▼]/);
+      expect(t).not.toMatch(/none yet/);
+    }
+  });
+
+  it("weekChange: no comparison when the 7 days before were not fully read (review 4)", () => {
+    expect(weekChange(140, 100, false)).toBe("no comparison");
+    expect(weekChange(140, undefined, false)).toBe("no comparison");
+    expect(weekChange(undefined, 100, false)).toBeUndefined();
+    expect(weekChange(140, 100, false)).not.toMatch(/[▲▼]/);
+  });
+
+  it("weekCoverage: flags a last-7 or prior-7 window that starts before the history window (review 4)", () => {
+    const day = (d: number) => new Date(2026, 10, d).getTime();
+    const s = (today: number, windowStart: number | undefined) => ({ dayStartMs: day(today), ...(windowStart !== undefined && { history: [{ monthStartMs: windowStart }] }) });
+    // historyMonths = 1 on Nov 3: both weeks reach into October
+    expect(weekCoverage(s(3, day(1)))).toStrictEqual({ last7Short: true, prior7Short: true });
+    // Nov 10: the last 7 days (Nov 4–10) are read, the 7 before (Oct 28–Nov 3) are not
+    expect(weekCoverage(s(10, day(1)))).toStrictEqual({ last7Short: false, prior7Short: true });
+    // Nov 14: the 7 before start on Nov 1, exactly the window start
+    expect(weekCoverage(s(14, day(1)))).toStrictEqual({ last7Short: false, prior7Short: false });
+    expect(weekCoverage(s(3, new Date(2026, 9, 1).getTime()))).toStrictEqual({ last7Short: false, prior7Short: false });
+    expect(weekCoverage(s(3, undefined))).toStrictEqual({ last7Short: false, prior7Short: false });
+  });
+
+  it("session total hover text is the spec's wording verbatim (calls are shown, from the request count)", () => {
+    expect(SESSION_TOTAL_NOTE).toBe(
+      "Session total: Copilot before 1.0.99 writes one total when a session ends instead of a record per model call. The whole session is counted on the day it ended. Per-call figures, growth and tool use are not available for it.",
+    );
+    expect(SESSION_TOTAL_SHORT).toBe("Session total: counted once, on the day the session ended (older Copilot).");
+  });
+
   it("LOCAL_BANNER is the plan sentence verbatim", () => {
     expect(LOCAL_BANNER).toBe(
       "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.",
     );
+  });
+});
+
+describe("v0.4: the status bar reads the unfiltered current month (D31, D33)", () => {
+  const MS = new Date(2026, 10, 1).getTime();
+  const DAY = new Date(2026, 10, 5).getTime();
+  const priced = (nano: number): Totals => ({ ...counts(IN, OUT), nanoAiu: m(nano, 2, 0), byModel: {} });
+
+  it("regression: a project/tool filter no longer changes the USD figure, target state or tooltip", () => {
+    // history.at(-1) is filtered by the monitor; thisMonth is not.
+    const s = snap({
+      dayStartMs: DAY,
+      history: [{ monthStartMs: MS, totals: priced(1e9) }],
+      month: { monthStartMs: MS, isCurrent: true, days: [], sessions: [], projects: [], tools: [], totals: priced(1e9) },
+      filter: { project: "acme/web" },
+      thisMonth: priced(5e11),
+    });
+    const view = { unit: "cost" as const, range: { max: 1 } };
+    expect(statusText(s, view)).toBe("$(flame) Local Nov: $5.00 / up to $1.00");
+    expect(currentRangeState(s, view)).toBe("over");
+    expect(tooltipMarkdown(s, view)).toContain("\\$5\\.00");
+    // thisMonth undefined (no record this month) wins over a stale history value
+    const empty = snap({ dayStartMs: DAY, history: [{ monthStartMs: MS, totals: priced(1e9) }], thisMonth: undefined });
+    expect(statusText(empty, { unit: "cost" })).toBe("$(pulse) Local Nov: —");
+  });
+
+  it("rangeIconId matches the status bar icon", () => {
+    expect(rangeIconId("none")).toBe("pulse");
+    expect(rangeIconId("under")).toBe("arrow-down");
+    expect(rangeIconId("in")).toBe("pass");
+    expect(rangeIconId("over")).toBe("flame");
+  });
+
+  it("spoken: words for marks, magnitudes and money; no icon syntax", () => {
+    expect(spoken("1.5M* tok · 12 calls")).toBe("1.5 million (may be incomplete) tokens, 12 calls");
+    expect(spoken("— · no calls yet")).toBe("not reported, no calls yet");
+    expect(spoken("$12.40 est. · in target range $20.00–$60.00")).toBe("12.40 US dollars estimated, in target range 20.00 US dollars to 60.00 US dollars");
+    expect(spoken("$(pulse) Local today: 820K tok")).toBe("Local today: 820 thousand tokens");
+    expect(spoken("▲ 1.4× the 7 days before")).toBe("up 1.4 times the 7 days before");
+    expect(spoken("▼ <1 in 10")).toBe("down less than 1 in 10");
+    expect(spoken("2.1× ▲")).toBe("2.1 times up");
+  });
+
+  it("statusAccessibilityLabel: the status figure in words, in every state", () => {
+    expect(statusAccessibilityLabel(undefined)).toBe("Copilot usage: loading");
+    expect(statusAccessibilityLabel(snap({ health: health({ state: "no-dir" }) }))).toMatch(/not found/);
+    expect(statusAccessibilityLabel(snap({ health: health({ partial: true }) }))).toBe(
+      "Copilot usage, local today: 1.5 million (may be incomplete) tokens. Opens details.",
+    );
+    const s = snap({ dayStartMs: DAY, thisMonth: priced(5e11), health: health({ state: "format-changed", unrecognized: 1 }) });
+    expect(statusAccessibilityLabel(s, { unit: "cost", range: { max: 1 } })).toBe(
+      "Copilot usage, local this month, estimated: 5.00 US dollars, over target up to 1.00 US dollars, the log format may have changed. Opens details.",
+    );
+    for (const st of STATES) expect(statusAccessibilityLabel(st[1])).not.toMatch(/\$\(|%/);
   });
 });
