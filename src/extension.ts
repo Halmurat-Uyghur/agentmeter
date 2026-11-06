@@ -116,7 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
       type Item = vscode.QuickPickItem & { filterKind?: "project" | "tool"; value?: string };
       const month = snapshot?.month;
       const items: Item[] = [{ label: "Clear all filters", filterKind: undefined }];
-      for (const p of month?.projects ?? []) items.push({ label: p.name, description: `project · ${p.calls} calls`, filterKind: "project", value: p.name });
+      for (const p of month?.projects ?? []) items.push({ label: p.label ?? p.name, description: `project · ${p.calls} calls`, filterKind: "project", value: p.name });
       for (const t of month?.tools ?? []) items.push({ label: t.name, description: `tool · ${t.builtIn ? "built-in" : "added"} · ${t.uses} uses`, filterKind: "tool", value: t.name });
       const pick = await vscode.window.showQuickPick(items, { placeHolder: "Filter the month view by project or tool" });
       if (!pick || monitor !== m) return;

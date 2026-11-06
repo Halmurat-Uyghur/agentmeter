@@ -84,6 +84,11 @@ function commandHref(command: (typeof PANEL_COMMANDS)[number], ...args: string[]
   return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
 }
 
+/** What to show for a project filter key: its row's display label (session title), else the key. */
+function projectLabel(s: Snapshot, key: string): string {
+  return s.month?.projects.find((g) => g.name === key)?.label ?? key;
+}
+
 /** A link that sets (or, with "", clears) one filter. */
 function filterHref(kind: "project" | "tool", value: string): string {
   return commandHref("copilotUsageMonitor.setFilter", kind, value);
@@ -231,7 +236,7 @@ function navBar(s: Snapshot, view: ViewOptions): string {
   const chip = (kind: "project" | "tool", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter">${escapeHtml(label)}: <b>${escapeHtml(value)}</b> ✕</a>`;
   const filters = f
-    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", f.project) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today and the status bar are not filtered.</span></div>`
+    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today and the status bar are not filtered.</span></div>`
     : "";
   return `${filters}<nav class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month")}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month")}${back}${pick}</div>
@@ -462,11 +467,11 @@ function projectsBox(s: Snapshot, view: ViewOptions): string {
     const pct = share(view.unit === "cost" ? g.nanoAiu : g.tokens, whole);
     const on = g.name === active;
     const href = filterHref("project", on ? "" : g.name);
-    const name = g.name === NO_PROJECT ? `<span class="muted">${escapeHtml(g.name)}</span>` : escapeHtml(g.name);
+    const name = g.name === NO_PROJECT ? `<span class="muted">${escapeHtml(g.name)}</span>` : escapeHtml(g.label ?? g.name);
     return { keep, html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num">${g.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td></tr>` };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";
-  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name; full paths are never read.${escapeHtml(note)}</div></section>`;
+  return `<section class="box"><h2>By project<small>${escapeHtml(scope)} · ${plural(list.length, "project")} · click to filter</small></h2>${foldedTable("<th>Project</th><th>Sessions</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine">Project = the session's GitHub repository, else its folder name (or its title when the folder is named by an ID); full paths are never read.${escapeHtml(note)}</div></section>`;
 }
 
 /** Per-tool table for the viewed month; each row filters to calls that used that tool (D26). */
@@ -500,7 +505,7 @@ function toolsBox(s: Snapshot, view: ViewOptions): string {
     const more = sorted.length > TABLE_LIMIT ? ` and ${sorted.length - TABLE_LIMIT} more` : "";
     addedNote = `${plural(added.length, "added tool")} from ${plural(sorted.length, "server or plugin", "servers or plugins")}: ${shown.join(", ")}${more}.`;
   }
-  const note = s.filter?.project ? ` Only project ${s.filter.project}.` : "";
+  const note = s.filter?.project ? ` Only project ${projectLabel(s, s.filter.project)}.` : "";
   return `<section class="box"><h2>By tool<small>${escapeHtml(scope)} · ${plural(list.length, "tool")} · click to filter</small></h2>${foldedTable("<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>USD (est.)</th>", rows)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / USD = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p></div></section>`;
 }
 

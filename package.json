@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -141,7 +141,7 @@
         "copilotUsageMonitor.projectNames": {
           "type": "boolean",
           "default": true,
-          "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. Full paths are never kept. Turn off to stop reading that line."
+          "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. A folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading both."
         }
       }
     },

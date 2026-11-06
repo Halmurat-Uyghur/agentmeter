@@ -2,9 +2,9 @@
 // Snapshot whenever what it would show changes. Missing data stays undefined,
 // incomplete data sets `health.partial`, and only error codes are logged.
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
-import { parseStartLine, parseUsageLine } from "./extract";
+import { isIdLabel, MAX_WORKSPACE_BYTES, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
 import type { Logger } from "./log";
 import { byMonth, daysOfMonth, localDayStart, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
@@ -50,6 +50,31 @@ interface FileState {
   error?: ReadErrorCode;
   /** project label from this log's session.start line (D25) */
   project?: string;
+  /** session title from workspace.yaml, read only when `project` is an ID */
+  title?: string;
+  /** mtime of the workspace.yaml last read for `title` */
+  titleMtimeMs?: number;
+}
+
+/**
+ * Reads at most MAX_WORKSPACE_BYTES + 1 bytes of workspace.yaml (never following a
+ * symlink where the OS allows) and returns its title; a longer file has no title.
+ */
+async function readBoundedTitle(path: string): Promise<string | undefined> {
+  const fh = await fs.promises.open(path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    if (!(await fh.stat()).isFile()) return undefined;
+    const buf = Buffer.alloc(MAX_WORKSPACE_BYTES + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+      if (bytesRead === 0) break;
+      n += bytesRead;
+    }
+    return n > MAX_WORKSPACE_BYTES ? undefined : parseWorkspaceName(buf.toString("utf8", 0, n));
+  } finally {
+    await fh.close();
+  }
 }
 
 const REDISCOVER_MS = 10_000;
@@ -265,6 +290,8 @@ export class UsageMonitor {
       this.store.resetFile(path);
       f.malformed = f.unrecognized = f.overlong = f.overlongOther = 0;
       delete f.project;
+      delete f.title;
+      delete f.titleMtimeMs;
       f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
@@ -278,6 +305,10 @@ export class UsageMonitor {
         this.dirty = true;
       }
     }
+    // A folder named by an ID says nothing: show the session's title instead.
+    // Checked only when the log moved, so idle polls touch no extra file.
+    if (f.project !== undefined && isIdLabel(f.project) && (r.startLines.length > 0 || r.usageLines.length > 0 || r.activity > 0))
+      await this.readTitle(path, f);
     for (const line of r.usageLines) {
       const p = this.parse(line, f.folderId);
       if (p.kind === "usage") {
@@ -297,6 +328,34 @@ export class UsageMonitor {
     }
     if (r.error === undefined) f.primed = true;
     return { added, changed };
+  }
+
+  /**
+   * Reads the `name:` of the session's workspace.yaml when that file changed. A file
+   * that is gone, unreadable, not a regular file (e.g. a symlink) or over
+   * MAX_WORKSPACE_BYTES drops the title, so the folder name shows again.
+   */
+  private async readTitle(eventsPath: string, f: FileState): Promise<void> {
+    const ws = join(dirname(eventsPath), "workspace.yaml");
+    let title: string | undefined;
+    let mtimeMs: number | undefined;
+    try {
+      const st = await fs.promises.lstat(ws);
+      if (st.isFile() && st.size <= MAX_WORKSPACE_BYTES) {
+        if (st.mtimeMs === f.titleMtimeMs) return;
+        title = await readBoundedTitle(ws);
+        mtimeMs = st.mtimeMs;
+      }
+    } catch {
+      // No workspace.yaml (older Copilot) or unreadable: the folder name shows.
+    }
+    if (mtimeMs === undefined) delete f.titleMtimeMs;
+    else f.titleMtimeMs = mtimeMs;
+    if (title !== f.title) {
+      if (title === undefined) delete f.title;
+      else f.title = title;
+      this.dirty = true;
+    }
   }
 
   private snapshot(nowMs: number, dayStartMs: number): Snapshot {
@@ -369,8 +428,19 @@ export class UsageMonitor {
 
     const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
+    // Grouping and the project filter are keyed by the project folder label only.
+    // A session title (ID-named folders) is display-only: the title of the most
+    // recently active titled session in that folder.
     const projects = new Map<string, string>();
-    for (const f of this.files.values()) if (f.project !== undefined) projects.set(f.folderId, f.project);
+    const titles = new Map<string, { title: string; ms: number }>();
+    for (const f of this.files.values()) {
+      if (f.project === undefined) continue;
+      projects.set(f.folderId, f.project);
+      if (f.title === undefined) continue;
+      const ms = latest.get(f.folderId) ?? Number.NEGATIVE_INFINITY;
+      const t = titles.get(f.project);
+      if (t === undefined || ms > t.ms) titles.set(f.project, { title: f.title, ms });
+    }
     const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
     const { project, tool } = this.filter;
     const byProject = (r: UsageRecord) => project === undefined || projectOf(r) === project;
@@ -378,6 +448,10 @@ export class UsageMonitor {
     const keep = (r: UsageRecord) => byProject(r) && byTool(r);
     const history = byMonth(this.store, starts, keep);
     const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
+    month.projects = month.projects.map((g) => {
+      const t = titles.get(g.name);
+      return t === undefined ? g : { ...g, label: t.title };
+    });
     const filter = project !== undefined || tool !== undefined ? { ...this.filter } : undefined;
 
     return {
