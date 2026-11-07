@@ -9,6 +9,7 @@ import * as vscode from "vscode";
 import { resolveCopilotRoot } from "./core/config";
 import { Logger } from "./core/log";
 import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
+import { isSessionId } from "./core/extract";
 import { cleanRange, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
@@ -95,6 +96,8 @@ export function activate(context: vscode.ExtensionContext): void {
   let totalsOn = readTotals();
   /** active filter, kept across monitor restarts (D26) */
   let filter: Filter = {};
+  /** session whose calls the Sessions section lists, kept across monitor restarts; in memory only (v0.6) */
+  let session: string | undefined;
 
   const resolve = () => {
     const setting = vscode.workspace.getConfiguration("copilotUsageMonitor").get<string>("copilotHome");
@@ -177,6 +180,18 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.show(isSectionId(section) ? section : undefined);
   };
 
+  /** A session id lists that session's calls in the Sessions section; "" closes the list.
+   * Anything else (no argument, a non-string, an id of another shape) is ignored (v0.6). */
+  const showSession = (arg?: unknown) => {
+    const m = monitor;
+    if (!m) return;
+    if (arg === "") session = undefined;
+    else if (isSessionId(arg)) session = arg;
+    else return;
+    m.selectSession(session);
+    panel.show("sessions");
+  };
+
   /** A section id switches the panel to it; no argument opens a picker; anything else is ignored (D30). */
   const showSection = async (arg?: unknown) => {
     if (arg === undefined) {
@@ -233,6 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
     if (selected !== undefined) m.selectMonth(selected);
     if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
+    if (session !== undefined) m.selectSession(session);
     monitor = m;
     snapshot = undefined;
     status.update(undefined, view);
@@ -288,6 +304,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.setFilter", setFilter),
     vscode.commands.registerCommand("copilotUsageMonitor.filter", () => setFilter()),
     vscode.commands.registerCommand("copilotUsageMonitor.showSection", showSection),
+    vscode.commands.registerCommand("copilotUsageMonitor.showSession", showSession),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       folders = readFolders();
       render();

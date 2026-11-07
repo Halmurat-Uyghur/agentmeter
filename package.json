@@ -134,6 +134,11 @@
         "icon": "$(list-flat)"
       },
       {
+        "command": "copilotUsageMonitor.showSession",
+        "title": "Show Session Calls",
+        "category": "Copilot Usage"
+      },
+      {
         "command": "copilotUsageMonitor.selectCurrency",
         "title": "Choose Currency…",
         "category": "Copilot Usage"
@@ -232,6 +237,10 @@
         },
         {
           "command": "copilotUsageMonitor.setFilter",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.showSession",
           "when": "false"
         }
       ],

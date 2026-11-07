@@ -188,16 +188,31 @@ describe("gates", () => {
     expect(ext).toContain("readTotals");
   });
 
-  it("the panel allows exactly four commands, wired as the webview's allowlist (D30)", () => {
+  it("the panel allows exactly five commands, wired as the webview's allowlist (D30; showSession v0.6)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.showSection",
+      "copilotUsageMonitor.showSession",
     ]);
     const panel = readFileSync(join(ROOT, "src", "vscode", "panel.ts"), "utf8");
     expect(panel).toContain("enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: []");
     expect(panel).not.toMatch(/enableCommandUris:\s*true/);
+  });
+
+  it("showSession (v0.6): validated by shape, hidden from the palette, not a side bar command, held in memory only", () => {
+    const ext = readFileSync(join(ROOT, "src", "extension.ts"), "utf8");
+    const handler = /const showSession = \(arg\?: unknown\) => \{([\s\S]*?)\n  \};/.exec(ext);
+    expect(handler, "showSession handler").not.toBeNull();
+    // Only "" (close) or an id that passes isSessionId reaches the monitor; nothing is written.
+    expect(handler![1]).toContain('if (arg === "") session = undefined;');
+    expect(handler![1]).toContain("else if (isSessionId(arg)) session = arg;");
+    expect(handler![1]).toContain("else return;");
+    expect(handler![1]).not.toMatch(/update\(|globalState|workspaceState|getConfiguration/);
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: "copilotUsageMonitor.showSession", when: "false" });
+    expect([...SIDEBAR_COMMANDS]).not.toContain("copilotUsageMonitor.showSession");
   });
 
   it("the side bar is a no-script webview view: exactly SIDEBAR_COMMANDS, no local resources (A1)", () => {

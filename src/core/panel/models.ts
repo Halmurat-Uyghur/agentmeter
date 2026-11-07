@@ -1,6 +1,7 @@
 // Models (D32): the viewed month's table by model, with a Share column.
 import { costLabel, estWord, formatCount, formatUsd, money, partialNote, usd } from "../format";
 import { modelFamily } from "../store";
+import { modelCacheCard } from "./explain";
 import type { Snapshot, Totals, ViewOptions } from "../types";
 import { CALLS_MISSING_NOTE, callsCell, card, DASH, sym, escapeHtml, foldedTable, headlineValue, inHundred, monthTitle, plural, titleAttr, tokens, totalsFine, unitWord, val, viewedName, viewedStart, withStar } from "./shared";
 
@@ -38,5 +39,6 @@ export function renderModels(s: Snapshot, view: ViewOptions): string {
       )
     : `<p class="muted">${escapeHtml(empty)}</p>`;
   const totalsNote = totalsFine(t?.sessionTotals ?? 0, scope);
-  return card("models-title", "models", `${scope} by model`, `${plural(models.length, "model")}${s.filter ? " · filtered" : ""}`, `${body}<div class="fine">${totalsNote}<p>Share = this model's part of the month's ${escapeHtml(unitWord(view))}, out of 100. Per call = ${escapeHtml(estWord())} per model call, from per-call records only. Calls include the request count logged with each session total. "—" means the log did not report the value; it is never shown as 0.</p></div>`);
+  const cache = modelCacheCard(s);
+  return card("models-title", "models", `${scope} by model`, `${plural(models.length, "model")}${s.filter ? " · filtered" : ""}`, `${body}<div class="fine">${totalsNote}<p>Share = this model's part of the month's ${escapeHtml(unitWord(view))}, out of 100. Per call = ${escapeHtml(estWord())} per model call, from per-call records only. Calls include the request count logged with each session total. "—" means the log did not report the value; it is never shown as 0.</p></div>`) + (cache ? `\n${cache}` : "");
 }

@@ -3,7 +3,7 @@
 // "*" means some contributing records did not report the field.
 
 import { addMetrics, localDaysBefore } from "./store";
-import type { Currency, Counts, Health, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
+import type { Currency, Counts, Health, LastPrompt, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
@@ -323,6 +323,16 @@ function healthLines(h: Health): string[] {
   return out;
 }
 
+/** "Last prompt: $0.042 est., 1 call + 3 agent calls" (cost view or a target set), else in tokens (v0.6). */
+export function lastPromptLine(lp: LastPrompt | undefined, view: ViewOptions = DEFAULT_VIEW): string | undefined {
+  if (!lp) return undefined;
+  const cost = view.unit === "cost" || view.range !== undefined;
+  const figure = cost
+    ? lp.nanoAiu === undefined ? DASH : `${money(lp.nanoAiu / 1e11)} est.`
+    : lp.tokens === undefined ? DASH : `${formatCount({ sum: lp.tokens, reported: 1, missing: 0 })} tok`;
+  return `Last prompt: ${escapeMarkdown(figure)}, 1 call + ${lp.agentCalls} agent call${lp.agentCalls === 1 ? "" : "s"}`;
+}
+
 export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   const parts: string[] = [LOCAL_BANNER, STREAMING_NOTE];
   if (!s) {
@@ -351,6 +361,8 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     } else {
       parts.push(`${label}: ${DASH}`);
     }
+    const lp = lastPromptLine(cur.lastPrompt, view);
+    if (lp) parts.push(lp);
   }
 
   if (s.today) {

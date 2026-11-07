@@ -140,6 +140,11 @@ function safeKey(v: unknown, re: RegExp): v is string {
 }
 /** Session ids: the same shape discover accepts for a session folder name. */
 const SESSION_ID = /^[0-9a-f-]{8,64}$/i;
+
+/** A session id as a panel link may carry it (v0.6 showSession): the shape above, never a prototype key. */
+export function isSessionId(v: unknown): v is string {
+  return safeKey(v, SESSION_ID);
+}
 const REPO = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const FOLDER_NAME = /^[A-Za-z0-9 ._@+-]{1,80}$/;
 

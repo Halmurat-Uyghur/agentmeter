@@ -1,4 +1,4 @@
-// The panel's command links (D20, D26, D30). The webview allows exactly
+// The panel's command links (D20, D26, D30; showSession v0.6). The webview allows exactly
 // PANEL_COMMANDS; every argument is JSON-encoded, then URI-encoded, and the
 // receiving handler validates it (a section id is only compared to a closed list).
 import type { SectionId } from "./sections";
@@ -9,6 +9,7 @@ export const PANEL_COMMANDS = [
   "copilotUsageMonitor.setUnit",
   "copilotUsageMonitor.setFilter",
   "copilotUsageMonitor.showSection",
+  "copilotUsageMonitor.showSession",
 ] as const;
 
 export type PanelCommand = (typeof PANEL_COMMANDS)[number];
@@ -25,4 +26,11 @@ export function filterHref(kind: "project" | "tool", value: string): string {
 /** A link that switches the panel to one section. */
 export function sectionHref(id: SectionId): string {
   return commandHref("copilotUsageMonitor.showSection", id);
+}
+
+/** A link that lists one session's calls in the Sessions section ("" closes the list). The
+ * id comes from a session row, which the extractor already limited to `^[0-9a-f-]{8,64}$`;
+ * the handler checks that shape again. */
+export function sessionCallsHref(sessionId: string): string {
+  return commandHref("copilotUsageMonitor.showSession", sessionId);
 }

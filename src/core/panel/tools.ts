@@ -3,6 +3,7 @@
 import { costLabel, currencyCode, formatCount, formatUsd } from "../format";
 import { toolGroup } from "../store";
 import type { Snapshot, ToolSummary, ViewOptions } from "../types";
+import { toolOverheadCard } from "./explain";
 import { filterHref } from "./links";
 import { card, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
 
@@ -54,5 +55,6 @@ export function toolsBox(s: Snapshot, view: ViewOptions): string {
 }
 
 export function renderTools(s: Snapshot, view: ViewOptions): string {
-  return toolsBox(s, view);
+  const defs = toolOverheadCard(s);
+  return toolsBox(s, view) + (defs ? `\n${defs}` : "");
 }

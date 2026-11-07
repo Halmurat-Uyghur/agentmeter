@@ -85,12 +85,13 @@ const ROOT = join(__dirname, "..", "..");
 const render = (s: Snapshot | undefined, section?: SectionId, view?: Parameters<typeof renderPanelHtml>[2]) => renderPanelHtml(s, "x", view, section);
 
 describe("command allowlist", () => {
-  it("PANEL_COMMANDS is exactly the four panel commands", () => {
+  it("PANEL_COMMANDS is exactly the five panel commands", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.showSection",
+      "copilotUsageMonitor.showSession",
     ]);
   });
 
