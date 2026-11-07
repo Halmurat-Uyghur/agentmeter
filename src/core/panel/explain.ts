@@ -146,9 +146,16 @@ export function modelCacheCard(s: Snapshot): string {
   }));
   const cur = costLabel();
   const head = `<th>Model</th><th>Cache read, of input</th><th>Uncached input, ${escapeHtml(cur)}</th><th>Same at cache-read price, ${escapeHtml(cur)}</th><th>Cache reads, ${escapeHtml(cur)}</th><th>Cache writes, ${escapeHtml(cur)}</th>`;
-  const lead = all.uncachedNano.reported > 0
-    ? `In ${name}, uncached input cost ${formatUsd(all.uncachedNano)} (est.); the same tokens at the cache-read price would have cost ${formatUsd(all.atReadRateNano)} (est.).`
-    : `Copilot did not log per-token-type AI credits for these calls, so the cache cost is not shown (—).`;
+  const u = all.uncachedNano;
+  const paired = all.atReadRateNano.reported;
+  const lead =
+    u.reported === 0
+      ? `Copilot did not log per-token-type AI credits for these calls, so the cache cost is not shown (—).`
+      : paired === 0
+        ? `In ${name}, uncached input cost ${formatUsd(u)} (est.). Copilot logged no cache-read price for these calls, so the cost at the cache-read price is not shown (—).`
+        : paired === u.reported
+          ? `In ${name}, uncached input cost ${formatUsd(u)} (est.); the same tokens at the cache-read price would have cost ${formatUsd(all.atReadRateNano)} (est.).`
+          : `In ${name}, uncached input cost ${formatUsd(u)} (est.). For the ${plural(paired, "call")} with a logged cache-read price, ${paired === 1 ? "its" : "their"} uncached input cost ${formatUsd({ ...all.pairedUncachedNano, missing: 0 })} (est.); at the cache-read price it would have cost ${formatUsd({ ...all.atReadRateNano, missing: 0 })} (est.).`;
   const notes = [
     "Cache read, of input = cache-read tokens out of every 100 input tokens (input counts uncached, cache-read and cache-write tokens).",
     `The cost columns come from the per-token-type AI credits Copilot logs with each call; "—" where none were logged, never 0. "Same at cache-read price" prices only the uncached input tokens at that call's cache-read rate. It is not a saving you could have had: a session's first call, and any call after a change of model or tools or a long break, has to send its input uncached.`,

@@ -114,17 +114,19 @@ export function lastPrompt(calls: UsageRecord[]): LastPrompt | undefined {
 }
 
 function emptyCache(): CacheStats {
-  return { prompt: emptyMetric(), cacheRead: emptyMetric(), uncachedNano: emptyMetric(), atReadRateNano: emptyMetric(), cacheReadNano: emptyMetric(), cacheWriteNano: emptyMetric() };
+  return { prompt: emptyMetric(), cacheRead: emptyMetric(), uncachedNano: emptyMetric(), atReadRateNano: emptyMetric(), pairedUncachedNano: emptyMetric(), cacheReadNano: emptyMetric(), cacheWriteNano: emptyMetric() };
 }
 
 function addCache(c: CacheStats, r: UsageRecord, conventions: Conventions): void {
   add(c.prompt, promptOf(r, conventions));
   add(c.cacheRead, r.tokens.cacheRead);
   const tc = r.typeCost;
-  // The comparison pairs both figures over the same calls, so neither side covers more.
+  // The uncached-input cost is known whenever the call has a per-type split; the
+  // comparison at the cache-read rate pairs both figures over the same calls.
   const paired = tc?.inputAtReadRate !== undefined;
-  add(c.uncachedNano, paired ? tc!.input : undefined);
+  add(c.uncachedNano, tc?.input);
   add(c.atReadRateNano, paired ? tc!.inputAtReadRate : undefined);
+  add(c.pairedUncachedNano, paired ? tc!.input : undefined);
   add(c.cacheReadNano, tc?.cacheRead);
   add(c.cacheWriteNano, tc?.cacheWrite);
 }

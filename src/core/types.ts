@@ -307,10 +307,12 @@ export interface CacheStats {
   /** prompt tokens (per-model convention, as in Insights) and cache reads */
   prompt: Metric;
   cacheRead: Metric;
-  /** from tokenDetails: AIU of the uncached input, and the same tokens at the cache-read rate.
-   * Both over the same calls (those with one logged cache-read rate). */
+  /** from tokenDetails: AIU of the uncached input, over every call with a per-type split */
   uncachedNano: Metric;
+  /** the same tokens at the cache-read rate, and the uncached-input AIU of those same calls
+   * (those with one logged cache-read rate), so the comparison pairs like with like */
   atReadRateNano: Metric;
+  pairedUncachedNano: Metric;
   /** from tokenDetails: AIU of cache reads and cache writes */
   cacheReadNano: Metric;
   cacheWriteNano: Metric;

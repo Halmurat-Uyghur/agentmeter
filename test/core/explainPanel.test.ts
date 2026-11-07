@@ -217,6 +217,16 @@ describe("cache by model (1.3) and tool definitions (1.5)", () => {
     expect(t).toContain("not a saving you could have had");
   });
 
+  it("review fix 1: calls with a per-type split but no cache-read entry show their uncached cost and name the missing cache-read price", () => {
+    const noRead = { input: 0.012 * USD, cacheRead: 0, cacheWrite: 0.004 * USD, output: 0.004 * USD };
+    let t = text(render(snap({ recs: [call({ typeCost: noRead }), call({ typeCost: noRead })] }), "models"));
+    expect(t).toContain("uncached input cost $0.024 (est.). Copilot logged no cache-read price for these calls, so the cost at the cache-read price is not shown (—).");
+    expect(t).not.toContain("did not log per-token-type AI credits");
+    // mixed: the comparison covers only the calls with a cache-read price, and says so
+    t = text(render(snap({ recs: [call(), call({ typeCost: noRead })] }), "models"));
+    expect(t).toContain("uncached input cost $0.024 (est.). For the 1 call with a logged cache-read price, its uncached input cost $0.012 (est.); at the cache-read price it would have cost $0.001 (est.).");
+  });
+
   it("without tokenDetails the cost columns are —, never 0", () => {
     const html = render(snap({ recs: [call({ typeCost: undefined })] }), "models");
     const box = html.slice(html.indexOf("Cache by model"));

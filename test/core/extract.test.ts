@@ -319,6 +319,15 @@ describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost"
     expect(r.typeCost).toStrictEqual({ input: 9e8, cacheRead: 1e8, cacheWrite: 1e8, output: 9e8, inputAtReadRate: 9e7 });
   });
 
+  it("review fix 6: a JSON null initiator or finishReason is missing, not \"other\"", () => {
+    const r = record(parseUsageLine(line({ initiator: null, finishReason: null }), "f"));
+    expect("initiator" in r).toBe(false);
+    expect("finishReason" in r).toBe(false);
+    const o = record(parseUsageLine(line({ initiator: "robot", finishReason: 7 }), "f"));
+    expect(o.initiator).toBe("other");
+    expect(o.finishReason).toBe("other");
+  });
+
   it("absent fields stay absent (older records)", () => {
     const r = record(parseUsageLine(line(), "f"));
     for (const k of ["initiator", "finishReason", "toolTokens", "availableTools", "typeCost"]) expect(k in r, k).toBe(false);
@@ -332,7 +341,7 @@ describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost"
     ["__proto__", "other"],
     ["", "other"],
     [5, "other"],
-    [null, "other"],
+    [null, undefined], // review fix 6: null is not logged
   ])("initiator %s → %s; the log's string is never kept", (v, want) => {
     const r = record(parseUsageLine(line({ initiator: v }), "f"));
     expect(r.initiator).toBe(want);

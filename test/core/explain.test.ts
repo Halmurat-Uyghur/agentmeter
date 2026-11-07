@@ -81,12 +81,15 @@ describe("promptStats (1.2)", () => {
 
 describe("cacheStats and modelCacheStats (1.3)", () => {
   const tc = { input: 3e9, cacheRead: 6e8, cacheWrite: 1e9, output: 4e8, inputAtReadRate: 3e8 };
-  it("share inputs; uncached vs at-read-rate paired over the same calls; '—' (reported 0) without tokenDetails", () => {
+  it("share inputs; uncached cost whenever logged, the at-read-rate pair over the same calls; '—' (reported 0) without tokenDetails", () => {
     const c = cacheStats([call({ typeCost: tc }), call({ typeCost: { ...tc, inputAtReadRate: undefined } }), call()], NONE);
     expect(c.prompt).toEqual({ sum: 30_000, reported: 3, missing: 0 });
     expect(c.cacheRead).toEqual({ sum: 18_000, reported: 3, missing: 0 });
-    expect(c.uncachedNano).toEqual({ sum: 3e9, reported: 1, missing: 2 });
+    // review fix 1: a call without a cache-read price still has a known uncached-input cost
+    expect(c.uncachedNano).toEqual({ sum: 6e9, reported: 2, missing: 1 });
     expect(c.atReadRateNano).toEqual({ sum: 3e8, reported: 1, missing: 2 });
+    // the comparison pairs both figures over the same calls
+    expect(c.pairedUncachedNano).toEqual({ sum: 3e9, reported: 1, missing: 2 });
     expect(c.cacheReadNano).toEqual({ sum: 1.2e9, reported: 2, missing: 1 });
     expect(c.cacheWriteNano).toEqual({ sum: 2e9, reported: 2, missing: 1 });
     const none = cacheStats([call()], NONE);

@@ -336,7 +336,8 @@ export const MAX_TOKEN_DETAILS = 16;
 
 /** A small enum read from the log: only the mapped constant is returned, never the log's string. */
 function enumValue<T>(v: unknown, known: ReadonlyMap<string, T>, other: T): T | undefined {
-  if (v === undefined) return undefined;
+  // JSON null is "not logged", like an absent field (review fix 6).
+  if (v === undefined || v === null) return undefined;
   return (typeof v === "string" && known.get(v)) || other;
 }
 
