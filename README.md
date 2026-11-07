@@ -11,7 +11,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
   - **This workspace · *folder***: Today and Last 7 days for the project that matches an open workspace folder (by folder name, or the repository part of `owner/repo`). Hidden when nothing matches.
   - **All projects**: Today, Last 7 days and This month, with a small marker for your target state (under, in range or over).
   - **Top projects, last 7 days** (5) and **Top models, last 7 days** (5). Click a project to filter the panel to it and open Projects (click again to clear); click a model to open Models.
-  - **Insights**: "N findings · Review" when the panel's month has any. A data-health note appears only when data is partial or the log format changed.
+  - **Insights**: "N findings · Review" when the panel's month has any. A data-health note appears only when data is partial or the log format changed. A small "Copilot Chat in VS Code not counted" line, always there, opens Data health.
   - **Open dashboard** opens the details panel; the link under it switches the unit. Hover a row for its calls, session totals and other details. Title buttons: Open panel, Switch unit, Refresh.
   - While loading, or when no logs are found or the folder cannot be read, the view says so and names the `copilotUsageMonitor.copilotHome` setting.
 - **Details panel** ("Copilot Usage (Local)"): a left-hand section menu (a wrapping row of links when the panel is narrow), with the month picker, the Tokens / USD (est.) switch and any filter chips at the top of every section. Pick a section by clicking it, from a side bar row, or with **Copilot Usage: Show Section…**. Month, unit and filter changes keep the section you are on.
@@ -22,7 +22,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
   - **Projects:** usage per GitHub repository, else folder name. Click a row to filter the month view, trend and tables to that project; click the chip's ✕ to clear.
   - **Tools:** each tool the model used, built-in or added by MCP servers, plugins and extensions (added tools summarised per server or plugin). Click a row to filter by that tool. Session totals have no tool data, so a tool filter leaves them out. **Tool definitions in the prompt** shows how much of the input the tool descriptions took, overall and for the calls that used each server or plugin. It is a share of input, already in every total, not an extra cost.
   - **Insights:** calls past a model's long-context price threshold, sessions that grew costly and models with low cache reuse in the viewed month. Built from per-call records only; session totals are left out.
-  - **Data health:** what was read, what was skipped (including sessions counted from session totals) and what is not counted.
+  - **Data health:** what was read, what was skipped (including sessions counted from session totals) and what is not counted. It always opens with "Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users."
   - **Month picker:** step back through up to 24 months of history (12 by default) with ‹ ›, or pick one from a list. Today and the current session stay live while you look at an old month.
   - **Personal target range** (optional): say how much you mean to use per month, for example $20–$60. The status bar icon shows whether this month is under (↓), in (✓) or over (🔥, amber) the range. It never stops Copilot and never pops up.
   - Today, the current session, the last 7 days and the status bar are never filtered. Long tables show their top 10 rows and fold the rest; an active filter row always stays visible.
@@ -43,7 +43,7 @@ How to read the numbers:
 - **Not official.** These are local observations of an undocumented log format, not an account statement from GitHub. If you need the official figures, check your GitHub account settings.
 - **Partial coverage.** Only Copilot clients that write `~/.copilot/session-state/*/events.jsonl` are counted: the Copilot CLI and the coding agent, including agent sessions started from VS Code. These are not counted:
   - inline completions
-  - Copilot Chat surfaces that don't write these logs
+  - Copilot Chat in VS Code and other Chat surfaces that don't write these logs, so if you use Chat the figures are a lower bound
   - github.com, mobile, JetBrains
   - other computers
 - **Older Copilot is counted coarsely.** Before 1.0.99, Copilot writes one total per session when it ends. Those sessions count on their end day, show nothing while still open (or if they crashed) and have no estimated USD. Turn `sessionTotals` off to leave them out.

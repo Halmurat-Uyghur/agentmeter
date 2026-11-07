@@ -1,5 +1,5 @@
 // Data health (D32): what was read, what was skipped and what is not counted.
-import { NOT_COVERED, SESSION_TOTAL_NOTE } from "../format";
+import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE } from "../format";
 import type { Snapshot } from "../types";
 import { escapeHtml } from "./shared";
 
@@ -7,7 +7,9 @@ export function healthBox(s: Snapshot): string {
   const h = s.health;
   const fact = (k: string, v: number, warn = false) =>
     `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
-  return `<section class="box"><h3>Logs read<small>read-only · nothing leaves this computer</small></h3><div class="facts">
+  // Always shown, first (2.6): Copilot Chat in VS Code is the gap most readers hit.
+  const chat = `<div class="note"><p>${escapeHtml(CHAT_NOT_COVERED)}</p></div>`;
+  return `${chat}<section class="box"><h3>Logs read<small>read-only · nothing leaves this computer</small></h3><div class="facts">
 ${fact("Sessions this month", s.sessions.length)}
 ${fact("Months of history", s.history?.length ?? 1)}
 ${fact("Unreadable logs", h.unreadableFiles, true)}

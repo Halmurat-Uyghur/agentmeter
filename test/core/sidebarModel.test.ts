@@ -114,6 +114,7 @@ function strings(model: SidebarModel): string[] {
   for (const x of sidebarRows(model)) out.push(x.label, x.value, x.title, x.spoken, x.marker?.text ?? "");
   if (model.insights) out.push(model.insights.text, model.insights.title, model.insights.spoken);
   if (model.health) out.push(model.health.text, model.health.title);
+  if (model.coverage) out.push(model.coverage.text, model.coverage.title);
   return out.map((t) => t.split(LOCAL_BANNER).join(""));
 }
 
@@ -311,7 +312,7 @@ describe("sidebar model: links", () => {
     for (const s of states) {
       for (const view of [TOKENS, COST, { unit: "cost" as const, range: { min: 1, max: 2 } }]) {
         const model = buildSidebarModel(s, view, ["web"]);
-        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.unitSwitch.link];
+        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.coverage?.link, model.unitSwitch.link];
         for (const l of links) {
           if (!l) continue;
           expect(SIDEBAR_COMMANDS).toContain(l.command);
@@ -557,5 +558,27 @@ describe("sidebar: v0.4 review fixes", () => {
     } finally {
       setDisplayCurrency(undefined);
     }
+  });
+});
+
+describe("v0.6 (2.6): the side bar names Copilot Chat as not covered", () => {
+  it("one compact line linking to Data health, in every ready state; none while loading", () => {
+    for (const s of [snap(), snap({ health: health({ partial: true, malformed: 1 }) })]) {
+      for (const view of [TOKENS, COST]) {
+        const model = buildSidebarModel(s, view);
+        expect(model.coverage).toEqual({
+          text: "Copilot Chat in VS Code not counted",
+          title: expect.stringContaining("so figures are a lower bound for Chat users"),
+          link: { command: "copilotUsageMonitor.showSection", args: ["health"] },
+        });
+        const html = renderSidebarHtml(model, "csp");
+        expect(html).toContain("Copilot Chat in VS Code not counted");
+        expect(html.match(/Copilot Chat in VS Code not counted/g)).toHaveLength(1);
+        expect(model.coverage!.text).not.toMatch(COPY_RE);
+        expect(model.coverage!.title).not.toMatch(COPY_RE);
+      }
+    }
+    expect(buildSidebarModel(undefined, TOKENS).coverage).toBeUndefined();
+    expect(buildSidebarModel(snap({ health: health({ state: "no-dir" }) }), TOKENS).coverage).toBeUndefined();
   });
 });

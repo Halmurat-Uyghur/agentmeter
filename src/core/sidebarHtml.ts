@@ -37,6 +37,9 @@ a.row:hover,.btn:hover{text-decoration:none}
 .ins{display:flex;align-items:baseline;gap:8px}
 .ins .l{color:var(--vscode-foreground)}
 .ins a{flex:none}
+.cover{margin:8px 0 0;font-size:11px}
+.cover a{color:var(--vscode-descriptionForeground)}
+.cover a:hover{color:var(--vscode-textLink-activeForeground)}
 .health a{color:color-mix(in srgb,var(--vscode-editorWarning-foreground) 60%,var(--vscode-foreground))}
 .btn{display:inline-block;margin-top:14px;padding:3px 12px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:1px solid var(--vscode-button-border,transparent);border-radius:2px;text-decoration:none}
 .btn:hover{background:var(--vscode-button-hoverBackground);color:var(--vscode-button-foreground)}
@@ -77,6 +80,7 @@ export function renderSidebarHtml(m: SidebarModel, cspSource: string): string {
       );
     }
     if (m.health) parts.push(`<p class="health"><a href="${escapeHtml(sidebarHref(m.health.link))}"${attrs(m.health.title)}>${escapeHtml(m.health.text)}</a></p>`);
+    if (m.coverage) parts.push(`<p class="cover"><a href="${escapeHtml(sidebarHref(m.coverage.link))}"${attrs(m.coverage.title)}>${escapeHtml(m.coverage.text)}</a></p>`);
   }
   parts.push(`<a class="btn" href="${escapeHtml(sidebarHref({ command: "copilotUsageMonitor.showDetails", args: [] }))}" title="Opens the details panel.">Open dashboard</a>`);
   parts.push(

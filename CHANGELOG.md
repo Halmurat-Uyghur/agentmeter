@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Changed
 
 - Each usage record now also reads `initiator`, `finishReason`, `toolTokenCount`, `availableToolCount` and, from `copilotUsage.tokenDetails[]`, each entry's token type, token count, batch size and cost per batch. The two text fields are mapped to fixed values (anything unknown becomes "other") and the log's text is never kept; the per-type split is kept only when it adds up to the logged AI credits. The entry's model name is not read. See `docs/SCHEMA.md`.
+- Data health now opens with "Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users.", always shown. The side bar adds one compact "Copilot Chat in VS Code not counted" line that opens Data health.
 - The panel's command allowlist grows from four to five commands (adds `showSession`). Its argument is only accepted when shaped like a session folder id; the selected session is kept in memory only. The command is hidden from the Command Palette.
 - `toolGroup` moved to `store.ts` (still re-exported by the panel).
 

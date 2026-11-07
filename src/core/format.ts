@@ -23,6 +23,13 @@ export const SESSION_TOTAL_SHORT = "Session total: counted once, on the day the 
 
 export const DEFAULT_VIEW: ViewOptions = { unit: "tokens" };
 
+/** The coverage gap most users hit (v0.6, 2.6): always shown in Data health. */
+export const CHAT_NOT_COVERED =
+  "Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users.";
+
+/** The side bar's one-line form of CHAT_NOT_COVERED. */
+export const CHAT_NOT_COVERED_SHORT = "Copilot Chat in VS Code not counted";
+
 export const NOT_COVERED: string[] = [
   "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
   "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated amount), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
