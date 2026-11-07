@@ -144,6 +144,47 @@
         "category": "Copilot Usage"
       }
     ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "Get started with Copilot Usage Monitor (Local)",
+        "description": "Check that your Copilot logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
+        "steps": [
+          {
+            "id": "folder",
+            "title": "Check that your Copilot logs are found",
+            "description": "The status bar shows a figure when Copilot CLI session logs are found, or \"Copilot logs not found\" when they are not. If Copilot keeps them elsewhere, set the folder.\n[Set the Copilot folder](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/folder.md"
+            }
+          },
+          {
+            "id": "unit",
+            "title": "Choose tokens or estimated cost, and a currency",
+            "description": "Show figures as input + output tokens or as estimated cost. USD needs no network; another currency fetches its daily exchange rate.\n[Switch tokens / USD (est.)](command:copilotUsageMonitor.toggleUnit)\n[Choose currency](command:copilotUsageMonitor.selectCurrency)",
+            "media": {
+              "markdown": "media/walkthrough/unit.md"
+            }
+          },
+          {
+            "id": "target",
+            "title": "Set a monthly target range",
+            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency. The status bar icon then shows under, in range or over.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/target.md"
+            }
+          },
+          {
+            "id": "open",
+            "title": "Open the side bar and the panel",
+            "description": "The side bar gives a compact summary; the panel has the month, sessions, models, projects, tools and data health.\n[Open the side bar](command:workbench.view.extension.copilotUsageMonitor)\n[Open the panel](command:copilotUsageMonitor.showDetails)",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            }
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "Copilot Usage Monitor",
       "properties": {
