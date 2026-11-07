@@ -21,6 +21,7 @@ import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
 import { SummaryView } from "./vscode/sidebar";
+import { TargetAlert } from "./vscode/targetAlert";
 import { StatusBar } from "./vscode/statusBar";
 
 const POLL_MS = 500;
@@ -80,6 +81,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const status = new StatusBar("copilotUsageMonitor.showDetails");
   const panel = new DetailsPanel();
   const sidebar = new SummaryView();
+  /** opt-in, once a month per window, in memory only (v0.6) */
+  const alert = new TargetAlert(() => panel.show());
   /** basenames of the open workspace folders, for the side bar's "This workspace" group */
   let folders = readFolders();
   context.subscriptions.push(channel, status, panel, sidebar);
@@ -112,12 +115,14 @@ export function activate(context: vscode.ExtensionContext): void {
     status.update(s, view);
     panel.update(s, view);
     sidebar.update(s, view, folders);
+    alert.check(s, view);
   };
 
   const render = () => {
     status.update(snapshot, view);
     panel.update(snapshot, view);
     sidebar.update(snapshot, view, folders);
+    alert.check(snapshot, view);
   };
 
   /** "current", "YYYY-MM" or "pick"; anything else is ignored. */
@@ -313,7 +318,7 @@ export function activate(context: vscode.ExtensionContext): void {
       render();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency", "statusBar"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
+      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency", "statusBar", "targetAlert"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView(rate);
         render();
       }

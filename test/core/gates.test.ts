@@ -196,6 +196,41 @@ describe("gates", () => {
     for (const t of p.enumDescriptions) expect(t).not.toMatch(COPY_RE);
   });
 
+  it("notifications: only the opt-in target alert, one call in src/vscode/targetAlert.ts (v0.6)", () => {
+    const ALERT = join("src", "vscode", "targetAlert.ts");
+    const NOTIFY = /\b(showInformationMessage|showWarningMessage|showErrorMessage)\b/g;
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) {
+      const hits = readFileSync(f, "utf8").match(NOTIFY) ?? [];
+      expect(hits, f).toEqual(f.endsWith(ALERT) ? ["showInformationMessage"] : []);
+    }
+    const bundle = readFileSync(join(ROOT, "dist", "extension.js"), "utf8");
+    expect(bundle.match(NOTIFY)).toEqual(["showInformationMessage"]);
+    const src = readFileSync(join(ROOT, ALERT), "utf8");
+    // off unless the user set it to true; the actions are exactly these two
+    expect(src).toContain('get<boolean>("targetAlert") === true');
+    expect(src).toContain("showInformationMessage(message, OPEN, MUTE)");
+    expect(src).toContain('const OPEN = "Open dashboard";');
+    expect(src).toContain('const MUTE = "Don\'t show again";');
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false });
+  });
+
+  it("settings writes: display and currency from extension.ts, targetAlert (to false) only from the alert", () => {
+    const writes = new Map<string, string[]>();
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) {
+      const src = readFileSync(f, "utf8");
+      const keys = [...src.matchAll(/\.update\(\s*"([^"]+)"/g)].map((x) => x[1]!);
+      // any other config update shape (a variable key) is refused outright
+      expect(src.match(/getConfiguration\([^)]*\)\s*\.update\(\s*[^"\s]/g), f).toBeNull();
+      if (keys.length) writes.set(f.slice(ROOT.length + 1), keys);
+    }
+    expect(Object.fromEntries(writes)).toEqual({
+      [join("src", "extension.ts")]: ["display", "currency"],
+      [join("src", "vscode", "targetAlert.ts")]: ["targetAlert"],
+    });
+    expect(readFileSync(join(ROOT, "src", "vscode", "targetAlert.ts"), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
+  });
+
   it("the panel allows exactly five commands, wired as the webview's allowlist (D30; showSession v0.6)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
