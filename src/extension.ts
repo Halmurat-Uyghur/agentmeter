@@ -353,6 +353,7 @@ export function activate(context: vscode.ExtensionContext): void {
         panelActive: panel.active,
         panelHeld: panel.held,
         statusA11y: status.accessibilityLabel,
+        alertsShown: alert.shown,
         sidebar: {
           visible: sidebar.visible,
           renders: sidebar.renders,

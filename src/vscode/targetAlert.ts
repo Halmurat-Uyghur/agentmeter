@@ -11,6 +11,8 @@ const MUTE = "Don't show again";
 
 export class TargetAlert {
   private readonly state = new TargetAlertState();
+  /** notifications shown in this window (read by the integration tests) */
+  shown = 0;
 
   constructor(private readonly openDashboard: () => void) {}
 
@@ -18,6 +20,7 @@ export class TargetAlert {
     const enabled = vscode.workspace.getConfiguration("copilotUsageMonitor").get<boolean>("targetAlert") === true;
     const message = this.state.next(s, view, enabled);
     if (message === undefined) return;
+    this.shown++;
     void vscode.window.showInformationMessage(message, OPEN, MUTE).then(async (pick) => {
       if (pick === OPEN) this.openDashboard();
       else if (pick === MUTE) await vscode.workspace.getConfiguration("copilotUsageMonitor").update("targetAlert", false, vscode.ConfigurationTarget.Global);
