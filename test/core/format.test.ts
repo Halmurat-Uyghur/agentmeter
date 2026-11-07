@@ -643,3 +643,33 @@ describe("v0.6 (2.1): changeAmount, the change against last month as an amount",
     }
   });
 });
+
+describe("review fix 5: status bar label and tooltip follow the statusBar mode", () => {
+  const DAY = new Date(2026, 10, 5).getTime();
+  const priced = (nano: number): Totals => ({ ...counts(IN, OUT), nanoAiu: m(nano, 2, 0), byModel: {} });
+  const s = snap({
+    dayStartMs: DAY,
+    thisMonth: { ...priced(5e11), input: m(4_000_000, 2, 0), output: m(1_000_000, 2, 0) },
+    current: { folderId: "abc", live: true, pinned: false, totals: { ...priced(2e10), input: m(30_000, 2, 0), output: m(2_000, 2, 0) } },
+  });
+
+  it("the spoken target state names the month when the figure is not the month", () => {
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "session", range: { max: 1 } })).toBe(
+      "Copilot usage, local current session, estimated: 0.200 US dollars, this month over target up to 1.00 US dollars. Opens details.",
+    );
+    expect(statusAccessibilityLabel(s, { unit: "tokens", range: { max: 1 } })).toBe(
+      "Copilot usage, local today: 1.5 million tokens, this month over target up to 1.00 US dollars. Opens details.",
+    );
+    // the month figure itself keeps the short form
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "month", range: { max: 1 } })).toBe(
+      "Copilot usage, local this month, estimated: 5.00 US dollars, over target up to 1.00 US dollars. Opens details.",
+    );
+  });
+
+  it("the tooltip always holds the status bar's figure", () => {
+    expect(tooltipMarkdown(s, { unit: "cost", statusBar: "session" })).toContain("Current session: 32\\.0K tok · \\$0\\.200 est\\.");
+    expect(tooltipMarkdown(s, { unit: "tokens", statusBar: "month", range: { max: 1 } })).toContain("**This month**: 5\\.0M tok");
+    // tokens view without the session mode keeps the strict wording
+    expect(tooltipMarkdown(s, { unit: "tokens", statusBar: "session" })).not.toMatch(/\$\d|est\\\./);
+  });
+});

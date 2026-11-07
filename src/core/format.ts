@@ -269,7 +269,8 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
   const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
-  if (p.state !== "none") parts.push(`${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
+  // The target is monthly: name the month when the figure is today or the session (review fix 5).
+  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
 }
@@ -371,7 +372,9 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       "Current session" + (tags.length ? ` (${tags.join(", ")})` : "");
     if (cur.totals) {
       const both = addMetrics(cur.totals.input, cur.totals.output);
-      parts.push(`${label}: ${tok(both)}`);
+      // In session mode with cost, the status bar shows the session's estimate: say it here too.
+      const est = view.statusBar === "session" && view.unit === "cost" ? ` · ${escapeMarkdown(`${formatUsd(cur.totals.nanoAiu)} est.`)}` : "";
+      parts.push(`${label}: ${tok(both)}${est}`);
     } else {
       parts.push(`${label}: ${DASH}`);
     }
@@ -391,7 +394,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   }
 
   const thisMonth = thisMonthTotals(s);
-  if (view.statusBar === "month" && view.unit === "tokens" && !view.range) {
+  if (view.statusBar === "month" && view.unit === "tokens") {
     // The status bar shows this month's tokens (2.5): say the same figure here.
     parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output)) : DASH}`);
   }
