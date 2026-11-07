@@ -77,7 +77,12 @@ export function promptsCard(s: Snapshot, view: ViewOptions): string {
   const p = s.month?.prompts;
   if (!p) return "";
   const name = viewedName(s);
-  const lead = p.prompts > 0 ? `${plural(p.prompts, "prompt")} triggered ${plural(p.agentCalls, "agent call")} in ${name}.` : `No prompts logged in ${name}.`;
+  const lead =
+    p.prompts > 0
+      ? `${plural(p.prompts, "prompt")} triggered ${plural(p.agentCalls, "agent call")} in ${name}.`
+      : p.unknown > 0
+        ? `Copilot did not log who started the calls in ${name}, so prompts cannot be counted.`
+        : `No prompts logged in ${name}.`;
   const notes = promptNotes(p, `in ${name}`);
   if (s.filter?.tool) notes.push("The tool filter does not apply here: it would split prompts from their agent calls.");
   return card("prompts-title", "sessions", "Prompts and agent calls", name, `<p>${escapeHtml(lead)}</p>${promptTiles(p, view)}<div class="fine">${notes.map((n) => `<p>${escapeHtml(n)}</p>`).join("")}</div>`);

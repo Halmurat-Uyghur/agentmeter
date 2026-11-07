@@ -196,6 +196,9 @@ describe("prompts (1.2)", () => {
     const recs = [call({ initiator: undefined }), call({ initiator: undefined })];
     const t = text(render(snap({ recs }), "sessions"));
     expect(t).toContain("2 calls did not log who started them");
+    // review fix 3: the lead gives the reason, not "No prompts logged"
+    expect(t).toContain("Copilot did not log who started the calls in November, so prompts cannot be counted.");
+    expect(t).not.toContain("No prompts logged");
   });
 
   it("the tooltip gives the last prompt's cost (cost view) or tokens", () => {
