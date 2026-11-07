@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { discover, isLive as realIsLive, type Candidate } from "./discover";
 import { isIdLabel, MAX_WORKSPACE_BYTES, parseShutdownLine, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
 import type { Logger } from "./log";
+import { cacheStats, lastPrompt, modelCacheStats, promptStats, sessionDetail, toolOverhead } from "./explain";
 import { computeInsights, promptConventions } from "./insights";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
@@ -113,6 +114,8 @@ export class UsageMonitor {
   private readonly readProjects: boolean;
   private readonly readTotals: boolean;
   private filter: Filter = {};
+  /** session whose calls the Sessions section lists (v0.6); in memory only */
+  private selectedSession: string | undefined;
 
   private readonly store = new UsageStore();
   /** eventsPath → state; kept for the life of the monitor, dropped only on ENOENT */
@@ -174,6 +177,13 @@ export class UsageMonitor {
    * A month outside the history window, or the current month, follows the current month. */
   selectMonth(monthStartMs: number | undefined): void {
     this.selectedMonth = monthStartMs;
+    this.dirty = true;
+    void this.refresh();
+  }
+
+  /** Lists the calls of session `sessionId` in the viewed month (undefined clears) and refreshes. */
+  selectSession(sessionId: string | undefined): void {
+    this.selectedSession = sessionId;
     this.dirty = true;
     void this.refresh();
   }
@@ -547,6 +557,10 @@ export class UsageMonitor {
       const label = labelOf(x.folderId);
       return label === undefined ? x : { ...x, label };
     });
+    if (month.detail) {
+      const label = labelOf(month.sessions.find((x) => x.sessionId === month.detail!.sessionId)?.folderId ?? month.detail.sessionId);
+      if (label !== undefined) month.detail.label = label;
+    }
     for (const i of month.insights?.items ?? []) {
       if (i.id !== "context-growth") continue;
       i.top = i.top.map((t) => {
@@ -622,14 +636,29 @@ export class UsageMonitor {
     keep: (r: UsageRecord) => boolean,
     byProject: (r: UsageRecord) => boolean,
     monthNanoAiu: number,
-  ): Pick<MonthView, "sessions" | "sessionCount" | "totalsSessions" | "insights" | "cache"> {
+  ): Pick<MonthView, "sessions" | "sessionCount" | "totalsSessions" | "insights" | "cache" | "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> {
     const calls = this.store.records((r) => r.kind === "call");
     // The cache-read share uses the same per-model prompt convention as Insights (N4).
-    const all: SessionSummary[] = sessionSummaries(this.store, fromMs, toMs, Number.POSITIVE_INFINITY, keep, promptConventions(calls));
+    const conventions = promptConventions(calls);
+    const all: SessionSummary[] = sessionSummaries(this.store, fromMs, toMs, Number.POSITIVE_INFINITY, keep, conventions);
     const inMonth = (r: UsageRecord) => r.timestampMs >= fromMs && r.timestampMs < toMs;
     // The tools table ignores the tool filter, so its "no tool data" note counts totals by project only.
     const totalsSessions = new Set(this.store.records((r) => r.kind === "sessionTotal" && inMonth(r) && byProject(r)).map((r) => r.sessionId)).size;
-    const insights = computeInsights({ sessions: all, monthRecords: calls.filter((r) => inMonth(r) && keep(r)), allRecords: calls, monthNanoAiu });
+    const monthCalls = calls.filter((r) => inMonth(r) && keep(r));
+    const insights = computeInsights({ sessions: all, monthRecords: monthCalls, allRecords: calls, monthNanoAiu });
+    // v0.6: prompts follow the project filter only (a tool filter would cut a prompt's chain).
+    const projectCalls = calls.filter((r) => inMonth(r) && byProject(r));
+    const prompts = promptStats(projectCalls);
+    const explain: Pick<MonthView, "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> = {
+      ...(projectCalls.length > 0 && { prompts }),
+      ...(monthCalls.length > 0 && { cacheCost: cacheStats(monthCalls, conventions), modelCache: modelCacheStats(monthCalls, conventions), toolOverhead: toolOverhead(monthCalls, conventions) }),
+    };
+    const sel = this.selectedSession;
+    if (sel !== undefined) {
+      // The ledger lists every call of the session in the viewed month (project filter only, like prompts).
+      const recs = this.store.records((r) => r.sessionId === sel && inMonth(r) && byProject(r));
+      explain.detail = sessionDetail(sel, recs, conventions);
+    }
     // The cache-reuse ring (A2) sums every session of the month, not only the rows kept.
     const prompt = { sum: 0, reported: 0, missing: 0 };
     const cacheRead = { sum: 0, reported: 0, missing: 0 };
@@ -642,7 +671,7 @@ export class UsageMonitor {
       }
     }
     const cache = prompt.reported > 0 || cacheRead.reported > 0 ? { cache: { prompt, cacheRead } } : {};
-    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, totalsSessions, insights, ...cache };
+    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, totalsSessions, insights, ...cache, ...explain };
   }
 
   /** Pinned folder; else the live candidate with the newest record; else the newest folder today. */
@@ -672,12 +701,14 @@ export class UsageMonitor {
     const id = folderId;
     const totals = this.store.totals((r) => r.sessionId === id);
     const live = this.candidates.get(id)?.live === true;
+    const last = lastPrompt(this.store.records((r) => r.kind === "call" && r.sessionId === id));
     return {
       current: {
         folderId: id,
         live,
         pinned,
         ...(totals !== undefined && { totals }),
+        ...(last !== undefined && { lastPrompt: last }),
       },
     };
   }

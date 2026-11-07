@@ -389,6 +389,17 @@ export const BUILT_IN_TOOLS = new Set([
   "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
 ]);
 
+/** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
+ * "mcp__server__tool", else the part before the first "-" or "_". */
+export function toolGroup(name: string): string {
+  const slash = name.indexOf("/");
+  if (slash > 0) return name.slice(0, slash);
+  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(name);
+  if (mcp) return mcp[1]!;
+  const m = /^([A-Za-z0-9.]+)[-_]/.exec(name);
+  return m ? m[1]! : name;
+}
+
 /** Per-tool totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
 export function toolSummaries(
   store: UsageStore,
@@ -414,7 +425,7 @@ export function toolSummaries(
 }
 
 /** Prompt tokens of a record: input, plus cached tokens when its model reports them apart (N4). */
-function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): number | undefined {
+export function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): number | undefined {
   const t = r.tokens;
   if (t.input === undefined) return undefined;
   return r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;

@@ -1,20 +1,12 @@
 // Tools (D32): per-tool table for the viewed month; each row filters to calls
 // that used that tool (D26). Session totals carry no tool data.
 import { costLabel, currencyCode, formatCount, formatUsd } from "../format";
+import { toolGroup } from "../store";
 import type { Snapshot, ToolSummary, ViewOptions } from "../types";
 import { filterHref } from "./links";
 import { card, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
 
-/** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
- * "mcp__server__tool", else the part before the first "-" or "_". */
-export function toolGroup(name: string): string {
-  const slash = name.indexOf("/");
-  if (slash > 0) return name.slice(0, slash);
-  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(name);
-  if (mcp) return mcp[1]!;
-  const m = /^([A-Za-z0-9.]+)[-_]/.exec(name);
-  return m ? m[1]! : name;
-}
+export { toolGroup } from "../store";
 
 export function toolsBox(s: Snapshot, view: ViewOptions): string {
   const list: ToolSummary[] = s.month?.tools ?? [];
