@@ -449,6 +449,7 @@ export type RangeState = "none" | "under" | "in" | "over";
 /** One fired insight rule (O2). `nanoAiu` is the logged AIU it points at (I2: growth above
  * the starting level) and is the ranking key; `tokens` is input + output of the same calls. */
 export type Insight =
+  | { id: "long-context"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; thresholdTokens: number; maxPromptTokens: number }
   | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[] }
   | { id: "cache-reuse"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; share: number; meanPromptTokens: number };
 
