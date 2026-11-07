@@ -214,7 +214,8 @@ describe("gates", () => {
     expect(src).toContain('const OPEN = "Open dashboard";');
     expect(src).toContain('const MUTE = "Don\'t show again";');
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-    expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false });
+    // review fix 4: user settings only, so a workspace cannot turn it back on over "Don't show again" (written Global)
+    expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
   it("settings writes: display and currency from extension.ts, targetAlert (to false) only from the alert", () => {

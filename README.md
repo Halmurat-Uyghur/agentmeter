@@ -76,7 +76,7 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.currency` | `"USD"` | Currency for estimated cost, for example `"CAD"`. See [Currency](#currency). |
 | `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated cost you mean to use per month, in the chosen currency. |
 | `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated cost you mean to use per month, in the chosen currency. |
-| `copilotUsageMonitor.targetAlert` | `false` | Opt-in: one notification when this month's estimated cost first goes above `monthlyTargetMax`, at most once per calendar month per window, remembered in memory only. "Don't show again" sets it back to `false`. |
+| `copilotUsageMonitor.targetAlert` | `false` | Opt-in: one notification when this month's estimated cost first goes above `monthlyTargetMax`, at most once per calendar month per window, remembered in memory only. "Don't show again" sets it back to `false`. Application-scoped: user settings only, so a workspace cannot turn it on. |
 | `copilotUsageMonitor.projectNames` | `true` | Label sessions with a project (GitHub repository, else folder name; a folder named by an ID shows the session title instead). Off: every call is "(no project)" and neither the start line nor `workspace.yaml` is read. |
 | `copilotUsageMonitor.sessionTotals` | `true` | Count sessions from Copilot before 1.0.99 from the per-model total written when a session ends ("session total"). Off: `session.shutdown` lines are skipped without being decoded, as in 0.3. Machine-scoped. |
 

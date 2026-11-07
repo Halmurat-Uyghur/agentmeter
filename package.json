@@ -275,7 +275,8 @@
         "copilotUsageMonitor.targetAlert": {
           "type": "boolean",
           "default": false,
-          "description": "Opt-in: show one notification when this month's estimated cost first goes above monthlyTargetMax (in the chosen currency, once its exchange rate is known). At most once per calendar month per window, remembered in memory only. \"Don't show again\" turns this setting off."
+          "scope": "application",
+          "description": "Opt-in: show one notification when this month's estimated cost first goes above monthlyTargetMax (in the chosen currency, once its exchange rate is known). At most once per calendar month per window, remembered in memory only. \"Don't show again\" turns this setting off. User settings only."
         },
         "copilotUsageMonitor.projectNames": {
           "type": "boolean",
