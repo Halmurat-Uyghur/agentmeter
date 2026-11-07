@@ -10,6 +10,31 @@ export interface Tokens {
   reasoning?: number;
 }
 
+/** Who started a call (v0.6): "user" for a prompt, "agent" for a follow-up call the agent
+ * made on its own. Any other logged value is "other"; the log's string is never kept. */
+export type Initiator = "user" | "agent" | "other";
+export const INITIATORS: readonly Initiator[] = ["user", "agent", "other"];
+
+/** Why a call ended (v0.6). Values outside the known set are "other"; the log's string is never kept. */
+export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "other";
+export const FINISH_REASONS: readonly FinishReason[] = ["stop", "tool_calls", "length", "content_filter", "other"];
+
+/**
+ * A call's logged AIU split by token type (v0.6), from copilotUsage.tokenDetails[]:
+ * Σ tokenCount / batchSize × costPerBatch per type. Kept only when the parts add up to
+ * totalNanoAiu, so the split is exact. `inputAtReadRate` prices the uncached input
+ * tokens at this call's cache-read rate (absent unless one cache-read rate was logged).
+ */
+export interface TypeCost {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  /** token types outside the four known ones; absent when 0 */
+  other?: number;
+  inputAtReadRate?: number;
+}
+
 export interface UsageRecord {
   key: string;
   keySource: "usageId" | "eventId" | "shutdown";
@@ -31,6 +56,17 @@ export interface UsageRecord {
   nanoAiu?: number;
   /** tool name → times the model invoked it in this call (D25); absent if none */
   tools?: Record<string, number>;
+  /** call only (v0.6): who started the call */
+  initiator?: Initiator;
+  /** call only (v0.6): why the call ended */
+  finishReason?: FinishReason;
+  /** call only (v0.6): toolTokenCount, the tokens of tool definitions sent with the prompt
+   * (part of input, never on top of it) */
+  toolTokens?: number;
+  /** call only (v0.6): availableToolCount, the tools offered to the model */
+  availableTools?: number;
+  /** call only (v0.6): exact AIU per token type; absent when tokenDetails is missing or does not add up */
+  typeCost?: TypeCost;
 }
 
 export type UnrecognizedReason =

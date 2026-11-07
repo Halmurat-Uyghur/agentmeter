@@ -19,6 +19,18 @@ export interface UsageFixture {
   sourceSessionId: string;
   id: string;
   timestamp: string;
+  /** v0.6 fields; absent unless set */
+  initiator?: unknown;
+  finishReason?: unknown;
+  toolTokenCount?: unknown;
+  availableToolCount?: unknown;
+  tokenDetails?: unknown;
+}
+
+/** tokenDetails[] entries for `usageEvent`, shaped as Copilot logs them; `model` is CANARY
+ * (that string must never be kept). Cost per entry = tokenCount / batchSize × costPerBatch. */
+export function tokenDetails(parts: { tokenType: string; tokenCount: number; batchSize?: number; costPerBatch: number }[]): object[] {
+  return parts.map((p) => ({ batchSize: 1, ...p, model: CANARY }));
 }
 
 type Plain = Record<string, unknown>;
@@ -72,8 +84,12 @@ export function usageEvent(o: Partial<UsageFixture> = {}): object {
         cacheWriteTokens: v.cacheWriteTokens,
         reasoningTokens: v.reasoningTokens,
         duration: v.duration,
-        copilotUsage: { totalNanoAiu: v.totalNanoAiu },
+        copilotUsage: { totalNanoAiu: v.totalNanoAiu, tokenDetails: v.tokenDetails },
         accounting: { usageId: v.usageId, sequence: v.sequence, sourceSessionId: v.sourceSessionId },
+        initiator: v.initiator,
+        finishReason: v.finishReason,
+        toolTokenCount: v.toolTokenCount,
+        availableToolCount: v.availableToolCount,
       },
     },
   });

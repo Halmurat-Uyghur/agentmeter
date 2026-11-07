@@ -4,6 +4,7 @@ import type { ParseResult, UsageRecord } from "../../src/core/types";
 import {
   CANARY,
   otherEvent,
+  tokenDetails,
   usageEvent,
   type UsageFixture,
 } from "../fixtures/build";
@@ -296,5 +297,125 @@ describe("sourceSessionId validation (review 1)", () => {
 
   it("a well-formed id is kept", () => {
     expect(record(parseUsageLine(line({ sourceSessionId: SRC }), "folder-1")).sessionId).toBe(SRC);
+  });
+});
+
+/** The default fixture's tokens (1000 input = 450 uncached + 500 read + 50 write, 200 output),
+ * priced so the parts add up to its 2e9 nanoAIU. */
+const DETAILS = tokenDetails([
+  { tokenType: "input", tokenCount: 450, batchSize: 1000, costPerBatch: 2_000_000_000 },
+  { tokenType: "cache_read", tokenCount: 500, costPerBatch: 200_000 },
+  { tokenType: "cache_write", tokenCount: 50, costPerBatch: 2_000_000 },
+  { tokenType: "output", tokenCount: 200, costPerBatch: 4_500_000 },
+]);
+
+describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost", () => {
+  it("reads the two enums, the two counts and the exact per-type split", () => {
+    const r = record(parseUsageLine(line({ initiator: "user", finishReason: "tool_calls", toolTokenCount: 300, availableToolCount: 12, tokenDetails: DETAILS }), "f"));
+    expect(r.initiator).toBe("user");
+    expect(r.finishReason).toBe("tool_calls");
+    expect(r.toolTokens).toBe(300);
+    expect(r.availableTools).toBe(12);
+    expect(r.typeCost).toStrictEqual({ input: 9e8, cacheRead: 1e8, cacheWrite: 1e8, output: 9e8, inputAtReadRate: 9e7 });
+  });
+
+  it("absent fields stay absent (older records)", () => {
+    const r = record(parseUsageLine(line(), "f"));
+    for (const k of ["initiator", "finishReason", "toolTokens", "availableTools", "typeCost"]) expect(k in r, k).toBe(false);
+  });
+
+  it.each([
+    ["agent", "agent"],
+    ["user", "user"],
+    ["User", "other"],
+    [CANARY, "other"],
+    ["__proto__", "other"],
+    ["", "other"],
+    [5, "other"],
+    [null, "other"],
+  ])("initiator %s → %s; the log's string is never kept", (v, want) => {
+    const r = record(parseUsageLine(line({ initiator: v }), "f"));
+    expect(r.initiator).toBe(want);
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+
+  it.each([
+    ["stop", "stop"],
+    ["tool_calls", "tool_calls"],
+    ["length", "length"],
+    ["content_filter", "content_filter"],
+    ["constructor", "other"],
+    [CANARY, "other"],
+    [{ x: 1 }, "other"],
+  ])("finishReason %s → %s", (v, want) => {
+    const r = record(parseUsageLine(line({ finishReason: v }), "f"));
+    expect(r.finishReason).toBe(want);
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+
+  it.each(["300", -1, 1.5, null, 2 ** 60])("tool counts of the wrong type are absent, not zero: %s", (bad) => {
+    const r = record(parseUsageLine(line({ toolTokenCount: bad, availableToolCount: bad }), "f"));
+    expect("toolTokens" in r).toBe(false);
+    expect("availableTools" in r).toBe(false);
+  });
+
+  it("never keeps tokenDetails strings (model, tokenType)", () => {
+    const details = [...DETAILS.slice(0, 3), { ...(DETAILS[3] as object), tokenType: "output" }];
+    const r = record(parseUsageLine(line({ tokenDetails: details }), "f"));
+    expect(r.typeCost).toBeDefined();
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+    expect(Object.keys(r.typeCost!).sort()).toEqual(["cacheRead", "cacheWrite", "input", "inputAtReadRate", "output"]);
+  });
+
+  it("an unknown token type goes to the `other` bucket, never under its own name", () => {
+    const details = tokenDetails([
+      { tokenType: "input", tokenCount: 450, batchSize: 1000, costPerBatch: 2_000_000_000 },
+      { tokenType: "cache_read", tokenCount: 500, costPerBatch: 200_000 },
+      { tokenType: "cache_write", tokenCount: 50, costPerBatch: 2_000_000 },
+      { tokenType: CANARY, tokenCount: 200, costPerBatch: 4_500_000 },
+    ]);
+    const r = record(parseUsageLine(line({ tokenDetails: details }), "f"));
+    expect(r.typeCost).toStrictEqual({ input: 9e8, cacheRead: 1e8, cacheWrite: 1e8, output: 0, other: 9e8, inputAtReadRate: 9e7 });
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+
+  it.each([
+    ["parts that do not add up to totalNanoAiu", (d: Plain[]) => (d[3]!.costPerBatch = 4_400_000)],
+    ["a zero batchSize", (d: Plain[]) => (d[0]!.batchSize = 0)],
+    ["a negative tokenCount", (d: Plain[]) => (d[1]!.tokenCount = -1)],
+    ["a string costPerBatch", (d: Plain[]) => (d[2]!.costPerBatch = "2000000")],
+    ["a non-object entry", (d: Plain[]) => (d[2] = 5 as unknown as Plain)],
+    ["too many entries", (d: Plain[]) => d.push(...Array.from({ length: 13 }, () => ({ tokenType: "output", tokenCount: 0, batchSize: 1, costPerBatch: 1 })))],
+  ])("no split (—, not 0) with %s", (_name, patch) => {
+    const d = JSON.parse(JSON.stringify(DETAILS)) as Plain[];
+    patch(d);
+    const r = record(parseUsageLine(line({ tokenDetails: d }), "f"));
+    expect("typeCost" in r).toBe(false);
+    expect(r.nanoAiu).toBe(2_000_000_000);
+  });
+
+  it("no split without totalNanoAiu, and none from a non-array", () => {
+    expect("typeCost" in record(parseUsageLine(line({ tokenDetails: DETAILS, totalNanoAiu: undefined }), "f"))).toBe(false);
+    expect("typeCost" in record(parseUsageLine(line({ tokenDetails: { input: 1 } }), "f"))).toBe(false);
+    expect("typeCost" in record(parseUsageLine(line({ tokenDetails: [] }), "f"))).toBe(false);
+  });
+
+  it("two different cache-read rates: the split stays, the cache-read comparison is not derivable", () => {
+    const details = tokenDetails([
+      { tokenType: "input", tokenCount: 450, batchSize: 1000, costPerBatch: 2_000_000_000 },
+      { tokenType: "cache_read", tokenCount: 250, costPerBatch: 100_000 },
+      { tokenType: "cache_read", tokenCount: 250, costPerBatch: 300_000 },
+      { tokenType: "cache_write", tokenCount: 50, costPerBatch: 2_000_000 },
+      { tokenType: "output", tokenCount: 200, costPerBatch: 4_500_000 },
+    ]);
+    const r = record(parseUsageLine(line({ tokenDetails: details }), "f"));
+    expect(r.typeCost).toStrictEqual({ input: 9e8, cacheRead: 1e8, cacheWrite: 1e8, output: 9e8 });
+  });
+
+  it("only allowlisted keys reach the record", () => {
+    const r = record(parseUsageLine(line({ initiator: "agent", finishReason: "stop", toolTokenCount: 1, availableToolCount: 2, tokenDetails: DETAILS }), "f"));
+    expect(Object.keys(r).sort()).toEqual(
+      ["availableTools", "durationMs", "finishReason", "folderId", "initiator", "key", "keySource", "kind", "model", "nanoAiu", "sequence", "sessionId", "timestampMs", "tokens", "toolTokens", "typeCost"].sort(),
+    );
   });
 });
