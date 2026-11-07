@@ -10,6 +10,8 @@ import { PANEL_COMMANDS } from "../../src/core/panelHtml";
 import { SIDEBAR_COMMANDS } from "../../src/core/sidebarModel";
 
 const ROOT = join(__dirname, "..", "..");
+/** The getting-started walkthrough's media (v0.6, 2.4): the only files besides the four core ones in the .vsix. */
+const WALKTHROUGH_MEDIA = ["media/walkthrough/folder.md", "media/walkthrough/unit.md", "media/walkthrough/target.md", "media/walkthrough/open.md"];
 const RATE_FILE = join(ROOT, "src", "vscode", "exchangeRate.ts");
 
 function files(dir: string, ext: RegExp): string[] {
@@ -126,7 +128,7 @@ describe("gates", () => {
   it("manifest: side bar container, webview view and title actions (D31, A1)", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const c = pkg.contributes;
-    // A codicon, so no media file ships (the .vsix stays four files).
+    // A codicon, so no icon file ships (the .vsix adds only the walkthrough markdown).
     expect(c.viewsContainers.activitybar).toEqual([{ id: "copilotUsageMonitor", title: "Copilot Usage (Local)", icon: "$(graph)" }]);
     expect(c.views.copilotUsageMonitor.map((v: { id: string; name: string; type?: string }) => [v.id, v.name, v.type])).toEqual([["copilotUsageMonitor.summary", "Summary", "webview"]]);
     // Welcome content and item menus work for trees only; the webview shows its states in-page (A1).
@@ -188,16 +190,75 @@ describe("gates", () => {
     expect(ext).toContain("readTotals");
   });
 
-  it("the panel allows exactly four commands, wired as the webview's allowlist (D30)", () => {
+  it("manifest: the status bar content setting is today | month | session, default today (v0.6, 2.5)", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const p = pkg.contributes.configuration.properties["copilotUsageMonitor.statusBar"];
+    expect(p).toMatchObject({ type: "string", enum: ["today", "month", "session"], default: "today" });
+    expect(p.enumDescriptions).toHaveLength(3);
+    for (const t of p.enumDescriptions) expect(t).not.toMatch(COPY_RE);
+  });
+
+  it("notifications: only the opt-in target alert, one call in src/vscode/targetAlert.ts (v0.6)", () => {
+    const ALERT = join("src", "vscode", "targetAlert.ts");
+    const NOTIFY = /\b(showInformationMessage|showWarningMessage|showErrorMessage)\b/g;
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) {
+      const hits = readFileSync(f, "utf8").match(NOTIFY) ?? [];
+      expect(hits, f).toEqual(f.endsWith(ALERT) ? ["showInformationMessage"] : []);
+    }
+    const bundle = readFileSync(join(ROOT, "dist", "extension.js"), "utf8");
+    expect(bundle.match(NOTIFY)).toEqual(["showInformationMessage"]);
+    const src = readFileSync(join(ROOT, ALERT), "utf8");
+    // off unless the user set it to true; the actions are exactly these two
+    expect(src).toContain('get<boolean>("targetAlert") === true');
+    expect(src).toContain("showInformationMessage(message, OPEN, MUTE)");
+    expect(src).toContain('const OPEN = "Open dashboard";');
+    expect(src).toContain('const MUTE = "Don\'t show again";');
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    // review fix 4: user settings only, so a workspace cannot turn it back on over "Don't show again" (written Global)
+    expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
+  });
+
+  it("settings writes: display and currency from extension.ts, targetAlert (to false) only from the alert", () => {
+    const writes = new Map<string, string[]>();
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) {
+      const src = readFileSync(f, "utf8");
+      const keys = [...src.matchAll(/\.update\(\s*"([^"]+)"/g)].map((x) => x[1]!);
+      // any other config update shape (a variable key) is refused outright
+      expect(src.match(/getConfiguration\([^)]*\)\s*\.update\(\s*[^"\s]/g), f).toBeNull();
+      if (keys.length) writes.set(f.slice(ROOT.length + 1), keys);
+    }
+    expect(Object.fromEntries(writes)).toEqual({
+      [join("src", "extension.ts")]: ["display", "currency"],
+      [join("src", "vscode", "targetAlert.ts")]: ["targetAlert"],
+    });
+    expect(readFileSync(join(ROOT, "src", "vscode", "targetAlert.ts"), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
+  });
+
+  it("the panel allows exactly five commands, wired as the webview's allowlist (D30; showSession v0.6)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.showSection",
+      "copilotUsageMonitor.showSession",
     ]);
     const panel = readFileSync(join(ROOT, "src", "vscode", "panel.ts"), "utf8");
     expect(panel).toContain("enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: []");
     expect(panel).not.toMatch(/enableCommandUris:\s*true/);
+  });
+
+  it("showSession (v0.6): validated by shape, hidden from the palette, not a side bar command, held in memory only", () => {
+    const ext = readFileSync(join(ROOT, "src", "extension.ts"), "utf8");
+    const handler = /const showSession = \(arg\?: unknown\) => \{([\s\S]*?)\n  \};/.exec(ext);
+    expect(handler, "showSession handler").not.toBeNull();
+    // Only "" (close) or an id that passes isSessionId reaches the monitor; nothing is written.
+    expect(handler![1]).toContain('if (arg === "") session = undefined;');
+    expect(handler![1]).toContain("else if (isSessionId(arg)) session = arg;");
+    expect(handler![1]).toContain("else return;");
+    expect(handler![1]).not.toMatch(/update\(|globalState|workspaceState|getConfiguration/);
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: "copilotUsageMonitor.showSession", when: "false" });
+    expect([...SIDEBAR_COMMANDS]).not.toContain("copilotUsageMonitor.showSession");
   });
 
   it("the side bar is a no-script webview view: exactly SIDEBAR_COMMANDS, no local resources (A1)", () => {
@@ -220,11 +281,42 @@ describe("gates", () => {
     }
   });
 
-  it(".vsix holds exactly package.json, README.md, LICENSE and the bundle", () => {
+  it(".vsix holds exactly package.json, README.md, LICENSE, the bundle and the walkthrough's four markdown files", () => {
     const bin = join(ROOT, "node_modules", ".bin", "vsce");
     expect(existsSync(bin)).toBe(true);
     const out = execFileSync(bin, ["ls", "--no-dependencies"], { cwd: ROOT, encoding: "utf8" });
     const paths = out.split("\n").map((l) => l.trim()).filter((l) => /^[\w.-]+(\/[\w.-]+)*$/.test(l));
-    expect(new Set(paths)).toEqual(new Set(["package.json", "README.md", "LICENSE", "dist/extension.js"]));
+    expect(new Set(paths)).toEqual(new Set(["package.json", "README.md", "LICENSE", "dist/extension.js", ...WALKTHROUGH_MEDIA]));
+    // .vscodeignore stays an exact allowlist: ignore everything, then name each file (no globs)
+    const ignore = readFileSync(join(ROOT, ".vscodeignore"), "utf8").trim().split("\n");
+    expect(ignore).toEqual(["**", "!dist/extension.js", "!package.json", "!README.md", "!LICENSE", ...WALKTHROUGH_MEDIA.map((f) => `!${f}`)]);
   }, 30_000);
+
+  it("walkthrough (v0.6, 2.4): four steps, markdown media only, allowlisted command links, no URLs, copy rules", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const w = pkg.contributes.walkthroughs;
+    expect(w).toHaveLength(1);
+    type Step = { id: string; title: string; description: string; media: Record<string, string> };
+    const steps: Step[] = w[0].steps;
+    expect(steps.map((x) => x.id)).toEqual(["folder", "unit", "target", "open"]);
+    expect(steps.map((x) => x.media)).toEqual(WALKTHROUGH_MEDIA.map((markdown) => ({ markdown })));
+    const links = steps.flatMap((x) => [...x.description.matchAll(/\]\(([^)]*)\)/g)].map((y) => y[1]));
+    expect(links).toEqual([
+      "command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D",
+      "command:copilotUsageMonitor.toggleUnit",
+      "command:copilotUsageMonitor.selectCurrency",
+      "command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D",
+      "command:workbench.view.extension.copilotUsageMonitor",
+      "command:copilotUsageMonitor.showDetails",
+    ]);
+    const texts = [w[0].title, w[0].description, ...steps.flatMap((x) => [x.title, x.description.replace(/\]\([^)]*\)/g, "]")])];
+    for (const f of WALKTHROUGH_MEDIA) {
+      const md = readFileSync(join(ROOT, f), "utf8");
+      expect(md.length, f).toBeLessThan(2048);
+      // static text: no links, images, HTML or URLs
+      expect(md, f).not.toMatch(/\]\(|<[a-z!/]|https?:|command:/i);
+      texts.push(md);
+    }
+    for (const t of texts) expect(t).not.toMatch(COPY_RE);
+  });
 });

@@ -9,17 +9,19 @@ import * as vscode from "vscode";
 import { resolveCopilotRoot } from "./core/config";
 import { Logger } from "./core/log";
 import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
+import { isSessionId } from "./core/extract";
 import { cleanRange, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
 import { nextLocalMidnight } from "./core/store";
-import type { Currency, Filter, Snapshot, ViewOptions } from "./core/types";
+import { STATUS_BAR_CONTENTS, type Currency, type Filter, type Snapshot, type StatusBarContent, type ViewOptions } from "./core/types";
 import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
 import { SummaryView } from "./vscode/sidebar";
+import { TargetAlert } from "./vscode/targetAlert";
 import { StatusBar } from "./vscode/statusBar";
 
 const POLL_MS = 500;
@@ -44,7 +46,10 @@ function readView(rate: Currency | undefined): ViewOptions {
   setDisplayCurrency(cur);
   const raw = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
   const range = pending ? undefined : rangeToUsd(raw, cur);
-  return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }) };
+  const sb = c.get<unknown>("statusBar");
+  // "today" (the default) and anything unknown keep the earlier status bar text (2.5).
+  const statusBar = STATUS_BAR_CONTENTS.includes(sb as StatusBarContent) && sb !== "today" ? (sb as StatusBarContent) : undefined;
+  return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }), ...(statusBar && { statusBar }) };
 }
 
 function readProjects(): boolean {
@@ -76,6 +81,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const status = new StatusBar("copilotUsageMonitor.showDetails");
   const panel = new DetailsPanel();
   const sidebar = new SummaryView();
+  /** opt-in, once a month per window, in memory only (v0.6) */
+  const alert = new TargetAlert(() => panel.show());
   /** basenames of the open workspace folders, for the side bar's "This workspace" group */
   let folders = readFolders();
   context.subscriptions.push(channel, status, panel, sidebar);
@@ -95,6 +102,8 @@ export function activate(context: vscode.ExtensionContext): void {
   let totalsOn = readTotals();
   /** active filter, kept across monitor restarts (D26) */
   let filter: Filter = {};
+  /** session whose calls the Sessions section lists, kept across monitor restarts; in memory only (v0.6) */
+  let session: string | undefined;
 
   const resolve = () => {
     const setting = vscode.workspace.getConfiguration("copilotUsageMonitor").get<string>("copilotHome");
@@ -106,12 +115,14 @@ export function activate(context: vscode.ExtensionContext): void {
     status.update(s, view);
     panel.update(s, view);
     sidebar.update(s, view, folders);
+    alert.check(s, view);
   };
 
   const render = () => {
     status.update(snapshot, view);
     panel.update(snapshot, view);
     sidebar.update(snapshot, view, folders);
+    alert.check(snapshot, view);
   };
 
   /** "current", "YYYY-MM" or "pick"; anything else is ignored. */
@@ -177,6 +188,18 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.show(isSectionId(section) ? section : undefined);
   };
 
+  /** A session id lists that session's calls in the Sessions section; "" closes the list.
+   * Anything else (no argument, a non-string, an id of another shape) is ignored (v0.6). */
+  const showSession = (arg?: unknown) => {
+    const m = monitor;
+    if (!m) return;
+    if (arg === "") session = undefined;
+    else if (isSessionId(arg)) session = arg;
+    else return;
+    m.selectSession(session);
+    panel.show("sessions");
+  };
+
   /** A section id switches the panel to it; no argument opens a picker; anything else is ignored (D30). */
   const showSection = async (arg?: unknown) => {
     if (arg === undefined) {
@@ -233,6 +256,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
     if (selected !== undefined) m.selectMonth(selected);
     if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
+    if (session !== undefined) m.selectSession(session);
     monitor = m;
     snapshot = undefined;
     status.update(undefined, view);
@@ -288,12 +312,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.setFilter", setFilter),
     vscode.commands.registerCommand("copilotUsageMonitor.filter", () => setFilter()),
     vscode.commands.registerCommand("copilotUsageMonitor.showSection", showSection),
+    vscode.commands.registerCommand("copilotUsageMonitor.showSession", showSession),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       folders = readFolders();
       render();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
+      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency", "statusBar", "targetAlert"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView(rate);
         render();
       }
@@ -328,6 +353,7 @@ export function activate(context: vscode.ExtensionContext): void {
         panelActive: panel.active,
         panelHeld: panel.held,
         statusA11y: status.accessibilityLabel,
+        alertsShown: alert.shown,
         sidebar: {
           visible: sidebar.visible,
           renders: sidebar.renders,

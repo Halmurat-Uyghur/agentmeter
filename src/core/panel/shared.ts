@@ -1,6 +1,6 @@
 // Helpers shared by the panel's section renderers. Every log-derived string
 // goes through escapeHtml; "—" means not reported (never 0), "*" incomplete.
-import { costLabel, estWord, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
+import { type Change, costLabel, estWord, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
 import { addMetrics } from "../store";
 import type { Counts, Health, Metric, Snapshot, ViewOptions } from "../types";
 import { icon, type IconName } from "./icons";
@@ -229,4 +229,53 @@ export function tilesBox(title: string, badge: string, c: Counts | undefined, he
     : "";
   const id = `tiles-${title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
   return card(id, ic, title, badge, `${extra}<div class="tiles">${tiles.join("")}</div>${fine}`);
+}
+
+// ------------------------------------------------------------------ change vs last month (v0.6, 2.1)
+
+/** The viewed period and the one it is compared with: "Nov 1–6" / "Oct 1–6" for the
+ * current month (the same point last month, clamped to its last day), "October" /
+ * "September" for a past month. Undefined when the month before is not read. */
+export function comparePeriods(s: Snapshot): { cur: string; prior: string } | undefined {
+  const p = s.month?.prior;
+  if (!s.month || !p) return undefined;
+  const cm = new Date(s.month.monthStartMs);
+  const pm = new Date(p.monthStartMs);
+  if (!s.month.isCurrent) return { cur: MONTHS[cm.getMonth()]!, prior: MONTHS[pm.getMonth()]! };
+  const d = new Date(s.dayStartMs).getDate();
+  const last = new Date(pm.getFullYear(), pm.getMonth() + 1, 0).getDate();
+  const span = (m: Date, n: number) => `${MONTHS[m.getMonth()]!.slice(0, 3)} 1${n > 1 ? `–${n}` : ""}`;
+  return { cur: span(cm, d), prior: span(pm, Math.min(d, last)) };
+}
+
+/** The change as a table cell: ▲/▼ with the amount (read as words), "same", "new" or "—". */
+export function changeCell(c: Change): string {
+  if (c.text === DASH) return `<td class="num muted">${val(DASH)}</td>`;
+  const cls = c.dir === "up" || c.dir === "down" || c.dir === "same" ? `delta ${c.dir}` : "muted";
+  return `<td class="num"><span class="${cls}"><span aria-hidden="true">${escapeHtml(c.text)}</span><span class="sr">${escapeHtml(c.said)}</span></span></td>`;
+}
+
+/** The change column's header: "Δ vs Oct 1–6", read as "Change vs Oct 1–6". */
+export function changeHead(per: { prior: string }): string {
+  return `<th><span aria-hidden="true">Δ</span><span class="sr">Change</span> vs ${escapeHtml(per.prior)}</th>`;
+}
+
+/**
+ * The fine print under a table with a change column, or why there is none: the month
+ * before is outside the history window (`historyMonths`). `gone` = rows logged in the
+ * earlier period but not in the viewed one, named by `noun`.
+ */
+export function changeFine(s: Snapshot, view: ViewOptions, gone = 0, noun = "row"): string {
+  const per = comparePeriods(s);
+  if (!per) {
+    const prev = MONTHS[(new Date(viewedStart(s)).getMonth() + 11) % 12]!;
+    const why = s.month?.isCurrent === false
+      ? `${prev} is outside the history window, so there is no change column.`
+      : `Read 2 or more months (copilotUsageMonitor.historyMonths) to see the change against ${prev}.`;
+    return `<p>${escapeHtml(why)}</p>`;
+  }
+  const same = s.month?.isCurrent === false ? "" : ", the same point last month";
+  const out = [`Δ (change) = ${per.cur} minus ${per.prior}${same}, in ${unitWord(view)}: ▲ more, ▼ less. "new" = nothing logged in ${per.prior}; no arrow when either side has nothing logged.`];
+  if (gone > 0) out.push(`${plural(gone, noun)} logged in ${per.prior} ${gone === 1 ? "has" : "have"} nothing in ${per.cur}.`);
+  return out.map((t) => `<p>${sym(t)}</p>`).join("");
 }

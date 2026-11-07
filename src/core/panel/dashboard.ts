@@ -3,12 +3,13 @@
 // inline SVG with a text alternative; no script, no URL. Unknown is "—", never 0.
 // Today, the heatmap and the bars read the unfiltered per-day activity; Month to
 // date and the ring follow the viewed month and its filter.
-import { costLabel, estWord, formatCount, formatUsd, money, partialNote, weekCoverage } from "../format";
+import { type Change, changeAmount, costLabel, estWord, formatCount, formatUsd, money, partialNote, weekCoverage } from "../format";
 import { heatLevel, localDaysBefore } from "../store";
 import type { DayStats, Metric, Snapshot, ViewOptions } from "../types";
 import { icon } from "./icons";
 import {
   callsPhrase,
+  comparePeriods,
   DASH,
   escapeHtml,
   headline,
@@ -343,25 +344,32 @@ export function monthCard(s: Snapshot, view: ViewOptions, extra: { cls: string; 
   const p = mv?.prior;
   const priorName = p ? MONTHS[new Date(p.monthStartMs).getMonth()]! : MONTHS[(new Date(mv?.monthStartMs ?? s.dayStartMs).getMonth() + 11) % 12]!;
   let compare: string;
-  if (!p) {
+  const per = comparePeriods(s);
+  if (!p || !per) {
     compare = isCurrent
       ? `<span class="muted">${escapeHtml(`Read 2 or more months (copilotUsageMonitor.historyMonths) to compare with ${priorName}.`)}</span>`
       : `<span class="muted">${escapeHtml(`${priorName} is outside the history window.`)}</span>`;
   } else {
-    const when = isCurrent ? `${priorName} at this point` : priorName;
-    const ch = changeVs(headlineValue(mt, view), headlineValue(p.totals, view));
+    // v0.6 (2.1): the same point last month ("Nov 1–6 vs Oct 1–6"), or the whole month
+    // before a past one, as ▲/▼ with the amount; no arrow when either side has nothing logged.
     const TOKENS: ViewOptions = { unit: "tokens" };
+    const label = `${per.cur} vs ${per.prior}`;
+    const pill = (c: Change, suffix = "") =>
+      `<span class="delta ${c.dir}"><span aria-hidden="true">${escapeHtml(c.text + suffix)}</span><span class="sr">${escapeHtml(c.said)}</span></span>`;
+    const priorFig = (v: ViewOptions) => (p.totals ? withStar(headline(p.totals, v), partial) : DASH);
+    const ch = changeAmount(mt ? headlineMetric(mt, view) : undefined, p.totals ? headlineMetric(p.totals, view) : undefined, view.unit, partial);
     const priorTokens = headlineValue(p.totals, TOKENS);
-    if (ch) compare = `<span class="delta ${ch.dir}">${sym(ch.text)}</span> <span class="muted">vs ${escapeHtml(when)}</span>`;
-    else if (!p.totals) compare = `<span class="muted">${escapeHtml(`Nothing logged in ${when}.`)}</span>`;
+    if (!p.totals) compare = `<span class="muted">${escapeHtml(`Nothing logged in ${per.prior}.`)}</span>`;
+    else if (!mt) compare = `<span class="muted">${escapeHtml(`Nothing logged in ${per.cur} (${per.prior}: ${priorFig(view)}).`)}</span>`;
+    else if (ch.dir === "up" || ch.dir === "down" || ch.dir === "same") compare = `${pill(ch)} <span class="muted">${escapeHtml(`${label} (${priorFig(view)})`)}</span>`;
     else if (view.unit === "cost" && headlineValue(p.totals, view) === undefined && priorTokens !== undefined && priorTokens > 0) {
       // The month before logged tokens but no cost (session totals without AI credits, say):
       // compare tokens instead of leaving a dead end (design #2).
-      const tch = changeVs(headlineValue(mt, TOKENS), priorTokens);
-      compare = tch
-        ? `<span class="delta ${tch.dir}">${sym(`${tch.text} tokens`)}</span> <span class="muted">vs ${escapeHtml(when)}</span>`
-        : `<span class="muted">${escapeHtml(`${priorName} logged tokens but no ${estWord()}.`)}</span>`;
-    } else compare = `<span class="muted">${escapeHtml(`No comparison with ${when}.`)}</span>`;
+      const tch = changeAmount(headlineMetric(mt, TOKENS), headlineMetric(p.totals, TOKENS), "tokens", partial);
+      compare = tch.dir === "up" || tch.dir === "down" || tch.dir === "same"
+        ? `${pill(tch, tch.dir === "same" ? "" : " tokens")} <span class="muted">${escapeHtml(`${label} (${priorFig(TOKENS)} tokens)`)}</span>`
+        : `<span class="muted">${escapeHtml(`${per.prior} logged tokens but no ${estWord()}.`)}</span>`;
+    } else compare = `<span class="muted">${escapeHtml(`No comparison with ${per.prior}.`)}</span>`;
   }
   const title = isCurrent ? "Month to date" : `${name} total`;
   const small = `${isCurrent ? name : "whole month"}${s.filter ? " · filtered" : ""}`;

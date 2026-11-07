@@ -1,20 +1,13 @@
 // Tools (D32): per-tool table for the viewed month; each row filters to calls
 // that used that tool (D26). Session totals carry no tool data.
-import { costLabel, currencyCode, formatCount, formatUsd } from "../format";
+import { changeAmount, costLabel, currencyCode, formatCount, formatUsd } from "../format";
+import { toolGroup } from "../store";
 import type { Snapshot, ToolSummary, ViewOptions } from "../types";
+import { toolOverheadCard } from "./explain";
 import { filterHref } from "./links";
-import { card, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
+import { card, changeCell, changeFine, changeHead, comparePeriods, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
 
-/** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
- * "mcp__server__tool", else the part before the first "-" or "_". */
-export function toolGroup(name: string): string {
-  const slash = name.indexOf("/");
-  if (slash > 0) return name.slice(0, slash);
-  const mcp = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(name);
-  if (mcp) return mcp[1]!;
-  const m = /^([A-Za-z0-9.]+)[-_]/.exec(name);
-  return m ? m[1]! : name;
-}
+export { toolGroup } from "../store";
 
 export function toolsBox(s: Snapshot, view: ViewOptions): string {
   const list: ToolSummary[] = s.month?.tools ?? [];
@@ -30,13 +23,17 @@ export function toolsBox(s: Snapshot, view: ViewOptions): string {
     return card("tools-title", "tools", "By tool", scope, `<p class="muted">${escapeHtml(text)}</p>`);
   }
   const added = list.filter((t) => !t.builtIn);
+  // v0.6 (2.1): the same tools in the compared period (same filter rules), when it is read.
+  const per = comparePeriods(s);
+  const before = new Map((s.month?.prior?.tools ?? []).map((t) => [t.name, t]));
+  const metric = (t: ToolSummary | undefined) => (t ? (view.unit === "cost" ? t.nanoAiu : t.tokens) : undefined);
   const rows = list.map((t) => {
     const on = t.name === active;
     const href = filterHref("tool", on ? "" : t.name);
     const kind = t.builtIn ? `<span class="tag">built-in</span>` : `<span class="tag add">added</span>`;
     return {
       keep: on,
-      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" aria-label="${escapeHtml(on ? `${t.name}, filtered. Clear the tool filter` : `${t.name}. Show only calls that used this tool`)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}</td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td></tr>`,
+      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" aria-label="${escapeHtml(on ? `${t.name}, filtered. Clear the tool filter` : `${t.name}. Show only calls that used this tool`)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}</td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td>${per ? changeCell(changeAmount(metric(t), metric(before.get(t.name)), view.unit, partial)) : ""}</tr>`,
     };
   });
   let addedNote = "Only built-in tools were used.";
@@ -58,9 +55,12 @@ export function toolsBox(s: Snapshot, view: ViewOptions): string {
   const totalsNote = totals > 0
     ? `<p>${escapeHtml(`${plural(totals, "session")} counted from session totals ${totals === 1 ? "is" : "are"} not in this table: session totals have no tool data.`)}</p>`
     : "<p>Session totals from Copilot before 1.0.99 have no tool data, so they are never in this table.</p>";
-  return card("tools-title", "tools", "By tool", `${scope} · ${plural(list.length, "tool")} · click to filter`, `${foldedTable(`<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>${costLabel()}</th>`, rows, undefined, `Usage by tool, ${scope}`)}<div class="fine"><p>${escapeHtml(addedNote)}</p><p>Uses = times the model invoked the tool. Calls / Tokens / ${escapeHtml(currencyCode())} = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p>${totalsNote}</div>`);
+  const names = new Set(list.map((t) => t.name));
+  const gone = [...before.keys()].filter((n) => !names.has(n)).length;
+  return card("tools-title", "tools", "By tool", `${scope} · ${plural(list.length, "tool")} · click to filter`, `${foldedTable(`<th>Tool</th><th>Kind</th><th>Uses</th><th>Calls</th><th>Tokens</th><th>${costLabel()}</th>${per ? changeHead(per) : ""}`, rows, undefined, `Usage by tool, ${scope}`)}<div class="fine"><p>${escapeHtml(addedNote)}</p>${changeFine(s, view, gone, "tool")}<p>Uses = times the model invoked the tool. Calls / Tokens / ${escapeHtml(currencyCode())} = the model calls that invoked it; a call that used two tools counts for both, so rows do not add up to the month.${escapeHtml(note)}</p>${totalsNote}</div>`);
 }
 
 export function renderTools(s: Snapshot, view: ViewOptions): string {
-  return toolsBox(s, view);
+  const defs = toolOverheadCard(s);
+  return toolsBox(s, view) + (defs ? `\n${defs}` : "");
 }

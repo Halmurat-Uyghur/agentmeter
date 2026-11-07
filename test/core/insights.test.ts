@@ -1,6 +1,6 @@
 // v0.4 Insights (D32; O2 rules I2 and I3). Pure engine tests.
 import { describe, expect, it } from "vitest";
-import { computeInsights, promptConventions } from "../../src/core/insights";
+import { computeInsights, LONG_CONTEXT_THRESHOLDS, longContextThreshold, promptConventions } from "../../src/core/insights";
 import type { Metric, SessionSummary, UsageRecord } from "../../src/core/types";
 
 const m = (sum: number, reported: number, missing = 0): Metric => ({ sum, reported, missing });
@@ -52,6 +52,63 @@ function cacheMonth(sessions: number, perSession: number, o: Parameters<typeof c
 
 const run = (o: Partial<Parameters<typeof computeInsights>[0]>) =>
   computeInsights({ sessions: [], monthRecords: [], allRecords: o.monthRecords ?? [], monthNanoAiu: 10 * USD, ...o });
+
+describe("I1 long-context", () => {
+  /** `k` calls of `model` with `prompt` input tokens, each costing `usd`, spread over 2 sessions. */
+  const longCalls = (k: number, model = "claude-haiku-5.5", prompt = 100_001, usd = 0.2) =>
+    Array.from({ length: k }, (_, i) => call({ model, input: prompt, cacheRead: 0, sessionId: `l${i % 2}`, folderId: `l${i % 2}`, nanoAiu: usd * USD }));
+
+  it("the dated table holds only the explicit entries", () => {
+    expect(LONG_CONTEXT_THRESHOLDS.map((e) => [e.id, e.thresholdTokens, e.prefix === true])).toEqual([
+      ["claude-haiku-5.5", 100_000, false],
+      ["gpt-6-sol", 272_000, false],
+      ["grok-4", 200_000, true],
+    ]);
+  });
+
+  it.each([
+    ["claude-haiku-5.5", 100_000],
+    ["CLAUDE-HAIKU-5.5", 100_000],
+    ["gpt-6-sol", 272_000],
+    ["grok-4", 200_000],
+    ["grok-4-fast", 200_000],
+    ["grok-4.1", 200_000],
+    ["grok-40", undefined],
+    ["claude-haiku-5", undefined],
+    ["gpt-6-sol-mini", undefined],
+    ["gpt-6-luna", undefined],
+  ])("threshold of %s is %s (unknown or near-miss ids never fire)", (model, want) => {
+    expect(longContextThreshold(model)).toBe(want);
+  });
+
+  it("fires at 3 calls over the threshold costing at least $0.50, with the largest prompt", () => {
+    const recs = [...longCalls(2), call({ model: "claude-haiku-5.5", input: 140_000, cacheRead: 0, sessionId: "l9", folderId: "l9", nanoAiu: 0.2 * USD })];
+    const v = run({ monthRecords: recs });
+    expect(v.items).toHaveLength(1);
+    expect(v.items[0]).toMatchObject({ id: "long-context", model: "claude-haiku-5.5", calls: 3, sessions: 3, thresholdTokens: 100_000, maxPromptTokens: 140_000 });
+    expect(v.items[0]!.nanoAiu).toBeCloseTo(0.6 * USD);
+  });
+
+  it("boundaries: exactly at the threshold does not count; 2 calls do not fire; $0.49 does not fire", () => {
+    expect(run({ monthRecords: longCalls(3, "claude-haiku-5.5", 100_000) }).items).toEqual([]);
+    expect(run({ monthRecords: longCalls(2, "claude-haiku-5.5", 100_001, 1) }).items).toEqual([]);
+    expect(run({ monthRecords: longCalls(3, "claude-haiku-5.5", 100_001, 0.49 / 3) }).items).toEqual([]);
+    expect(run({ monthRecords: longCalls(3, "claude-haiku-5.5", 100_001, 0.5 / 3 + 1e-9) }).items).toHaveLength(1);
+  });
+
+  it("no AIU, no insight; session totals never count; no month-share floor", () => {
+    expect(run({ monthRecords: longCalls(3).map((r) => ({ ...r, nanoAiu: undefined })) }).items).toEqual([]);
+    expect(run({ monthRecords: longCalls(3).map((r) => ({ ...r, kind: "sessionTotal" as const })) }).items).toEqual([]);
+    expect(run({ monthRecords: longCalls(3), monthNanoAiu: 1000 * USD }).items).toHaveLength(1);
+  });
+
+  it("separate convention adds cache to the prompt; the costliest model wins", () => {
+    const sep = [call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD }), call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD }), call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD })];
+    expect(promptConventions(sep).get("gpt-6-sol")).toBe("separate");
+    const v = run({ monthRecords: [...sep, ...longCalls(3)] });
+    expect(v.items.map((i) => i.id === "long-context" && i.model)).toEqual(["gpt-6-sol"]);
+  });
+});
 
 describe("I2 context-growth", () => {
   it("fires for flagged sessions over $0.50 whose excess clears $1 and 5 in 100 of the month", () => {

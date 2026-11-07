@@ -3,7 +3,7 @@
 // "*" means some contributing records did not report the field.
 
 import { addMetrics, localDaysBefore } from "./store";
-import type { Currency, Counts, Health, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
+import type { Currency, Counts, Health, LastPrompt, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
@@ -22,6 +22,13 @@ export const SESSION_TOTAL_NOTE =
 export const SESSION_TOTAL_SHORT = "Session total: counted once, on the day the session ended (older Copilot).";
 
 export const DEFAULT_VIEW: ViewOptions = { unit: "tokens" };
+
+/** The coverage gap most users hit (v0.6, 2.6): always shown in Data health. */
+export const CHAT_NOT_COVERED =
+  "Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users.";
+
+/** The side bar's one-line form of CHAT_NOT_COVERED. */
+export const CHAT_NOT_COVERED_SHORT = "Copilot Chat in VS Code not counted";
 
 export const NOT_COVERED: string[] = [
   "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
@@ -186,7 +193,7 @@ function star(s: string): string {
 export interface StatusParts {
   /** codicon id: the range state, or "warning" when the log format changed */
   icon: string;
-  /** "today" in tokens; the month's short name in USD */
+  /** "today" in tokens; the month's short name in USD or with statusBar "month"; "session" */
   place: string;
   /** "1.5M* tok", "—", "$12.40*" */
   figure: string;
@@ -200,18 +207,23 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
   // record from parsing (no `today`) still shows the warning.
   const state = currentRangeState(s, view);
   const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
+  const mode = view.statusBar ?? "today";
+  const monthAbbr = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
+  // v0.6 (2.5): the period follows copilotUsageMonitor.statusBar; "today" keeps the earlier text.
+  const c: Counts | undefined = mode === "session" ? s.current?.totals : mode === "month" || view.unit === "cost" ? thisMonthTotals(s) : s.today;
+  const place = mode === "session" ? "session" : mode === "month" || view.unit === "cost" ? monthAbbr : "today";
+  // The target is monthly, so only a month figure carries it.
+  const suffix = view.unit === "cost" && place === monthAbbr && state !== "none" ? ` / ${formatRange(view.range)}` : "";
   if (view.unit === "cost") {
-    // The current month, unfiltered (D31): a project or tool filter never reaches the status bar.
-    const t = thisMonthTotals(s);
-    let n = t ? formatUsd(t.nanoAiu) : DASH;
+    // The current month is unfiltered (D31): a project or tool filter never reaches the status bar.
+    let n = c ? formatUsd(c.nanoAiu) : DASH;
     if (s.health.partial) n = star(n);
-    const place = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
-    return { icon, place, figure: n, suffix: state === "none" ? "" : ` / ${formatRange(view.range)}`, state };
+    return { icon, place, figure: n, suffix, state };
   }
-  if (!s.today) return { icon, place: "today", figure: DASH, suffix: "", state };
-  let n = formatCount(addMetrics(s.today.input, s.today.output));
+  if (!c) return { icon, place, figure: DASH, suffix: "", state };
+  let n = formatCount(addMetrics(c.input, c.output));
   if (s.health.partial) n = star(n);
-  return { icon, place: "today", figure: `${n} tok`, suffix: "", state };
+  return { icon, place, figure: `${n} tok`, suffix: "", state };
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
@@ -253,9 +265,12 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   if (s.health.state === "no-dir") return "Copilot logs not found. Opens details.";
   if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
   const p = statusParts(s, view);
-  const place = view.unit === "cost" ? `this month, estimated` : "today";
+  const mode = view.statusBar ?? "today";
+  const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
+  const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
-  if (p.state !== "none") parts.push(`${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
+  // The target is monthly: name the month when the figure is today or the session (review fix 5).
+  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
 }
@@ -323,6 +338,16 @@ function healthLines(h: Health): string[] {
   return out;
 }
 
+/** "Last prompt: $0.042 est., 1 call + 3 agent calls" (cost view or a target set), else in tokens (v0.6). */
+export function lastPromptLine(lp: LastPrompt | undefined, view: ViewOptions = DEFAULT_VIEW): string | undefined {
+  if (!lp) return undefined;
+  const cost = view.unit === "cost" || view.range !== undefined;
+  const figure = cost
+    ? lp.nanoAiu === undefined ? DASH : `${money(lp.nanoAiu / 1e11)} est.`
+    : lp.tokens === undefined ? DASH : `${formatCount({ sum: lp.tokens, reported: 1, missing: 0 })} tok`;
+  return `Last prompt: ${escapeMarkdown(figure)}, 1 call + ${lp.agentCalls} agent call${lp.agentCalls === 1 ? "" : "s"}`;
+}
+
 export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   const parts: string[] = [LOCAL_BANNER, STREAMING_NOTE];
   if (!s) {
@@ -347,10 +372,14 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       "Current session" + (tags.length ? ` (${tags.join(", ")})` : "");
     if (cur.totals) {
       const both = addMetrics(cur.totals.input, cur.totals.output);
-      parts.push(`${label}: ${tok(both)}`);
+      // In session mode with cost, the status bar shows the session's estimate: say it here too.
+      const est = view.statusBar === "session" && view.unit === "cost" ? ` · ${escapeMarkdown(`${formatUsd(cur.totals.nanoAiu)} est.`)}` : "";
+      parts.push(`${label}: ${tok(both)}${est}`);
     } else {
       parts.push(`${label}: ${DASH}`);
     }
+    const lp = lastPromptLine(cur.lastPrompt, view);
+    if (lp) parts.push(lp);
   }
 
   if (s.today) {
@@ -365,6 +394,10 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   }
 
   const thisMonth = thisMonthTotals(s);
+  if (view.statusBar === "month" && view.unit === "tokens") {
+    // The status bar shows this month's tokens (2.5): say the same figure here.
+    parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output)) : DASH}`);
+  }
   if (view.unit === "cost" || view.range) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
@@ -412,6 +445,38 @@ export const WEEK_SHORT_NOTE =
   "Logs are read from the 1st of the month only (copilotUsageMonitor.historyMonths), so this covers fewer than 7 days.";
 export const PRIOR_SHORT_NOTE =
   "No comparison: the 7 days before start before the first month of logs read (copilotUsageMonitor.historyMonths).";
+
+/** A change against an earlier period as an amount (v0.6, 2.1). */
+export interface Change {
+  /** "▲ $1.20", "▼ 340K*", "same", "new" (nothing logged then) or "—" */
+  text: string;
+  dir: "up" | "down" | "same" | "new" | "none";
+  /** words for a screen reader */
+  said: string;
+}
+
+/**
+ * `cur` minus `prior` in the unit (tokens, or estimated cost in the display currency),
+ * as ▲ or ▼ with the amount: never a percentage or a multiplier (the Last-7-days rules,
+ * D32). `undefined` = nothing logged (a logged 0 is a real 0). No arrow when either side has nothing logged
+ * ("new" / "—"), and "—" when either side logged records without a figure in the unit.
+ * `*` when either side may be incomplete or `partial` is set.
+ */
+export function changeAmount(cur: Metric | undefined, prior: Metric | undefined, unit: ViewOptions["unit"], partial = false): Change {
+  // A side with records whose figure is 0 is a real 0, not "nothing logged" (review fix 2).
+  if (!cur) return { text: DASH, dir: "none", said: "nothing logged" };
+  if (!prior) return { text: "new", dir: "new", said: "nothing logged then" };
+  if (cur.reported === 0 || prior.reported === 0) return { text: DASH, dir: "none", said: "not reported" };
+  const cost = unit === "cost";
+  const d = cost ? (cur.sum - prior.sum) / 1e11 : cur.sum - prior.sum;
+  const abs = Math.abs(d);
+  if (cost ? abs < 0.0005 : Math.round(abs) === 0) return { text: "same", dir: "same", said: "about the same" };
+  const amt = cost ? money(abs) : formatCount({ sum: Math.round(abs), reported: 1, missing: 0 });
+  const starred = partial || cur.missing > 0 || prior.missing > 0;
+  const dir = d > 0 ? "up" : "down";
+  const said = `${dir} ${cost ? `${amt}, estimated` : `${spoken(amt)} tokens`}${starred ? " (may be incomplete)" : ""}`;
+  return { text: `${d > 0 ? "▲" : "▼"} ${amt}${starred ? "*" : ""}`, dir, said };
+}
 
 /** Model time as "18m 22s" / "42s" / "1h 03m"; "—" when unreported, "*" when partial. */
 export function formatDuration(m: Metric): string {

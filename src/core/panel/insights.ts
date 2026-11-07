@@ -1,4 +1,4 @@
-// Insights (D32; O2 rules I2 and I3). Neutral copy: what was seen and what it
+// Insights (D32; O2 rules I1, I2 and I3). Neutral copy: what was seen and what it
 // cost, never a "saving". Session totals are excluded and the footer says so.
 import { money } from "../format";
 import type { Insight, Snapshot, ViewOptions } from "../types";
@@ -7,6 +7,11 @@ import { escapeHtml, plural, shortId, viewedName } from "./shared";
 function list(xs: string[]): string {
   if (xs.length <= 1) return xs.join("");
   return `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+}
+
+/** "100K", "272K", "1.2M" for a token count. */
+function kTokens(n: number): string {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n);
 }
 
 function evidence(i: Insight, view: ViewOptions): string {
@@ -26,6 +31,11 @@ function card(i: Insight, view: ViewOptions): string {
     const n = i.sessions;
     body = `${plural(n, "session")} got more expensive as ${n === 1 ? "it" : "they"} went on: ${n === 1 ? "its" : "their"} later calls cost ${list(i.top.map((t) => `${t.growth.toFixed(1)}×`))} the first ones${n > i.top.length ? " (largest shown)" : ""}. The cost above each session's starting level came to about ${usd} (est.). ${i.top.length === 1 ? "Session" : "Sessions"}: ${list(names)}.`;
     action = "For a new task, a fresh session usually costs less. For one that must continue, /compact shrinks what each call resends.";
+  } else if (i.id === "long-context") {
+    const k = kTokens(i.thresholdTokens);
+    title = `Long prompts on ${i.model}`;
+    body = `${plural(i.calls, "call")} in ${plural(i.sessions, "session")} sent more than ${k} prompt tokens (the largest: ${kTokens(i.maxPromptTokens)}). Above that size each token is priced higher. These calls cost about ${usd} (est.).`;
+    action = `Running /compact, or starting a fresh session, before ${k} keeps calls in the lower price band.`;
   } else {
     title = `Low cache reuse on ${i.model}`;
     body = `Over ${plural(i.calls, "call")} in ${plural(i.sessions, "session")}, about ${Math.floor(i.share * 10)} in 10 prompt tokens were read from cache. These calls cost about ${usd} (est.).`;
@@ -44,7 +54,7 @@ export function renderInsights(s: Snapshot, view: ViewOptions): string {
     : "";
   const foot = `<div class="fine">${coverage ? `<p>${escapeHtml(coverage)}</p>` : ""}<p>Thresholds are rules of thumb, not GitHub guidance. Figures are estimates from logged AI credits.</p></div>`;
   if (items.length === 0) {
-    return `<section class="box"><p>${escapeHtml(`Nothing to point out in ${month}${s.filter ? " for this filter" : ""}.`)}</p><p class="muted">Insights check session growth and cache reuse using only the numbers on this computer.</p>${foot}</section>`;
+    return `<section class="box"><p>${escapeHtml(`Nothing to point out in ${month}${s.filter ? " for this filter" : ""}.`)}</p><p class="muted">Insights check long prompts, session growth and cache reuse using only the numbers on this computer.</p>${foot}</section>`;
   }
   return `<section class="box">${items.map((i) => card(i, view)).join("")}${foot}</section>`;
 }

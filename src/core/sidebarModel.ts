@@ -5,6 +5,8 @@
 // "*" means incomplete, and figures that include session totals say so in their
 // title tooltip. Every string is plain text; renderSidebarHtml escapes it.
 import {
+  CHAT_NOT_COVERED,
+  CHAT_NOT_COVERED_SHORT,
   costLabel,
   costNotes,
   currencyCode,
@@ -91,6 +93,8 @@ export interface SidebarModel {
   insights?: { text: string; title: string; spoken: string; link: SidebarLink };
   /** only when the data is partial or the log format changed */
   health?: { text: string; title: string; link: SidebarLink };
+  /** the Copilot Chat coverage line (2.6); every ready state */
+  coverage?: { text: string; title: string; link: SidebarLink };
   /** the unit switch link under the button */
   unitSwitch: { text: string; link: SidebarLink };
   /** footer words before the unit switch: "Local logs only", plus "USD is estimated" in USD view */
@@ -382,7 +386,8 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
       : undefined;
   const health = healthNote(h);
   const message = s.filter ? "The panel is filtered; these figures are not." : undefined;
-  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), ...(message && { message }), unitSwitch, footNote });
+  const coverage = { text: CHAT_NOT_COVERED_SHORT, title: [SIDEBAR_BANNER, CHAT_NOT_COVERED, "Opens Data health."].join("\n"), link: section("health") };
+  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, footNote });
 }
 
 function finish(m: Omit<SidebarModel, "signature">): SidebarModel {

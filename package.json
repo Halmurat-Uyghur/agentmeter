@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -46,7 +46,7 @@
     "@vscode/vsce": "4.1.0",
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
-    "vitest": "4.0.18"
+    "vitest": "4.1.12"
   },
   "repository": {
     "type": "git",
@@ -134,9 +134,55 @@
         "icon": "$(list-flat)"
       },
       {
+        "command": "copilotUsageMonitor.showSession",
+        "title": "Show Session Calls",
+        "category": "Copilot Usage"
+      },
+      {
         "command": "copilotUsageMonitor.selectCurrency",
         "title": "Choose Currency…",
         "category": "Copilot Usage"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "Get started with Copilot Usage Monitor (Local)",
+        "description": "Check that your Copilot logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
+        "steps": [
+          {
+            "id": "folder",
+            "title": "Check that your Copilot logs are found",
+            "description": "The status bar shows a figure when Copilot CLI session logs are found, or \"Copilot logs not found\" when they are not. If Copilot keeps them elsewhere, set the folder.\n[Set the Copilot folder](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/folder.md"
+            }
+          },
+          {
+            "id": "unit",
+            "title": "Choose tokens or estimated cost, and a currency",
+            "description": "Show figures as input + output tokens or as estimated cost. USD needs no network; another currency fetches its daily exchange rate.\n[Switch tokens / USD (est.)](command:copilotUsageMonitor.toggleUnit)\n[Choose currency](command:copilotUsageMonitor.selectCurrency)",
+            "media": {
+              "markdown": "media/walkthrough/unit.md"
+            }
+          },
+          {
+            "id": "target",
+            "title": "Set a monthly target range",
+            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency. The status bar icon then shows under, in range or over.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/target.md"
+            }
+          },
+          {
+            "id": "open",
+            "title": "Open the side bar and the panel",
+            "description": "The side bar gives a compact summary; the panel has the month, sessions, models, projects, tools and data health.\n[Open the side bar](command:workbench.view.extension.copilotUsageMonitor)\n[Open the panel](command:copilotUsageMonitor.showDetails)",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            }
+          }
+        ]
       }
     ],
     "configuration": {
@@ -167,6 +213,21 @@
             "Estimated USD: Copilot's logged AI credits × $0.01."
           ],
           "description": "Unit for the status bar and panel figures."
+        },
+        "copilotUsageMonitor.statusBar": {
+          "type": "string",
+          "enum": [
+            "today",
+            "month",
+            "session"
+          ],
+          "default": "today",
+          "enumDescriptions": [
+            "Today's tokens; in the estimated-cost view, this month against your target (the layout before 0.6).",
+            "This month so far, in tokens or estimated cost; the target range follows the figure in the cost view.",
+            "The current session, in tokens or estimated cost."
+          ],
+          "description": "What the status bar text shows. The tooltip keeps every figure, and the icon always shows this month's target state."
         },
         "copilotUsageMonitor.currency": {
           "type": "string",
@@ -211,6 +272,12 @@
           "minimum": 0,
           "description": "Optional personal target: the most estimated cost (in the chosen currency) you want to use per month. Above it, the status bar turns amber with a flame icon."
         },
+        "copilotUsageMonitor.targetAlert": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Opt-in: show one notification when this month's estimated cost first goes above monthlyTargetMax (in the chosen currency, once its exchange rate is known). At most once per calendar month per window, remembered in memory only. \"Don't show again\" turns this setting off. User settings only."
+        },
         "copilotUsageMonitor.projectNames": {
           "type": "boolean",
           "default": true,
@@ -232,6 +299,10 @@
         },
         {
           "command": "copilotUsageMonitor.setFilter",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.showSession",
           "when": "false"
         }
       ],

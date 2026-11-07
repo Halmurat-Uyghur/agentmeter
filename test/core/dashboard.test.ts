@@ -182,13 +182,13 @@ describe("cache-reuse ring (A2)", () => {
 });
 
 describe("Month to date (A2)", () => {
-  it("total, cumulative line and the change against last month at this point; no projection", () => {
+  it("total, cumulative line and the change against the same point last month, as an amount; no projection", () => {
     const html = render(snap());
     const card = between(html, 'class="card mtd');
     const v = text(card);
     expect(v).toContain("Month to date");
     expect(card).toMatch(/<div class="big">3\.0M<\/div>/);
-    expect(v).toContain("▲ 3.0× vs October at this point");
+    expect(v).toContain("▲ 2.0M Nov 1–6 vs Oct 1–6 (1.0M)"); // v0.6 (2.1): an amount, never a ratio
     expect(card).toMatch(/<svg class="spark" viewBox="0 0 120 40" preserveAspectRatio="none" role="img" aria-label="Running total of November by day: 6\.0M tokens after 6 days\.">/);
     expect(v).not.toMatch(/project|pace|forecast|estimate for|to go/i);
   });
@@ -198,11 +198,11 @@ describe("Month to date (A2)", () => {
     const past = snap({ month: month({ monthStartMs: OCT, isCurrent: false, days: [], prior: { monthStartMs: day(8, 1), toMs: OCT, totals: totals({ input: m(6_000_000, 1), output: m(0, 1) }) } }) });
     const v = text(between(render(past), 'class="card mtd'));
     expect(v).toContain("October 2026 total");
-    expect(v).toContain("▼ 5 in 10 vs September");
+    expect(v).toContain("▼ 3.0M October vs September (6.0M)");
     const outside = text(between(render(snap({ month: month({ monthStartMs: OCT, isCurrent: false, prior: undefined }) })), 'class="card mtd'));
     expect(outside).toContain("September is outside the history window.");
     const nothing = text(between(render(snap({ month: month({ prior: { monthStartMs: OCT, toMs: OCT + 1 } }) })), 'class="card mtd'));
-    expect(nothing).toContain("Nothing logged in October at this point.");
+    expect(nothing).toContain("Nothing logged in Oct 1–6.");
   });
 });
 
@@ -323,10 +323,10 @@ describe("v0.4 review fixes (dashboard)", () => {
   it("design #2: last month logged tokens but no cost → the token change, or a plain sentence", () => {
     const prior = { monthStartMs: OCT, toMs: new Date(2026, 9, 6, 10).getTime(), totals: totals({ input: m(1_000_000, 1), output: m(0, 1), nanoAiu: m(0, 0, 1) }) };
     const v = text(between(render(snap({ month: month({ prior }) }), { unit: "cost" }), 'class="card mtd'));
-    expect(v).toContain("▲ 3.0× tokens vs October at this point");
+    expect(v).toContain("▲ 2.0M tokens Nov 1–6 vs Oct 1–6 (1.0M tokens)");
     expect(v).not.toContain("No comparison");
     const none = text(between(render(snap({ month: month({ prior, totals: totals({ input: m(0, 0, 1), output: m(0, 0, 1) }) }) }), { unit: "cost" }), 'class="card mtd'));
-    expect(none).toContain("October logged tokens but no estimated USD.");
+    expect(none).toContain("Oct 1–6 logged tokens but no estimated USD.");
   });
 
   it("design #3: the heatmap draws at most the last 20 weeks with 12 px cells; the active-day count covers the whole window", () => {

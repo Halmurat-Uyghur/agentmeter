@@ -2,7 +2,34 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.6.0 - 2026-11-07
+
+### Added
+
+- **Session call list.** Click a session in the Sessions table to list its calls at the top of the section: time, model, who started the call (you or the agent), uncached input, cache read, cache write, output, reasoning, tool definitions as a share of input, AIU, USD (est.) and how it ended (an answer or tool calls). Tiles above the list sum the session: calls, prompts, agent calls, cost or tokens, cache-read share, the uncached input's cost and its cost at the cache-read price, and the tool-definition share. The newest 200 calls are kept and the first 25 shown, the rest folded; older calls are counted but not listed. A session counted from a session total says it has no per-call records. **Close the call list** or clicking the row again closes it.
+- **Prompts and agent calls** (Sessions): "N prompts triggered M agent calls" for the viewed month, agent calls per prompt and the average per prompt (USD est., or tokens). A prompt's chain is its own call plus the agent calls after it in the same session, up to the next prompt. Calls that logged no initiator, or that come before the first prompt in view, are named and left out, never counted as 0. The status bar tooltip adds the current session's last prompt.
+- **Cache by model** (Models): cache-read share of input per model, and the exact estimated cost of the uncached input next to the same tokens at the cache-read price, plus cache-read and cache-write cost. The costs come from the per-token-type AI credits Copilot logs with each call; `—` where none were logged. A call that logged no cache-read price still shows its uncached-input cost; the cache-read comparison covers only calls with that price, and the card says so. The copy says plainly that the cache-read price is not a saving you could have had.
+- **Tool definitions in the prompt** (Tools): the share of input taken by tool descriptions, overall and for the calls that used built-in tools, each server or plugin, or no tool, with tokens per call and tools offered on average. Shown as a share of input, never as an extra cost; Copilot logs one figure per call, so it is not split by server.
+- **Change vs last month.** The Projects, Models and Tools tables add a "Δ vs Oct 1–6" column: the viewed month so far minus the same point last month (a past month: minus the whole month before), per row, in the active unit and display currency, under each table's own filter rules. ▲ or ▼ with the amount, never a percentage; "same" when equal at display precision; "new" (no arrow) when the row logged nothing then; `—` when either side has no figure in the unit; `*` when either side may be incomplete. Rows logged last month but not this month are counted in the fine print. No column when the month before is outside `historyMonths`, and the table says why. Screen readers hear "Change" and the amount in words.
+- **Target-crossed alert** (opt-in, `copilotUsageMonitor.targetAlert`, default off): one notification when this month's estimated cost first goes above `monthlyTargetMax`, in the display currency, with **Open dashboard** and **Don't show again** (sets the setting back to `false` in user settings; the setting is application-scoped, so a workspace cannot turn it back on). At most once per calendar month per window, remembered in memory only, so a new window may say it again; it also fires once after start-up when the month is already over. Never without a target max, and never while a non-USD currency waits for its rate.
+- **Getting-started walkthrough** (`contributes.walkthroughs`, works on VS Code 1.90): check that the Copilot logs are found (opens the `copilotHome` setting), choose tokens or estimated cost and a currency, set a monthly target range (with a word on the opt-in alert), and open the side bar and the panel. Each step has a short Markdown page; its buttons are built-in or own commands only.
+- **Status bar content** (`copilotUsageMonitor.statusBar`, default `today`): `month` shows this month so far and `session` the current session, in tokens or estimated cost. `today` keeps the earlier text (today's tokens, or this month against the target in the cost view). The icon always shows this month's target state, the target range follows only a month figure, and the tooltip keeps every figure (with `month` in tokens it adds this month's tokens). The spoken label names the period.
+- **Insight: long prompts.** Calls whose prompt went past a model's long-context price threshold (GitHub's published table as of 2026-11: claude-haiku-5.5 100K, gpt-6-sol 272K, grok-4 models 200K). Fires at 3 calls costing at least $0.50 (est.); unknown models never fire.
+
+### Changed
+
+- Overview's Month to date card compares with the same point last month as an amount and names both periods ("▲ $2.70 Nov 1–6 vs Oct 1–6 ($6.40)"), instead of a ratio ("▲ 1.4× vs October at this point"). A past month compares with the whole month before ("October vs September"). No arrow when either side has nothing logged.
+- Each usage record now also reads `initiator`, `finishReason`, `toolTokenCount`, `availableToolCount` and, from `copilotUsage.tokenDetails[]`, each entry's token type, token count, batch size and cost per batch. The two text fields are mapped to fixed values (anything unknown becomes "other") and the log's text is never kept; the per-type split is kept only when it adds up to the logged AI credits. The entry's model name is not read. See `docs/SCHEMA.md`.
+- Data health now opens with "Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users.", always shown. The side bar adds one compact "Copilot Chat in VS Code not counted" line that opens Data health.
+- The panel's command allowlist grows from four to five commands (adds `showSession`). Its argument is only accepted when shaped like a session folder id; the selected session is kept in memory only. The command is hidden from the Command Palette.
+- `toolGroup` moved to `store.ts` (still re-exported by the panel).
+
+### Security
+
+- The `.vsix` allowlist grows by exactly four files, `media/walkthrough/{folder,unit,target,open}.md`, each named in `.vscodeignore` (no globs). A gate checks the packaged file list, that the pages are under 2 KB with no links, HTML or URLs, and that the walkthrough's command links are exactly the six expected (settings for `copilotHome` and the targets, `toggleUnit`, `selectCurrency`, the side bar container and `showDetails`).
+- New gates: a notification (`showInformationMessage` / `showWarningMessage` / `showErrorMessage`) may appear only in `src/vscode/targetAlert.ts`, once, and in the bundle once; configuration writes are allowlisted per file (`display` and `currency` in `extension.ts`, `targetAlert` only in the alert, only to `false`).
+
+## 0.5.0 - 2026-11-06
 
 ### Added
 

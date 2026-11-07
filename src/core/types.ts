@@ -10,6 +10,31 @@ export interface Tokens {
   reasoning?: number;
 }
 
+/** Who started a call (v0.6): "user" for a prompt, "agent" for a follow-up call the agent
+ * made on its own. Any other logged value is "other"; the log's string is never kept. */
+export type Initiator = "user" | "agent" | "other";
+export const INITIATORS: readonly Initiator[] = ["user", "agent", "other"];
+
+/** Why a call ended (v0.6). Values outside the known set are "other"; the log's string is never kept. */
+export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "other";
+export const FINISH_REASONS: readonly FinishReason[] = ["stop", "tool_calls", "length", "content_filter", "other"];
+
+/**
+ * A call's logged AIU split by token type (v0.6), from copilotUsage.tokenDetails[]:
+ * Σ tokenCount / batchSize × costPerBatch per type. Kept only when the parts add up to
+ * totalNanoAiu, so the split is exact. `inputAtReadRate` prices the uncached input
+ * tokens at this call's cache-read rate (absent unless one cache-read rate was logged).
+ */
+export interface TypeCost {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  /** token types outside the four known ones; absent when 0 */
+  other?: number;
+  inputAtReadRate?: number;
+}
+
 export interface UsageRecord {
   key: string;
   keySource: "usageId" | "eventId" | "shutdown";
@@ -31,6 +56,17 @@ export interface UsageRecord {
   nanoAiu?: number;
   /** tool name → times the model invoked it in this call (D25); absent if none */
   tools?: Record<string, number>;
+  /** call only (v0.6): who started the call */
+  initiator?: Initiator;
+  /** call only (v0.6): why the call ended */
+  finishReason?: FinishReason;
+  /** call only (v0.6): toolTokenCount, the tokens of tool definitions sent with the prompt
+   * (part of input, never on top of it) */
+  toolTokens?: number;
+  /** call only (v0.6): availableToolCount, the tools offered to the model */
+  availableTools?: number;
+  /** call only (v0.6): exact AIU per token type; absent when tokenDetails is missing or does not add up */
+  typeCost?: TypeCost;
 }
 
 export type UnrecognizedReason =
@@ -121,7 +157,7 @@ export interface Snapshot {
   dayStartMs: number;
   /** undefined iff no record is dated today */
   today?: Totals;
-  current?: { folderId: string; live: boolean; pinned: boolean; totals?: Totals };
+  current?: { folderId: string; live: boolean; pinned: boolean; totals?: Totals; lastPrompt?: LastPrompt };
   sessions: { folderId: string; lastMs?: number; live: boolean }[];
   health: Health;
   /** the viewed month (D10; D20): this month by default, or a selected past month */
@@ -238,6 +274,117 @@ export interface SessionSummary {
   excessNanoAiu?: number;
 }
 
+/** Prompts and the agent calls they triggered (v0.6, item 1.2). A prompt is a call with
+ * initiator "user"; the agent calls after it in the same session, up to the next prompt,
+ * belong to it (its chain). */
+export interface PromptStats {
+  /** calls with initiator "user" */
+  prompts: number;
+  /** agent calls that followed a prompt in the same session */
+  agentCalls: number;
+  /** agent calls before the first prompt in scope, and calls whose initiator is "other" */
+  notLinked: number;
+  /** calls that logged no initiator (Copilot before the field existed) */
+  unknown: number;
+  /** AIU per chain: `reported` = chains whose every call logged AIU, `missing` = the others */
+  nanoAiu: Metric;
+  /** input + output tokens per chain, under the same rule */
+  tokens: Metric;
+}
+
+/** The newest prompt chain of a session (v0.6, status bar tooltip). */
+export interface LastPrompt {
+  atMs: number;
+  agentCalls: number;
+  /** undefined unless every call of the chain logged AIU */
+  nanoAiu?: number;
+  /** input + output tokens; undefined unless every call reported one */
+  tokens?: number;
+}
+
+/** Cache figures over a set of call records (v0.6, item 1.3). */
+export interface CacheStats {
+  /** prompt tokens (per-model convention, as in Insights) and cache reads */
+  prompt: Metric;
+  cacheRead: Metric;
+  /** from tokenDetails: AIU of the uncached input, over every call with a per-type split */
+  uncachedNano: Metric;
+  /** the same tokens at the cache-read rate, and the uncached-input AIU of those same calls
+   * (those with one logged cache-read rate), so the comparison pairs like with like */
+  atReadRateNano: Metric;
+  pairedUncachedNano: Metric;
+  /** from tokenDetails: AIU of cache reads and cache writes */
+  cacheReadNano: Metric;
+  cacheWriteNano: Metric;
+}
+
+export interface ModelCache extends CacheStats {
+  model: string;
+}
+
+/** Tool-definition tokens as a share of input (v0.6, item 1.5). They are part of input,
+ * never an extra cost. */
+export interface ToolOverheadGroup {
+  /** "builtIn": calls that used a built-in tool; "added": calls that used a tool of server
+   * or plugin `name`; "none": calls that used no tool */
+  kind: "builtIn" | "added" | "none";
+  name: string;
+  calls: number;
+  toolTokens: number;
+  /** prompt tokens of the same calls */
+  input: number;
+}
+
+export interface ToolOverhead {
+  /** calls that reported both toolTokenCount and input */
+  calls: number;
+  /** calls without toolTokenCount */
+  missing: number;
+  toolTokens: number;
+  input: number;
+  availableTools: Metric;
+  /** costliest first by tool-definition tokens; a call that used two groups counts in both */
+  groups: ToolOverheadGroup[];
+}
+
+/** One call in a session's ledger (v0.6, item 1.1). Every field is a number or a fixed enum. */
+export interface CallRow {
+  timestampMs: number;
+  model?: string;
+  initiator?: Initiator;
+  finishReason?: FinishReason;
+  /** input not read from or written to the cache; undefined when not derivable */
+  uncached?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  output?: number;
+  reasoning?: number;
+  /** prompt tokens (per-model convention) */
+  prompt?: number;
+  toolTokens?: number;
+  nanoAiu?: number;
+}
+
+/** The selected session's calls in the viewed month (v0.6, item 1.1). In memory only. */
+export interface SessionDetail {
+  sessionId: string;
+  /** display only: the session title, else its project label */
+  label?: string;
+  /** call records of the session in scope */
+  calls: number;
+  /** the newest DETAIL_ROWS calls, oldest first */
+  rows: CallRow[];
+  /** calls in scope not in `rows` (the oldest ones) */
+  omitted: number;
+  /** true when the session is counted from a session total only (no calls to list) */
+  sessionTotal?: boolean;
+  nanoAiu: Metric;
+  tokens: Metric;
+  prompts: PromptStats;
+  cache: CacheStats;
+  tools: ToolOverhead;
+}
+
 /** One local day of the month window; totals undefined = no record that day. */
 export interface DayTotals {
   dayStartMs: number;
@@ -267,9 +414,20 @@ export interface MonthView {
   /** prompt tokens and cache reads over the viewed month's sessions (filters applied), for
    * the cache-reuse ring (A2); prompt tokens follow the per-model convention of Insights */
   cache?: { prompt: Metric; cacheRead: Metric };
+  /** v0.6: prompts and agent calls over the viewed month (project filter only; a tool filter would cut chains) */
+  prompts?: PromptStats;
+  /** v0.6: cache figures over the viewed month (filters applied), and per model, costliest uncached input first */
+  cacheCost?: CacheStats;
+  modelCache?: ModelCache[];
+  /** v0.6: tool-definition share of input over the viewed month (filters applied) */
+  toolOverhead?: ToolOverhead;
+  /** v0.6: the session picked in the Sessions table, if any */
+  detail?: SessionDetail;
   /** the month before the viewed one, only when it is inside the history window (A2): up to
-   * the same point for the current month, else the whole month; filters applied */
-  prior?: { monthStartMs: number; toMs: number; totals?: Totals };
+   * the same point for the current month, else the whole month; filters applied. `projects`
+   * and `tools` (v0.6, 2.1) are that period's tables, under the same filter rules as
+   * `MonthView.projects` and `MonthView.tools`, for the change-vs-last-month column */
+  prior?: { monthStartMs: number; toMs: number; totals?: Totals; projects?: GroupSummary[]; tools?: ToolSummary[] };
 }
 
 /** How figures are shown (D22, D23); from settings, never from the logs. */
@@ -288,13 +446,21 @@ export interface ViewOptions {
   currency?: Currency;
   /** a non-USD currency was chosen but no rate is known yet; figures stay in USD */
   currencyPending?: string;
+  /** what the status bar text shows (v0.6, `copilotUsageMonitor.statusBar`); absent = "today" */
+  statusBar?: StatusBarContent;
 }
+
+/** "today": today's tokens, or this month against the target in the cost view (the
+ * behaviour before 0.6); "month": this month in either unit; "session": the current session. */
+export type StatusBarContent = "today" | "month" | "session";
+export const STATUS_BAR_CONTENTS: readonly StatusBarContent[] = ["today", "month", "session"];
 
 export type RangeState = "none" | "under" | "in" | "over";
 
 /** One fired insight rule (O2). `nanoAiu` is the logged AIU it points at (I2: growth above
  * the starting level) and is the ranking key; `tokens` is input + output of the same calls. */
 export type Insight =
+  | { id: "long-context"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; thresholdTokens: number; maxPromptTokens: number }
   | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[] }
   | { id: "cache-reuse"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; share: number; meanPromptTokens: number };
 

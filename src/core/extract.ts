@@ -5,7 +5,7 @@
 // parseShutdownLine runs only on bounded "shutdown" lines and keeps per-model
 // totals; content-bearing keys are dropped while parsing (D29).
 // Nothing else leaves this module.
-import type { ParseResult, ShutdownParseResult, Tokens, UsageRecord } from "./types";
+import type { FinishReason, Initiator, ParseResult, ShutdownParseResult, Tokens, TypeCost, UsageRecord } from "./types";
 
 export type LineClass = "usage" | "start" | "shutdown" | "activity" | "suspect" | "skip";
 
@@ -140,6 +140,11 @@ function safeKey(v: unknown, re: RegExp): v is string {
 }
 /** Session ids: the same shape discover accepts for a session folder name. */
 const SESSION_ID = /^[0-9a-f-]{8,64}$/i;
+
+/** A session id as a panel link may carry it (v0.6 showSession): the shape above, never a prototype key. */
+export function isSessionId(v: unknown): v is string {
+  return safeKey(v, SESSION_ID);
+}
 const REPO = /^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const FOLDER_NAME = /^[A-Za-z0-9 ._@+-]{1,80}$/;
 
@@ -310,6 +315,73 @@ export function parseShutdownLine(line: string, folderId: string): ShutdownParse
   return { kind: "totals", records: out };
 }
 
+/** Known initiator values; anything else (any other string, or a non-string) is "other". */
+const INITIATOR_VALUES: ReadonlyMap<string, Initiator> = new Map([["user", "user"], ["agent", "agent"]]);
+/** Known finish reasons; anything else is "other". */
+const FINISH_VALUES: ReadonlyMap<string, FinishReason> = new Map([
+  ["stop", "stop"],
+  ["tool_calls", "tool_calls"],
+  ["length", "length"],
+  ["content_filter", "content_filter"],
+]);
+/** tokenDetails[].tokenType → TypeCost bucket; anything else is "other". */
+const TOKEN_TYPES: ReadonlyMap<string, "input" | "cacheRead" | "cacheWrite" | "output"> = new Map([
+  ["input", "input"],
+  ["cache_read", "cacheRead"],
+  ["cache_write", "cacheWrite"],
+  ["output", "output"],
+]);
+/** Observed: 4 entries per call. More than this is not a shape we know: no split. */
+export const MAX_TOKEN_DETAILS = 16;
+
+/** A small enum read from the log: only the mapped constant is returned, never the log's string. */
+function enumValue<T>(v: unknown, known: ReadonlyMap<string, T>, other: T): T | undefined {
+  // JSON null is "not logged", like an absent field (review fix 6).
+  if (v === undefined || v === null) return undefined;
+  return (typeof v === "string" && known.get(v)) || other;
+}
+
+/**
+ * The per-type split of `totalNanoAiu` from copilotUsage.tokenDetails[] (v0.6). Every
+ * entry needs integer tokenCount ≥ 0, batchSize > 0 and costPerBatch ≥ 0, else there is
+ * no split; tokenType is mapped to a fixed bucket and never kept; the entry's model
+ * string is not read. The split is kept only when it adds up to `total` (within one
+ * nanoAIU per entry for rounding), so a shown part is exact.
+ */
+function typeCostOf(details: unknown, total: number | undefined): TypeCost | undefined {
+  if (total === undefined || !Array.isArray(details) || details.length === 0 || details.length > MAX_TOKEN_DETAILS) return undefined;
+  const cost: TypeCost = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  let other = 0;
+  let inputTokens = 0;
+  let readRate: number | undefined;
+  let rates = 0;
+  for (const d of details) {
+    if (!isObject(d)) return undefined;
+    const tokens = count(d.tokenCount);
+    const batch = count(d.batchSize);
+    const per = count(d.costPerBatch);
+    if (tokens === undefined || batch === undefined || batch === 0 || per === undefined) return undefined;
+    const nano = (tokens / batch) * per;
+    const kind = typeof d.tokenType === "string" ? TOKEN_TYPES.get(d.tokenType) : undefined;
+    if (kind === undefined) {
+      other += nano;
+      continue;
+    }
+    cost[kind] += nano;
+    if (kind === "input") inputTokens += tokens;
+    if (kind === "cacheRead") {
+      const rate = per / batch;
+      if (readRate === undefined || rate !== readRate) rates++;
+      readRate = rate;
+    }
+  }
+  const sum = cost.input + cost.cacheRead + cost.cacheWrite + cost.output + other;
+  if (Math.abs(sum - total) > Math.max(1, details.length)) return undefined;
+  if (other > 0) cost.other = other;
+  if (rates === 1 && readRate !== undefined) cost.inputAtReadRate = inputTokens * readRate;
+  return cost;
+}
+
 export function parseUsageLine(line: string, folderId: string): ParseResult {
   let event: unknown;
   try {
@@ -370,6 +442,17 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     ? count(usage.copilotUsage.totalNanoAiu)
     : undefined;
   if (nanoAiu !== undefined) record.nanoAiu = nanoAiu;
+  // v0.6: two small enums mapped to constants, two counts, and the per-type split of AIU.
+  const initiator = enumValue(usage.initiator, INITIATOR_VALUES, "other");
+  if (initiator !== undefined) record.initiator = initiator;
+  const finishReason = enumValue(usage.finishReason, FINISH_VALUES, "other");
+  if (finishReason !== undefined) record.finishReason = finishReason;
+  const toolTokens = count(usage.toolTokenCount);
+  if (toolTokens !== undefined) record.toolTokens = toolTokens;
+  const availableTools = count(usage.availableToolCount);
+  if (availableTools !== undefined) record.availableTools = availableTools;
+  const typeCost = isObject(usage.copilotUsage) ? typeCostOf(usage.copilotUsage.tokenDetails, nanoAiu) : undefined;
+  if (typeCost !== undefined) record.typeCost = typeCost;
   if (isObject(usage.toolCounts)) {
     const tools: Record<string, number> = Object.create(null);
     let n = 0;

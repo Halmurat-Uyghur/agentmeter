@@ -360,6 +360,82 @@ suite("Copilot Usage Monitor", () => {
     assert.ok((s.snapshot.month.totals?.records ?? 0) >= before);
   });
 
+  test("v0.6: showSession opens and closes a session's call list; bad ids are ignored", async () => {
+    type S = { panelSection: string; snapshot: { month: { sessions: { sessionId: string }[]; detail?: { sessionId: string } } } };
+    const first = (await waitFor((x) => ((x as unknown as S).snapshot?.month?.sessions.length ?? 0) > 0)) as unknown as S;
+    const id = first.snapshot.month.sessions[0]!.sessionId;
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSession", id);
+    let s = (await waitFor((x) => (x as unknown as S).snapshot.month.detail?.sessionId === id && x.panelSection === "sessions")) as unknown as S;
+    for (const bad of [undefined, "bogus", "../" + id, 42, {}, [id], "<img src=x>"]) {
+      await vscode.commands.executeCommand("copilotUsageMonitor.showSession", bad);
+    }
+    await sleep(600);
+    s = (await state()) as unknown as S;
+    assert.strictEqual(s.snapshot.month.detail?.sessionId, id);
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSession", "");
+    await waitFor((x) => (x as unknown as S).snapshot.month.detail === undefined);
+    assert.strictEqual(config().inspect("showSession")?.globalValue, undefined);
+    await vscode.commands.executeCommand("copilotUsageMonitor.showSection", "overview");
+  });
+
+  test("v0.6: copilotUsageMonitor.statusBar switches the status text among today, month and session", async () => {
+    const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][new Date().getMonth()];
+    try {
+      await config().update("statusBar", "month", vscode.ConfigurationTarget.Global);
+      let s = await waitFor((x) => x.statusText.startsWith(`$(pulse) Local ${month}: `) && x.statusText.endsWith(" tok"));
+      assert.match(s.statusA11y, /^Copilot usage, local this month: /);
+      assert.match(s.tooltip, /\*\*This month\*\*: /);
+      await config().update("statusBar", "session", vscode.ConfigurationTarget.Global);
+      s = await waitFor((x) => x.statusText.startsWith("$(pulse) Local session: ") && x.statusText.endsWith(" tok"));
+      assert.match(s.statusA11y, /^Copilot usage, local current session: /);
+      await config().update("statusBar", "today", vscode.ConfigurationTarget.Global);
+      await waitFor((x) => x.statusText.startsWith("$(pulse) Local today: "));
+    } finally {
+      await config().update("statusBar", undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today: "));
+  });
+
+  test("v0.6: the getting-started walkthrough is contributed and opens", async () => {
+    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const w = ext.packageJSON.contributes.walkthroughs;
+    assert.strictEqual(w.length, 1);
+    assert.strictEqual(w[0].id, "gettingStarted");
+    assert.deepStrictEqual(w[0].steps.map((x: { id: string }) => x.id), ["folder", "unit", "target", "open"]);
+    await vscode.commands.executeCommand("workbench.action.openWalkthrough", "local.copilot-usage-monitor#gettingStarted", false);
+    await sleep(500);
+    await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
+  });
+
+  test("v0.6: the target alert is off by default and shows nothing when over target; on, it shows once", async () => {
+    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    assert.strictEqual(ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.targetAlert"].default, false);
+    assert.strictEqual(config().get("targetAlert"), false);
+    type A = { alertsShown: number };
+    const shown = async () => ((await state()) as unknown as A).alertsShown;
+    const base = await shown();
+    try {
+      await config().update("monthlyTargetMax", 0.001, vscode.ConfigurationTarget.Global);
+      await waitFor((x) => x.statusText.startsWith("$(flame) "));
+      await appendUsage();
+      await sleep(800);
+      assert.strictEqual(await shown(), base, "off by default: no notification");
+      await config().update("targetAlert", true, vscode.ConfigurationTarget.Global);
+      await waitFor((x) => (x as unknown as A).alertsShown === base + 1);
+      // more usage the same month: no second notification
+      const before = (await state()).statusText;
+      await appendUsage();
+      await waitFor((x) => x.statusText !== before);
+      await sleep(300);
+      assert.strictEqual(await shown(), base + 1);
+    } finally {
+      await config().update("targetAlert", undefined, vscode.ConfigurationTarget.Global);
+      await config().update("monthlyTargetMax", undefined, vscode.ConfigurationTarget.Global);
+      await vscode.commands.executeCommand("notifications.clearAll");
+    }
+    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:"));
+  });
+
   test("the folder setting is machine-scoped", () => {
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
     const prop = ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.copilotHome"];

@@ -5,7 +5,7 @@ import { FOCUSED_REDRAW_MS, RedrawThrottle } from "../core/redrawThrottle";
 import type { Snapshot, ViewOptions } from "../core/types";
 
 /** The details webview: scripts off, no local resources, command links limited
- * to PANEL_COMMANDS (month, unit, filter and section), re-rendered per snapshot.
+ * to PANEL_COMMANDS (month, unit, filter, section and session calls), re-rendered per snapshot.
  * The selected section is held here for the VS Code session only (D30): never
  * persisted and not part of ViewOptions.
  *
@@ -90,7 +90,7 @@ export class DetailsPanel implements vscode.Disposable {
   /** What the user chose: a change here is drawn at once, never held back. */
   private key(): string {
     const s = this.last;
-    return JSON.stringify([this.current, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state]);
+    return JSON.stringify([this.current, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state, s?.month?.detail?.sessionId ?? null]);
   }
 
   /** `now`: a user action (show, a section switch) that must not wait for the throttle. */

@@ -418,3 +418,20 @@ describe("renderPanelHtml", () => {
     }
   });
 });
+
+describe("v0.6 (2.6): Copilot Chat in VS Code is named as not covered", () => {
+  it("Data health always shows the line, as a note above the facts, whatever the state", async () => {
+    const { CHAT_NOT_COVERED } = await import("../../src/core/format");
+    expect(CHAT_NOT_COVERED).toBe("Not covered: Copilot Chat in VS Code (only Copilot CLI logs are read), so figures are a lower bound for Chat users.");
+    expect(CHAT_NOT_COVERED).not.toMatch(COPY_RE);
+    for (const s of [snap(), snap({ health: health({ partial: true, malformed: 1 }) }), snap({ today: undefined, health: health({ state: "no-data" }) })]) {
+      const html = renderPanelHtml(s, "x", undefined, "health");
+      const t = text(html).replace(/\s+/g, " ");
+      expect(t).toContain(CHAT_NOT_COVERED);
+      expect(html.indexOf("Copilot Chat in VS Code")).toBeLessThan(html.indexOf("Logs read"));
+    }
+    for (const other of ["overview", "daily", "sessions", "models"] as const) {
+      expect(text(renderPanelHtml(snap(), "x", undefined, other))).not.toContain(CHAT_NOT_COVERED);
+    }
+  });
+});

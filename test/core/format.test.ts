@@ -553,3 +553,123 @@ describe("v0.4: the status bar reads the unfiltered current month (D31, D33)", (
     for (const st of STATES) expect(statusAccessibilityLabel(st[1])).not.toMatch(/\$\(|%/);
   });
 });
+
+describe("v0.6: status bar content setting (2.5)", () => {
+  const MS = new Date(2026, 10, 1).getTime();
+  const DAY = new Date(2026, 10, 5).getTime();
+  const priced = (nano: number): Totals => ({ ...counts(IN, OUT), nanoAiu: m(nano, 2, 0), byModel: {} });
+  const s = snap({
+    dayStartMs: DAY,
+    thisMonth: { ...priced(5e11), input: m(4_000_000, 2, 0), output: m(1_000_000, 2, 0) },
+    current: { folderId: "abc", live: true, pinned: false, totals: { ...priced(2e10), input: m(30_000, 2, 0), output: m(2_000, 2, 0) } },
+  });
+
+  it("today (the default) keeps the earlier text in both units", () => {
+    expect(statusText(s)).toBe("$(pulse) Local today: 1.5M tok");
+    expect(statusText(s, { unit: "tokens", statusBar: "today" })).toBe("$(pulse) Local today: 1.5M tok");
+    expect(statusText(s, { unit: "cost", statusBar: "today", range: { max: 1 } })).toBe("$(flame) Local Nov: $5.00 / up to $1.00");
+  });
+
+  it("month shows the current month in either unit; the target suffix only in cost", () => {
+    expect(statusText(s, { unit: "tokens", statusBar: "month" })).toBe("$(pulse) Local Nov: 5.0M tok");
+    expect(statusText(s, { unit: "cost", statusBar: "month", range: { max: 1 } })).toBe("$(flame) Local Nov: $5.00 / up to $1.00");
+    expect(statusText(snap({ dayStartMs: DAY, thisMonth: undefined }), { unit: "tokens", statusBar: "month" })).toBe("$(pulse) Local Nov: —");
+  });
+
+  it("session shows the current session; the icon still follows the month's target", () => {
+    expect(statusText(s, { unit: "tokens", statusBar: "session" })).toBe("$(pulse) Local session: 32.0K tok");
+    expect(statusText(s, { unit: "cost", statusBar: "session", range: { max: 1 } })).toBe("$(flame) Local session: $0.200");
+    expect(statusText(snap({ current: undefined }), { unit: "tokens", statusBar: "session" })).toBe("$(pulse) Local session: —");
+  });
+
+  it("spoken labels name the period", () => {
+    expect(statusAccessibilityLabel(s, { unit: "tokens", statusBar: "month" })).toBe("Copilot usage, local this month: 5.0 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(s, { unit: "tokens", statusBar: "session" })).toBe("Copilot usage, local current session: 32.0 thousand tokens. Opens details.");
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "session" })).toBe("Copilot usage, local current session, estimated: 0.200 US dollars. Opens details.");
+  });
+
+  it("the tooltip keeps every figure; month in tokens adds the month line", () => {
+    const base = tooltipMarkdown(s, { unit: "tokens" });
+    const month = tooltipMarkdown(s, { unit: "tokens", statusBar: "month" });
+    const session = tooltipMarkdown(s, { unit: "tokens", statusBar: "session" });
+    expect(session).toBe(base);
+    expect(month).toContain("**This month**: 5\\.0M tok");
+    for (const part of base.split("\n\n")) expect(month).toContain(part);
+    const banned = /\b(bill|billing|remaining|quota|limit|allowance|credits?|cost|spend|premium)\b|\$\d|%/i;
+    expect(month.split(LOCAL_BANNER).join("")).not.toMatch(banned);
+  });
+});
+
+describe("v0.6 (2.1): changeAmount, the change against last month as an amount", () => {
+  it("▲/▼ with the amount in the unit, never a percent or multiplier", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(3_000_000, 1, 0), m(1_000_000, 1, 0), "tokens")).toEqual({ text: "▲ 2.0M", dir: "up", said: "up 2.0 million tokens" });
+    expect(changeAmount(m(400, 1, 0), m(1_000, 1, 0), "tokens")).toEqual({ text: "▼ 600", dir: "down", said: "down 600 tokens" });
+    expect(changeAmount(m(5e11, 1, 0), m(3.8e11, 1, 0), "cost")).toEqual({ text: "▲ $1.20", dir: "up", said: "up $1.20, estimated" });
+    expect(changeAmount(m(1e9, 1, 0), m(5e9, 1, 0), "cost")).toEqual({ text: "▼ $0.040", dir: "down", said: "down $0.040, estimated" });
+    for (const t of [changeAmount(m(5e11, 1, 0), m(1, 1, 0), "cost").text]) expect(t).not.toMatch(/%|×/);
+  });
+  it("the same at display precision reads 'same', without an arrow", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(1000, 1, 0), m(1000, 1, 0), "tokens")).toEqual({ text: "same", dir: "same", said: "about the same" });
+    expect(changeAmount(m(1e9, 1, 0), m(1e9 + 10, 1, 0), "cost")).toEqual({ text: "same", dir: "same", said: "about the same" });
+  });
+  it("no arrow when either side has nothing logged; '—' when a side did not report the unit", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(10, 1, 0), undefined, "tokens")).toEqual({ text: "new", dir: "new", said: "nothing logged then" });
+    expect(changeAmount(undefined, m(10, 1, 0), "tokens")).toEqual({ text: "—", dir: "none", said: "nothing logged" });
+    expect(changeAmount(m(10, 1, 0), m(0, 0, 2), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
+    expect(changeAmount(m(0, 0, 1), m(10, 1, 0), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
+  });
+  it("review fix 2: a logged 0 is a real 0, not 'nothing logged'", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(0, 1, 0), m(5e11, 1, 0), "cost")).toEqual({ text: "▼ $5.00", dir: "down", said: "down $5.00, estimated" });
+    expect(changeAmount(m(5e11, 1, 0), m(0, 1, 0), "cost")).toEqual({ text: "▲ $5.00", dir: "up", said: "up $5.00, estimated" });
+    expect(changeAmount(m(10, 1, 0), m(0, 1, 0), "tokens").text).toBe("▲ 10");
+    expect(changeAmount(m(0, 1, 0), m(0, 1, 0), "tokens")).toEqual({ text: "same", dir: "same", said: "about the same" });
+  });
+  it("a star when either side may be incomplete, or the data is partial", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(3000, 1, 1), m(1000, 1, 0), "tokens")).toEqual({ text: "▲ 2.0K*", dir: "up", said: "up 2.0 thousand tokens (may be incomplete)" });
+    expect(changeAmount(m(3000, 1, 0), m(1000, 1, 0), "tokens", true).text).toBe("▲ 2.0K*");
+  });
+  it("cost amounts follow the display currency", async () => {
+    const { changeAmount, setDisplayCurrency } = await import("../../src/core/format");
+    setDisplayCurrency({ code: "CAD", rate: 1.4, date: "2026-11-06" });
+    try {
+      expect(changeAmount(m(5e11, 1, 0), m(4e11, 1, 0), "cost").text).toBe("▲ CA$1.40");
+    } finally {
+      setDisplayCurrency(undefined);
+    }
+  });
+});
+
+describe("review fix 5: status bar label and tooltip follow the statusBar mode", () => {
+  const DAY = new Date(2026, 10, 5).getTime();
+  const priced = (nano: number): Totals => ({ ...counts(IN, OUT), nanoAiu: m(nano, 2, 0), byModel: {} });
+  const s = snap({
+    dayStartMs: DAY,
+    thisMonth: { ...priced(5e11), input: m(4_000_000, 2, 0), output: m(1_000_000, 2, 0) },
+    current: { folderId: "abc", live: true, pinned: false, totals: { ...priced(2e10), input: m(30_000, 2, 0), output: m(2_000, 2, 0) } },
+  });
+
+  it("the spoken target state names the month when the figure is not the month", () => {
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "session", range: { max: 1 } })).toBe(
+      "Copilot usage, local current session, estimated: 0.200 US dollars, this month over target up to 1.00 US dollars. Opens details.",
+    );
+    expect(statusAccessibilityLabel(s, { unit: "tokens", range: { max: 1 } })).toBe(
+      "Copilot usage, local today: 1.5 million tokens, this month over target up to 1.00 US dollars. Opens details.",
+    );
+    // the month figure itself keeps the short form
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "month", range: { max: 1 } })).toBe(
+      "Copilot usage, local this month, estimated: 5.00 US dollars, over target up to 1.00 US dollars. Opens details.",
+    );
+  });
+
+  it("the tooltip always holds the status bar's figure", () => {
+    expect(tooltipMarkdown(s, { unit: "cost", statusBar: "session" })).toContain("Current session: 32\\.0K tok · \\$0\\.200 est\\.");
+    expect(tooltipMarkdown(s, { unit: "tokens", statusBar: "month", range: { max: 1 } })).toContain("**This month**: 5\\.0M tok");
+    // tokens view without the session mode keeps the strict wording
+    expect(tooltipMarkdown(s, { unit: "tokens", statusBar: "session" })).not.toMatch(/\$\d|est\\\./);
+  });
+});

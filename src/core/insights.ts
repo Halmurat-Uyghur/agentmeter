@@ -1,4 +1,4 @@
-// Insights (D32; design note O2, rules I2 and I3 only). Pure: they read only
+// Insights (D32; design note O2, rules I1, I2 and I3). Pure: they read only
 // fields a UsageRecord already keeps, so the privacy surface is unchanged.
 // Every rule needs logged AIU, is computed from per-call records only (session
 // totals have no per-call data) and never claims a saving.
@@ -19,6 +19,34 @@ const CACHE_MIN_CALLS = 20;
 const CACHE_MIN_SESSIONS = 3;
 const CACHE_MIN_MEAN_PROMPT = 20_000;
 const CACHE_LOW_SHARE = 0.6;
+
+/** I1: a model's long-context price threshold in prompt tokens. Only entries GitHub's table
+ * states explicitly; exact id after lower-casing, or with `prefix`, the id followed by the
+ * end or a "-" / "." (so "grok-4-fast" matches "grok-4", "grok-40" does not). */
+export interface LongContextEntry {
+  id: string;
+  prefix?: boolean;
+  thresholdTokens: number;
+}
+// GitHub Docs "Models and pricing", as of 2026-11. Unknown ids never fire.
+export const LONG_CONTEXT_THRESHOLDS: readonly LongContextEntry[] = [
+  { id: "claude-haiku-5.5", thresholdTokens: 100_000 },
+  { id: "gpt-6-sol", thresholdTokens: 272_000 },
+  { id: "grok-4", prefix: true, thresholdTokens: 200_000 },
+];
+/** I1 fires at 3 calls over the threshold whose AIU reaches $0.50 (no month-share floor). */
+const LONG_MIN_CALLS = 3;
+const LONG_FLOOR_NANO = 0.5 * NANO_PER_USD;
+
+/** The long-context threshold of `model`, or undefined when the table has none. */
+export function longContextThreshold(model: string): number | undefined {
+  const m = model.toLowerCase();
+  for (const e of LONG_CONTEXT_THRESHOLDS) {
+    if (m === e.id) return e.thresholdTokens;
+    if (e.prefix && m.startsWith(e.id) && /^[-.]/.test(m.slice(e.id.length))) return e.thresholdTokens;
+  }
+  return undefined;
+}
 
 export type PromptConvention = "included" | "separate";
 
@@ -84,9 +112,41 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
   };
 }
 
+/** I1: calls past a model's long-context price threshold; the costliest model wins. */
+function longContext(monthRecords: UsageRecord[], conventions: Map<string, PromptConvention>): Insight | undefined {
+  const byModel = new Map<string, { threshold: number; calls: number; sessions: Set<string>; nano: number; priced: number; tokens: number; max: number }>();
+  for (const r of monthRecords) {
+    if (r.kind !== "call" || r.model === undefined || r.tokens.input === undefined) continue;
+    const threshold = longContextThreshold(r.model);
+    if (threshold === undefined) continue;
+    const prompt = promptTokens(r, conventions.get(r.model));
+    if (prompt <= threshold) continue;
+    let g = byModel.get(r.model);
+    if (!g) {
+      g = { threshold, calls: 0, sessions: new Set(), nano: 0, priced: 0, tokens: 0, max: 0 };
+      byModel.set(r.model, g);
+    }
+    g.calls++;
+    g.sessions.add(r.sessionId);
+    g.tokens += (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+    g.max = Math.max(g.max, prompt);
+    if (r.nanoAiu !== undefined) {
+      g.nano += r.nanoAiu;
+      g.priced++;
+    }
+  }
+  let best: Insight | undefined;
+  for (const [model, g] of [...byModel].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const fires = g.calls >= LONG_MIN_CALLS && g.priced > 0 && g.nano >= LONG_FLOOR_NANO;
+    if (!fires || (best && best.nanoAiu >= g.nano)) continue;
+    best = { id: "long-context", nanoAiu: g.nano, tokens: g.tokens, calls: g.calls, sessions: g.sessions.size, model, thresholdTokens: g.threshold, maxPromptTokens: g.max };
+  }
+  return best;
+}
+
 /** I3: low cache reuse on a model, over the month's eligible calls; the costliest model wins. */
-function cacheReuse(monthRecords: UsageRecord[], allRecords: UsageRecord[], monthNano: number): Insight | undefined {
-  const { conventions, firsts } = scanCalls(allRecords);
+function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCalls>, monthNano: number): Insight | undefined {
+  const { conventions, firsts } = scan;
   const byModel = new Map<string, { calls: number; sessions: Set<string>; cacheRead: number; prompt: number; nano: number; priced: number; tokens: number }>();
   for (const r of monthRecords) {
     if (r.kind !== "call" || r.model === undefined || firsts.has(r.key)) continue;
@@ -136,7 +196,8 @@ export function computeInsights(o: {
   allRecords: UsageRecord[];
   monthNanoAiu: number;
 }): InsightsView {
-  const items = [contextGrowth(o.sessions, o.monthNanoAiu), cacheReuse(o.monthRecords, o.allRecords, o.monthNanoAiu)]
+  const scan = scanCalls(o.allRecords);
+  const items = [longContext(o.monthRecords, scan.conventions), contextGrowth(o.sessions, o.monthNanoAiu), cacheReuse(o.monthRecords, scan, o.monthNanoAiu)]
     .filter((x): x is Insight => x !== undefined)
     .sort((a, b) => b.nanoAiu - a.nanoAiu || a.id.localeCompare(b.id));
   return {
