@@ -186,7 +186,7 @@ function star(s: string): string {
 export interface StatusParts {
   /** codicon id: the range state, or "warning" when the log format changed */
   icon: string;
-  /** "today" in tokens; the month's short name in USD */
+  /** "today" in tokens; the month's short name in USD or with statusBar "month"; "session" */
   place: string;
   /** "1.5M* tok", "—", "$12.40*" */
   figure: string;
@@ -200,18 +200,23 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
   // record from parsing (no `today`) still shows the warning.
   const state = currentRangeState(s, view);
   const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
+  const mode = view.statusBar ?? "today";
+  const monthAbbr = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
+  // v0.6 (2.5): the period follows copilotUsageMonitor.statusBar; "today" keeps the earlier text.
+  const c: Counts | undefined = mode === "session" ? s.current?.totals : mode === "month" || view.unit === "cost" ? thisMonthTotals(s) : s.today;
+  const place = mode === "session" ? "session" : mode === "month" || view.unit === "cost" ? monthAbbr : "today";
+  // The target is monthly, so only a month figure carries it.
+  const suffix = view.unit === "cost" && place === monthAbbr && state !== "none" ? ` / ${formatRange(view.range)}` : "";
   if (view.unit === "cost") {
-    // The current month, unfiltered (D31): a project or tool filter never reaches the status bar.
-    const t = thisMonthTotals(s);
-    let n = t ? formatUsd(t.nanoAiu) : DASH;
+    // The current month is unfiltered (D31): a project or tool filter never reaches the status bar.
+    let n = c ? formatUsd(c.nanoAiu) : DASH;
     if (s.health.partial) n = star(n);
-    const place = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
-    return { icon, place, figure: n, suffix: state === "none" ? "" : ` / ${formatRange(view.range)}`, state };
+    return { icon, place, figure: n, suffix, state };
   }
-  if (!s.today) return { icon, place: "today", figure: DASH, suffix: "", state };
-  let n = formatCount(addMetrics(s.today.input, s.today.output));
+  if (!c) return { icon, place, figure: DASH, suffix: "", state };
+  let n = formatCount(addMetrics(c.input, c.output));
   if (s.health.partial) n = star(n);
-  return { icon, place: "today", figure: `${n} tok`, suffix: "", state };
+  return { icon, place, figure: `${n} tok`, suffix: "", state };
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
@@ -253,7 +258,9 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   if (s.health.state === "no-dir") return "Copilot logs not found. Opens details.";
   if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
   const p = statusParts(s, view);
-  const place = view.unit === "cost" ? `this month, estimated` : "today";
+  const mode = view.statusBar ?? "today";
+  const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
+  const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
   if (p.state !== "none") parts.push(`${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
@@ -377,6 +384,10 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   }
 
   const thisMonth = thisMonthTotals(s);
+  if (view.statusBar === "month" && view.unit === "tokens" && !view.range) {
+    // The status bar shows this month's tokens (2.5): say the same figure here.
+    parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output)) : DASH}`);
+  }
   if (view.unit === "cost" || view.range) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];

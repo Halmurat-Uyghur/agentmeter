@@ -188,6 +188,14 @@ describe("gates", () => {
     expect(ext).toContain("readTotals");
   });
 
+  it("manifest: the status bar content setting is today | month | session, default today (v0.6, 2.5)", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const p = pkg.contributes.configuration.properties["copilotUsageMonitor.statusBar"];
+    expect(p).toMatchObject({ type: "string", enum: ["today", "month", "session"], default: "today" });
+    expect(p.enumDescriptions).toHaveLength(3);
+    for (const t of p.enumDescriptions) expect(t).not.toMatch(COPY_RE);
+  });
+
   it("the panel allows exactly five commands, wired as the webview's allowlist (D30; showSession v0.6)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",

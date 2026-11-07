@@ -442,7 +442,14 @@ export interface ViewOptions {
   currency?: Currency;
   /** a non-USD currency was chosen but no rate is known yet; figures stay in USD */
   currencyPending?: string;
+  /** what the status bar text shows (v0.6, `copilotUsageMonitor.statusBar`); absent = "today" */
+  statusBar?: StatusBarContent;
 }
+
+/** "today": today's tokens, or this month against the target in the cost view (the
+ * behaviour before 0.6); "month": this month in either unit; "session": the current session. */
+export type StatusBarContent = "today" | "month" | "session";
+export const STATUS_BAR_CONTENTS: readonly StatusBarContent[] = ["today", "month", "session"];
 
 export type RangeState = "none" | "under" | "in" | "over";
 

@@ -553,3 +553,49 @@ describe("v0.4: the status bar reads the unfiltered current month (D31, D33)", (
     for (const st of STATES) expect(statusAccessibilityLabel(st[1])).not.toMatch(/\$\(|%/);
   });
 });
+
+describe("v0.6: status bar content setting (2.5)", () => {
+  const MS = new Date(2026, 10, 1).getTime();
+  const DAY = new Date(2026, 10, 5).getTime();
+  const priced = (nano: number): Totals => ({ ...counts(IN, OUT), nanoAiu: m(nano, 2, 0), byModel: {} });
+  const s = snap({
+    dayStartMs: DAY,
+    thisMonth: { ...priced(5e11), input: m(4_000_000, 2, 0), output: m(1_000_000, 2, 0) },
+    current: { folderId: "abc", live: true, pinned: false, totals: { ...priced(2e10), input: m(30_000, 2, 0), output: m(2_000, 2, 0) } },
+  });
+
+  it("today (the default) keeps the earlier text in both units", () => {
+    expect(statusText(s)).toBe("$(pulse) Local today: 1.5M tok");
+    expect(statusText(s, { unit: "tokens", statusBar: "today" })).toBe("$(pulse) Local today: 1.5M tok");
+    expect(statusText(s, { unit: "cost", statusBar: "today", range: { max: 1 } })).toBe("$(flame) Local Nov: $5.00 / up to $1.00");
+  });
+
+  it("month shows the current month in either unit; the target suffix only in cost", () => {
+    expect(statusText(s, { unit: "tokens", statusBar: "month" })).toBe("$(pulse) Local Nov: 5.0M tok");
+    expect(statusText(s, { unit: "cost", statusBar: "month", range: { max: 1 } })).toBe("$(flame) Local Nov: $5.00 / up to $1.00");
+    expect(statusText(snap({ dayStartMs: DAY, thisMonth: undefined }), { unit: "tokens", statusBar: "month" })).toBe("$(pulse) Local Nov: —");
+  });
+
+  it("session shows the current session; the icon still follows the month's target", () => {
+    expect(statusText(s, { unit: "tokens", statusBar: "session" })).toBe("$(pulse) Local session: 32.0K tok");
+    expect(statusText(s, { unit: "cost", statusBar: "session", range: { max: 1 } })).toBe("$(flame) Local session: $0.200");
+    expect(statusText(snap({ current: undefined }), { unit: "tokens", statusBar: "session" })).toBe("$(pulse) Local session: —");
+  });
+
+  it("spoken labels name the period", () => {
+    expect(statusAccessibilityLabel(s, { unit: "tokens", statusBar: "month" })).toBe("Copilot usage, local this month: 5.0 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(s, { unit: "tokens", statusBar: "session" })).toBe("Copilot usage, local current session: 32.0 thousand tokens. Opens details.");
+    expect(statusAccessibilityLabel(s, { unit: "cost", statusBar: "session" })).toBe("Copilot usage, local current session, estimated: 0.200 US dollars. Opens details.");
+  });
+
+  it("the tooltip keeps every figure; month in tokens adds the month line", () => {
+    const base = tooltipMarkdown(s, { unit: "tokens" });
+    const month = tooltipMarkdown(s, { unit: "tokens", statusBar: "month" });
+    const session = tooltipMarkdown(s, { unit: "tokens", statusBar: "session" });
+    expect(session).toBe(base);
+    expect(month).toContain("**This month**: 5\\.0M tok");
+    for (const part of base.split("\n\n")) expect(month).toContain(part);
+    const banned = /\b(bill|billing|remaining|quota|limit|allowance|credits?|cost|spend|premium)\b|\$\d|%/i;
+    expect(month.split(LOCAL_BANNER).join("")).not.toMatch(banned);
+  });
+});

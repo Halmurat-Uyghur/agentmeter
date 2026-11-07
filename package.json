@@ -173,6 +173,21 @@
           ],
           "description": "Unit for the status bar and panel figures."
         },
+        "copilotUsageMonitor.statusBar": {
+          "type": "string",
+          "enum": [
+            "today",
+            "month",
+            "session"
+          ],
+          "default": "today",
+          "enumDescriptions": [
+            "Today's tokens; in the estimated-cost view, this month against your target (the layout before 0.6).",
+            "This month so far, in tokens or estimated cost; the target range follows the figure in the cost view.",
+            "The current session, in tokens or estimated cost."
+          ],
+          "description": "What the status bar text shows. The tooltip keeps every figure, and the icon always shows this month's target state."
+        },
         "copilotUsageMonitor.currency": {
           "type": "string",
           "default": "USD",

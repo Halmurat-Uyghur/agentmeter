@@ -6,7 +6,7 @@ Not affiliated with, endorsed by or supported by GitHub or Microsoft.
 
 ## What it shows
 
-- **Status bar:** `Local today: 1.5M tok`. That is input plus output tokens for today, from local midnight. In USD view it shows this month's estimate instead, for example `Local Nov: $12.40 / $20.00–$60.00`. The month figure is never filtered. The tooltip says when a figure includes session totals, and gives the current session's last prompt (its own call plus the agent calls it triggered). Click it to open the panel.
+- **Status bar:** `Local today: 1.5M tok`. That is input plus output tokens for today, from local midnight. In USD view it shows this month's estimate instead, for example `Local Nov: $12.40 / $20.00–$60.00`. The month figure is never filtered. Set `copilotUsageMonitor.statusBar` to `month` or `session` to show this month or the current session instead, in either unit; the icon always shows this month's target state. The tooltip keeps every figure, says when a figure includes session totals, and gives the current session's last prompt (its own call plus the agent calls it triggered). Click it to open the panel.
 - **Side bar** (the graph icon in the activity bar, "Copilot Usage (Local)" → **Summary**): a compact summary in small groups, label on the left and figure on the right, in the Tokens / USD (est.) unit. Nothing in it is filtered.
   - **This workspace · *folder***: Today and Last 7 days for the project that matches an open workspace folder (by folder name, or the repository part of `owner/repo`). Hidden when nothing matches.
   - **All projects**: Today, Last 7 days and This month, with a small marker for your target state (under, in range or over).
@@ -70,6 +70,7 @@ Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.
 | `copilotUsageMonitor.copilotHome` | `""` | Folder that contains Copilot's `session-state`. Empty means `COPILOT_HOME`, else `~/.copilot`. Machine-scoped, so a repository's workspace settings cannot redirect it. |
 | `copilotUsageMonitor.historyMonths` | `12` | Months of logs to read, this month included (1–24). |
 | `copilotUsageMonitor.display` | `"tokens"` | `"tokens"` or `"cost"` (estimated USD). The panel switch and the command change it. |
+| `copilotUsageMonitor.statusBar` | `"today"` | What the status bar text shows: `"today"` (today's tokens, or this month against your target in the cost view, as before 0.6), `"month"` (this month so far) or `"session"` (the current session). The tooltip keeps every figure. |
 | `copilotUsageMonitor.currency` | `"USD"` | Currency for estimated cost, for example `"CAD"`. See [Currency](#currency). |
 | `copilotUsageMonitor.monthlyTargetMin` | none | Optional: the least estimated cost you mean to use per month, in the chosen currency. |
 | `copilotUsageMonitor.monthlyTargetMax` | none | Optional: the most estimated cost you mean to use per month, in the chosen currency. |

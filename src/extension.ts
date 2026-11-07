@@ -16,7 +16,7 @@ import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
 import { nextLocalMidnight } from "./core/store";
-import type { Currency, Filter, Snapshot, ViewOptions } from "./core/types";
+import { STATUS_BAR_CONTENTS, type Currency, type Filter, type Snapshot, type StatusBarContent, type ViewOptions } from "./core/types";
 import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
@@ -45,7 +45,10 @@ function readView(rate: Currency | undefined): ViewOptions {
   setDisplayCurrency(cur);
   const raw = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
   const range = pending ? undefined : rangeToUsd(raw, cur);
-  return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }) };
+  const sb = c.get<unknown>("statusBar");
+  // "today" (the default) and anything unknown keep the earlier status bar text (2.5).
+  const statusBar = STATUS_BAR_CONTENTS.includes(sb as StatusBarContent) && sb !== "today" ? (sb as StatusBarContent) : undefined;
+  return { unit, ...(range && { range }), ...(cur && { currency: cur }), ...(pending && { currencyPending: pending }), ...(statusBar && { statusBar }) };
 }
 
 function readProjects(): boolean {
@@ -310,7 +313,7 @@ export function activate(context: vscode.ExtensionContext): void {
       render();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
+      if (["display", "monthlyTargetMin", "monthlyTargetMax", "currency", "statusBar"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView(rate);
         render();
       }
