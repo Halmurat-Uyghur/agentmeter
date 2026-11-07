@@ -443,6 +443,37 @@ export const WEEK_SHORT_NOTE =
 export const PRIOR_SHORT_NOTE =
   "No comparison: the 7 days before start before the first month of logs read (copilotUsageMonitor.historyMonths).";
 
+/** A change against an earlier period as an amount (v0.6, 2.1). */
+export interface Change {
+  /** "▲ $1.20", "▼ 340K*", "same", "new" (nothing logged then) or "—" */
+  text: string;
+  dir: "up" | "down" | "same" | "new" | "none";
+  /** words for a screen reader */
+  said: string;
+}
+
+/**
+ * `cur` minus `prior` in the unit (tokens, or estimated cost in the display currency),
+ * as ▲ or ▼ with the amount: never a percentage or a multiplier (the Last-7-days rules,
+ * D32). `undefined` = nothing logged. No arrow when either side has nothing logged
+ * ("new" / "—"), and "—" when either side logged records without a figure in the unit.
+ * `*` when either side may be incomplete or `partial` is set.
+ */
+export function changeAmount(cur: Metric | undefined, prior: Metric | undefined, unit: ViewOptions["unit"], partial = false): Change {
+  if (!cur || (cur.reported > 0 && cur.sum <= 0)) return { text: DASH, dir: "none", said: "nothing logged" };
+  if (!prior || (prior.reported > 0 && prior.sum <= 0)) return { text: "new", dir: "new", said: "nothing logged then" };
+  if (cur.reported === 0 || prior.reported === 0) return { text: DASH, dir: "none", said: "not reported" };
+  const cost = unit === "cost";
+  const d = cost ? (cur.sum - prior.sum) / 1e11 : cur.sum - prior.sum;
+  const abs = Math.abs(d);
+  if (cost ? abs < 0.0005 : Math.round(abs) === 0) return { text: "same", dir: "same", said: "about the same" };
+  const amt = cost ? money(abs) : formatCount({ sum: Math.round(abs), reported: 1, missing: 0 });
+  const starred = partial || cur.missing > 0 || prior.missing > 0;
+  const dir = d > 0 ? "up" : "down";
+  const said = `${dir} ${cost ? `${amt}, estimated` : `${spoken(amt)} tokens`}${starred ? " (may be incomplete)" : ""}`;
+  return { text: `${d > 0 ? "▲" : "▼"} ${amt}${starred ? "*" : ""}`, dir, said };
+}
+
 /** Model time as "18m 22s" / "42s" / "1h 03m"; "—" when unreported, "*" when partial. */
 export function formatDuration(m: Metric): string {
   if (m.reported === 0) return DASH;

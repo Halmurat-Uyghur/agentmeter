@@ -422,8 +422,10 @@ export interface MonthView {
   /** v0.6: the session picked in the Sessions table, if any */
   detail?: SessionDetail;
   /** the month before the viewed one, only when it is inside the history window (A2): up to
-   * the same point for the current month, else the whole month; filters applied */
-  prior?: { monthStartMs: number; toMs: number; totals?: Totals };
+   * the same point for the current month, else the whole month; filters applied. `projects`
+   * and `tools` (v0.6, 2.1) are that period's tables, under the same filter rules as
+   * `MonthView.projects` and `MonthView.tools`, for the change-vs-last-month column */
+  prior?: { monthStartMs: number; toMs: number; totals?: Totals; projects?: GroupSummary[]; tools?: ToolSummary[] };
 }
 
 /** How figures are shown (D22, D23); from settings, never from the logs. */

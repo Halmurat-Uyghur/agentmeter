@@ -379,3 +379,71 @@ describe("toolGroup", () => {
     expect(toolGroup(name)).toBe(group);
   });
 });
+
+describe("monitor: last month's projects and tools for the change column (v0.6, 2.1)", () => {
+  const A = "0000aaaa-0000-4000-8000-000000000001";
+  const B = "0000bbbb-0000-4000-8000-000000000002";
+  let root: string;
+  let snaps: Snapshot[];
+  const now = new Date(2026, 10, 6, 12).getTime();
+  const at = (mo: number, d: number, h = 9) => new Date(2026, mo, d, h).toISOString();
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "cum-delta-"));
+    snaps = [];
+    await sessionTree(root, [
+      {
+        id: A,
+        lines:
+          start({ repository: "acme/web" }) + "\n" +
+          usageWithTools({ bash: 2 }, { usageId: "o1", id: "e1", sourceSessionId: A, timestamp: at(9, 3), totalNanoAiu: 4e9 }) + "\n" +
+          // after "this point" (Oct 6 12:00): outside the same-point window
+          usageWithTools({ bash: 1 }, { usageId: "o2", id: "e2", sourceSessionId: A, timestamp: at(9, 6, 13), totalNanoAiu: 8e9 }) + "\n" +
+          usageWithTools({ view: 1 }, { usageId: "n1", id: "e3", sourceSessionId: A, timestamp: at(10, 2), totalNanoAiu: 1e9 }) + "\n",
+      },
+      { id: B, lines: start({ cwd: "/srv/x/code/tools-cli" }) + "\n" + usageWithTools({ view: 1 }, { usageId: "b1", sourceSessionId: B, timestamp: at(9, 4), totalNanoAiu: 2e9 }) + "\n" },
+    ]);
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+  const make = (historyMonths = 2) =>
+    new UsageMonitor({ root, rootSource: "default", now: () => new Date(now), isLive: () => false, log: new Logger(() => {}), onSnapshot: (s) => snaps.push(s), readProjects: true, historyMonths });
+
+  it("current month: last month up to the same point, per project and per tool", async () => {
+    const m = make();
+    await m.refresh({ full: true });
+    const p = snaps.at(-1)!.month!.prior!;
+    expect(p.projects!.map((g) => [g.name, g.nanoAiu.sum])).toEqual([["acme/web", 4e9], ["tools-cli", 2e9]]);
+    expect(p.tools!.map((t) => [t.name, t.nanoAiu.sum])).toEqual([["bash", 4e9], ["view", 2e9]]);
+    expect(p.totals!.byModel["model-a"]!.nanoAiu.sum).toBe(6e9);
+  });
+
+  it("filters: projects honour the tool filter only, tools the project filter only, models both", async () => {
+    const m = make();
+    await m.refresh({ full: true });
+    m.setFilter({ project: "acme/web" });
+    await m.refresh();
+    let p = snaps.at(-1)!.month!.prior!;
+    expect(p.projects!.map((g) => g.name)).toEqual(["acme/web", "tools-cli"]);
+    expect(p.tools!.map((t) => t.name)).toEqual(["bash"]);
+    expect(p.totals!.nanoAiu.sum).toBe(4e9);
+    m.setFilter({ tool: "view" });
+    await m.refresh();
+    p = snaps.at(-1)!.month!.prior!;
+    expect(p.projects!.map((g) => g.name)).toEqual(["tools-cli"]);
+    expect(p.tools!.map((t) => t.name)).toEqual(["bash", "view"]);
+  });
+
+  it("a past month compares with the whole month before; none outside historyMonths", async () => {
+    const m = make(3);
+    m.selectMonth(new Date(2026, 9, 1).getTime());
+    await m.refresh({ full: true });
+    const p = snaps.at(-1)!.month!.prior!;
+    expect(p.projects).toEqual([]);
+    expect(p.tools).toEqual([]);
+    const one = make(1);
+    await one.refresh({ full: true });
+    expect(snaps.at(-1)!.month!.prior).toBeUndefined();
+  });
+});

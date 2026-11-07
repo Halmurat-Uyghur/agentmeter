@@ -530,6 +530,10 @@ export class UsageMonitor {
         const totals = history[vi - 1]?.totals;
         month.prior = { monthStartMs: priorStart, toMs: month.monthStartMs, ...(totals !== undefined && { totals }) };
       }
+      // v0.6 (2.1): the same period per project and per tool, under the tables' own filter
+      // rules (projects ignore the project filter, tools the tool filter; D26).
+      month.prior.projects = projectSummaries(this.store, priorStart, month.prior.toMs, projectOf, byTool);
+      month.prior.tools = toolSummaries(this.store, priorStart, month.prior.toMs, byProject);
     }
     // Unfiltered per-day figures over the window: heatmap, Yesterday, 30-day bars (A2).
     const activity = dailyActivity(this.store, starts[0]!, dayStartMs);

@@ -599,3 +599,41 @@ describe("v0.6: status bar content setting (2.5)", () => {
     expect(month.split(LOCAL_BANNER).join("")).not.toMatch(banned);
   });
 });
+
+describe("v0.6 (2.1): changeAmount, the change against last month as an amount", () => {
+  it("▲/▼ with the amount in the unit, never a percent or multiplier", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(3_000_000, 1, 0), m(1_000_000, 1, 0), "tokens")).toEqual({ text: "▲ 2.0M", dir: "up", said: "up 2.0 million tokens" });
+    expect(changeAmount(m(400, 1, 0), m(1_000, 1, 0), "tokens")).toEqual({ text: "▼ 600", dir: "down", said: "down 600 tokens" });
+    expect(changeAmount(m(5e11, 1, 0), m(3.8e11, 1, 0), "cost")).toEqual({ text: "▲ $1.20", dir: "up", said: "up $1.20, estimated" });
+    expect(changeAmount(m(1e9, 1, 0), m(5e9, 1, 0), "cost")).toEqual({ text: "▼ $0.040", dir: "down", said: "down $0.040, estimated" });
+    for (const t of [changeAmount(m(5e11, 1, 0), m(1, 1, 0), "cost").text]) expect(t).not.toMatch(/%|×/);
+  });
+  it("the same at display precision reads 'same', without an arrow", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(1000, 1, 0), m(1000, 1, 0), "tokens")).toEqual({ text: "same", dir: "same", said: "about the same" });
+    expect(changeAmount(m(1e9, 1, 0), m(1e9 + 10, 1, 0), "cost")).toEqual({ text: "same", dir: "same", said: "about the same" });
+  });
+  it("no arrow when either side has nothing logged; '—' when a side did not report the unit", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(10, 1, 0), undefined, "tokens")).toEqual({ text: "new", dir: "new", said: "nothing logged then" });
+    expect(changeAmount(m(10, 1, 0), m(0, 1, 0), "tokens")).toEqual({ text: "new", dir: "new", said: "nothing logged then" });
+    expect(changeAmount(undefined, m(10, 1, 0), "tokens")).toEqual({ text: "—", dir: "none", said: "nothing logged" });
+    expect(changeAmount(m(10, 1, 0), m(0, 0, 2), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
+    expect(changeAmount(m(0, 0, 1), m(10, 1, 0), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
+  });
+  it("a star when either side may be incomplete, or the data is partial", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(3000, 1, 1), m(1000, 1, 0), "tokens")).toEqual({ text: "▲ 2.0K*", dir: "up", said: "up 2.0 thousand tokens (may be incomplete)" });
+    expect(changeAmount(m(3000, 1, 0), m(1000, 1, 0), "tokens", true).text).toBe("▲ 2.0K*");
+  });
+  it("cost amounts follow the display currency", async () => {
+    const { changeAmount, setDisplayCurrency } = await import("../../src/core/format");
+    setDisplayCurrency({ code: "CAD", rate: 1.4, date: "2026-11-06" });
+    try {
+      expect(changeAmount(m(5e11, 1, 0), m(4e11, 1, 0), "cost").text).toBe("▲ CA$1.40");
+    } finally {
+      setDisplayCurrency(undefined);
+    }
+  });
+});
