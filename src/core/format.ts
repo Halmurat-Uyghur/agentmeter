@@ -455,13 +455,14 @@ export interface Change {
 /**
  * `cur` minus `prior` in the unit (tokens, or estimated cost in the display currency),
  * as ▲ or ▼ with the amount: never a percentage or a multiplier (the Last-7-days rules,
- * D32). `undefined` = nothing logged. No arrow when either side has nothing logged
+ * D32). `undefined` = nothing logged (a logged 0 is a real 0). No arrow when either side has nothing logged
  * ("new" / "—"), and "—" when either side logged records without a figure in the unit.
  * `*` when either side may be incomplete or `partial` is set.
  */
 export function changeAmount(cur: Metric | undefined, prior: Metric | undefined, unit: ViewOptions["unit"], partial = false): Change {
-  if (!cur || (cur.reported > 0 && cur.sum <= 0)) return { text: DASH, dir: "none", said: "nothing logged" };
-  if (!prior || (prior.reported > 0 && prior.sum <= 0)) return { text: "new", dir: "new", said: "nothing logged then" };
+  // A side with records whose figure is 0 is a real 0, not "nothing logged" (review fix 2).
+  if (!cur) return { text: DASH, dir: "none", said: "nothing logged" };
+  if (!prior) return { text: "new", dir: "new", said: "nothing logged then" };
   if (cur.reported === 0 || prior.reported === 0) return { text: DASH, dir: "none", said: "not reported" };
   const cost = unit === "cost";
   const d = cost ? (cur.sum - prior.sum) / 1e11 : cur.sum - prior.sum;

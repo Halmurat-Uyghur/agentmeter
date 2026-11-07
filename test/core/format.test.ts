@@ -617,10 +617,16 @@ describe("v0.6 (2.1): changeAmount, the change against last month as an amount",
   it("no arrow when either side has nothing logged; '—' when a side did not report the unit", async () => {
     const { changeAmount } = await import("../../src/core/format");
     expect(changeAmount(m(10, 1, 0), undefined, "tokens")).toEqual({ text: "new", dir: "new", said: "nothing logged then" });
-    expect(changeAmount(m(10, 1, 0), m(0, 1, 0), "tokens")).toEqual({ text: "new", dir: "new", said: "nothing logged then" });
     expect(changeAmount(undefined, m(10, 1, 0), "tokens")).toEqual({ text: "—", dir: "none", said: "nothing logged" });
     expect(changeAmount(m(10, 1, 0), m(0, 0, 2), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
     expect(changeAmount(m(0, 0, 1), m(10, 1, 0), "cost")).toEqual({ text: "—", dir: "none", said: "not reported" });
+  });
+  it("review fix 2: a logged 0 is a real 0, not 'nothing logged'", async () => {
+    const { changeAmount } = await import("../../src/core/format");
+    expect(changeAmount(m(0, 1, 0), m(5e11, 1, 0), "cost")).toEqual({ text: "▼ $5.00", dir: "down", said: "down $5.00, estimated" });
+    expect(changeAmount(m(5e11, 1, 0), m(0, 1, 0), "cost")).toEqual({ text: "▲ $5.00", dir: "up", said: "up $5.00, estimated" });
+    expect(changeAmount(m(10, 1, 0), m(0, 1, 0), "tokens").text).toBe("▲ 10");
+    expect(changeAmount(m(0, 1, 0), m(0, 1, 0), "tokens")).toEqual({ text: "same", dir: "same", said: "about the same" });
   });
   it("a star when either side may be incomplete, or the data is partial", async () => {
     const { changeAmount } = await import("../../src/core/format");

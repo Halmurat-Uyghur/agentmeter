@@ -163,6 +163,12 @@ describe("change vs last month: Overview same-point comparison", () => {
     expect(empty).toContain("Nothing logged in Nov 1–6 (Oct 1–6: 1.0M).");
     expect(empty).not.toMatch(/[▲▼]/);
   });
+  it("review fix 2: a month that logged records costing 0 shows ▼ the whole of last month", () => {
+    const zero = totals({ "model-a": counts(3_000_000, 0) });
+    const c = text(card(render(snap({ totals: zero }), "overview", "cost")));
+    expect(c).toContain("▼ $3.81");
+    expect(c).toContain("Nov 1–6 vs Oct 1–6 ($3.81)");
+  });
   it("past month: the whole month before, by name; the 1st reads 'Nov 1'", () => {
     const past = snap({ monthStartMs: OCT, isCurrent: false, prior: { ...snap().month!.prior!, monthStartMs: new Date(2026, 8, 1).getTime(), toMs: OCT } });
     expect(text(card(render(past, "overview")))).toContain("October vs September (1.0M)");
