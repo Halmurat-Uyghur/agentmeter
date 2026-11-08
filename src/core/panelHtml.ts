@@ -5,7 +5,7 @@
 // and the selected section. Navigation uses command: links limited to an
 // allowlist by the webview (D20); the panel itself never runs code.
 // This file is the façade: the renderers live in ./panel/.
-import { DEFAULT_VIEW } from "./format";
+import { DEFAULT_VIEW, LOADING_NOTE } from "./format";
 import { DEFAULT_PALETTE, paletteCss, type PaletteId } from "./palettes";
 import { page, shell, skipLink, stateNote, toolbar, topBar } from "./panel/chrome";
 import { renderDaily } from "./panel/daily";
@@ -26,6 +26,8 @@ export { DEFAULT_SECTION, isSectionId, SECTION_DEFS, SECTIONS, sectionPickItems,
 export { escapeHtml, monthKey, TABLE_LIMIT } from "./panel/shared";
 export { DEFAULT_PALETTE, PALETTE_IDS, paletteCss, type PaletteId } from "./palettes";
 export { toolGroup } from "./panel/tools";
+export { renderSourcesCard, sourceChips, sourcesHealthBox } from "./panel/sources";
+export { filterHref } from "./panel/links";
 
 const RENDER: Record<SectionId, (s: Snapshot, view: ViewOptions) => string> = {
   overview: renderOverview,
@@ -53,12 +55,12 @@ export function renderPanelHtml(
   if (!s) {
     const body = `${skipLink(def)}
 ${topBar(undefined, view)}
-${shell(undefined, def, "Reading Copilot session logs…", `<p class="muted">Loading…</p>`, navCollapsed)}`;
+${shell(undefined, def, LOADING_NOTE, `<p class="muted">Loading…</p>`, navCollapsed)}`;
     return page(body, cspSource, def.label, css);
   }
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);
   const body = `${skipLink(def)}
-${topBar(s, view, def.id === "health")}
+${topBar(s, view)}
 ${stateNote(s.health)}
 ${toolbar(s, view)}
 ${shell(s, def, description, RENDER[def.id](s, view), navCollapsed)}`;

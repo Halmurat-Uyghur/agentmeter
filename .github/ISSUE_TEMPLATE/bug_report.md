@@ -6,10 +6,10 @@ labels: bug
 ---
 
 <!--
-PRIVACY: Do NOT paste Copilot logs, events.jsonl lines, prompts, code, file paths,
-screenshots of chat, or the Output channel if it shows anything you are unsure about.
-The only log-derived data we ask for is the shape-only `npm run probe` output below,
-which prints key paths, types and counts, never values. Read it before pasting.
+PRIVACY: Do NOT paste Copilot, Claude Code or Codex logs, events.jsonl or other .jsonl
+lines, prompts, code, file paths, screenshots of chat, or the Output channel if it shows
+anything you are unsure about. The only log-derived data we ask for is the shape-only probe
+output below, which prints key paths, types and counts, never values. Read it before pasting.
 -->
 
 **What happened**
@@ -28,12 +28,14 @@ which prints key paths, types and counts, never values. Read it before pasting.
 - OS and version: <!-- e.g. macOS 15.1, Windows 11 23H2, Ubuntu 24.04 -->
 - VS Code version: <!-- Help → About, or `code --version` -->
 - Copilot version: <!-- `copilot --version` for the CLI; Copilot Chat extension version from the Extensions view -->
-- Copilot Usage Monitor version: <!-- e.g. 0.7.0 -->
+- Claude Code / Codex CLI version, if the problem involves them: <!-- `claude --version`, `codex --version` -->
+- Copilot Usage Monitor version: <!-- e.g. 0.8.0 -->
 
 **Shape-only probe output (optional)**
 
 <!--
-From a clone of this repo, run `npm run probe` and paste the result.
+From a clone of this repo, run `npm run probe` (Copilot), `npm run probe:claude` (Claude Code)
+or `npm run probe:codex` (Codex CLI) and paste the result.
 It contains no prompts, code, paths or field values. Nothing else from your logs, please.
 -->
 

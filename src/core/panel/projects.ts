@@ -3,6 +3,7 @@ import { changeAmount, costLabel, formatCount, formatUsd } from "../format";
 import { NO_PROJECT } from "../store";
 import type { GroupSummary, Snapshot, ViewOptions } from "../types";
 import { filterHref } from "./links";
+import { rowChips } from "./sources";
 import { CALLS_MISSING_NOTE, callsCell, card, changeCell, changeFine, changeHead, comparePeriods, DASH, escapeHtml, foldedTable, monthTitle, plural, titleAttr, val, viewedName, viewedStart, withStar } from "./shared";
 
 function share(part: { sum: number; reported: number }, whole: number | undefined): number {
@@ -31,7 +32,7 @@ export function projectsBox(s: Snapshot, view: ViewOptions): string {
     const aria = on ? `${plain}, filtered. Clear the project filter` : `${plain}. Show only this project`;
     return {
       keep: on,
-      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" aria-label="${escapeHtml(aria)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%" aria-hidden="true"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num${callsCell(g.calls, g.callsMissing) === DASH ? " muted" : ""}"${titleAttr(g.callsMissing ? CALLS_MISSING_NOTE : undefined)}>${val(callsCell(g.calls, g.callsMissing))}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td>${per ? changeCell(changeAmount(metric(g), metric(before.get(g.name)), view.unit, partial)) : ""}</tr>`,
+      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" aria-label="${escapeHtml(aria)}" title="${on ? "Clear the project filter" : "Show only this project"}">${name}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}${rowChips(s, g.sources)}${pct > 0 ? `<span class="bar f-gemini" style="width:${pct}%" aria-hidden="true"></span>` : ""}</td><td class="num">${g.sessions}</td><td class="num${callsCell(g.calls, g.callsMissing) === DASH ? " muted" : ""}"${titleAttr(g.callsMissing ? CALLS_MISSING_NOTE : undefined)}>${val(callsCell(g.calls, g.callsMissing))}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(g.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(g.nanoAiu), partial))}</td>${per ? changeCell(changeAmount(metric(g), metric(before.get(g.name)), view.unit, partial)) : ""}</tr>`,
     };
   });
   const note = s.filter?.tool ? ` Only calls that used ${s.filter.tool}.` : "";

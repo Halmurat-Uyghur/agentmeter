@@ -1,11 +1,12 @@
 // Sessions (D32): the current session's tiles, then the viewed month's
 // costliest sessions (the snapshot keeps up to 50; 10 show, the rest fold).
-import { costLabel, formatCount, formatUsd, SESSION_TOTAL_NOTE, usd } from "../format";
+import { costLabel, formatCount, formatUsd, mixedSources, multiSource, notLiveWord, SESSION_TOTAL_NOTE, usd } from "../format";
 import { GROWTH_FLAG } from "../insights";
 import { modelFamily } from "../store";
 import type { SessionSummary, Snapshot, ViewOptions } from "../types";
 import { promptsCard, sessionDetailCard } from "./explain";
 import { sessionCallsHref } from "./links";
+import { rowChips } from "./sources";
 import { CALLS_MISSING_NOTE, callsCell, card, DASH, escapeHtml, titleAttr, foldedTable, inHundred, pad2, plural, shortDate, shortId, sym, tilesBox, val, viewedName, withStar } from "./shared";
 
 function started(ms: number): string {
@@ -58,7 +59,7 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
     const bar = share > 0 ? `<span class="bar f-other" style="width:${share}%" aria-hidden="true"></span>` : "";
     const calls = callsCell(x.calls, x.callsMissing);
     const callsTd = `<td class="num${calls === DASH ? " muted" : ""}"${titleAttr(x.callsMissing ? CALLS_MISSING_NOTE : undefined)}>${val(calls)}</td>`;
-    const html = `<tr${on ? ' class="on"' : ""}><td>${ident}${tag}${bar}</td><td>${escapeHtml(started(x.firstMs))}</td>${callsTd}<td>${model}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td>${cacheCell(x)}<td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${growth === DASH ? val(DASH) : sym(`${growth}${flagged ? " ▲" : ""}`)}</td></tr>`;
+    const html = `<tr${on ? ' class="on"' : ""}><td>${ident}${tag}${x.source ? rowChips(s, { [x.source]: 1 }) : ""}${bar}</td><td>${escapeHtml(started(x.firstMs))}</td>${callsTd}<td>${model}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td>${cacheCell(x)}<td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${growth === DASH ? val(DASH) : sym(`${growth}${flagged ? " ▲" : ""}`)}</td></tr>`;
     return { html, keep: on };
   });
   const count = s.month?.sessionCount ?? list.length;
@@ -69,16 +70,19 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
   if (list.some((x) => x.sessionTotal)) notes.push(`<p>${escapeHtml(SESSION_TOTAL_NOTE)} Its calls are the request count Copilot logged with the total.</p>`);
   if (count > list.length) notes.push(`<p>${escapeHtml(`${plural(count - list.length, "more session")} in ${name} ${count - list.length === 1 ? "is" : "are"} not listed.`)}</p>`);
   notes.push(`<p>Click a session to list its calls above.</p>`);
-  notes.push(`<p>Bar = share of the month's estimated cost. Started = first record in ${escapeHtml(name)}, or the session start Copilot logged with a session total. Cache read = cache reads out of every 100 input tokens. Growth = cost of the last 5 calls ÷ the first 5.</p>`);
+  notes.push(`<p>Bar = share of the month's estimated cost${mixedSources(s.month?.totals?.sources) ? " (Copilot calls only)" : ""}. Started = first record in ${escapeHtml(name)}, or the session start Copilot logged with a session total. Cache read = cache reads out of every 100 input tokens. Growth = cost of the last 5 calls ÷ the first 5.</p>`);
   const head = `<th>Session</th><th>Started</th><th>Calls</th><th>Top model</th><th>Tokens</th><th>${costLabel()}</th><th>Cache read</th><th>Growth</th>`;
   return card("sessions-title", "sessions", "Costliest sessions", `${name} · ${plural(count, "session")} · largest first`, `${foldedTable(head, rows, undefined, `Costliest sessions, ${name}`)}<div class="fine">${notes.join("")}</div>`);
 }
 
 export function renderSessions(s: Snapshot, view: ViewOptions): string {
   const badge = s.current
-    ? `${shortId(s.current.folderId)} · ${s.current.live ? "live" : "ended"}${s.current.pinned ? " · pinned" : ""}`
+    ? `${shortId(s.current.folderId)} · ${s.current.live ? "live" : notLiveWord(s.current.source)}${s.current.pinned ? " · pinned" : ""}`
     : "none";
-  const none = s.current ? "" : `<p class="muted">No current session. A session becomes current when Copilot logs a model call in it.</p>`;
+  const neutral = multiSource(s.health) || s.filter?.source !== undefined;
+  const none = s.current
+    ? ""
+    : `<p class="muted">No current session. ${neutral ? "A session becomes current when a model call is logged in it." : "A session becomes current when Copilot logs a model call in it."}</p>`;
   // The call list comes first: picking a session redraws the page, which starts at the top.
   const detail = sessionDetailCard(s, view);
   const prompts = promptsCard(s, view);

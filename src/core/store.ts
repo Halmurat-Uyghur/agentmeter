@@ -3,23 +3,70 @@
 // has been reset. Metrics keep "not reported" apart from zero. A session's
 // totals from session.shutdown are hidden while the same session, or the same
 // session folder, has any per-call record, so no session is counted twice (D29).
-// Call records and session totals live in separate key namespaces.
+// Call records and session totals live in separate key namespaces, and each
+// source has its own (D40). USD metrics count Copilot records only (D46).
 
 import type { PromptConvention } from "./insights";
-import type { Activity, Counts, DayStats, DayTotals, GroupSummary, Metric, MonthSummary, SessionSummary, ToolSummary, Totals, UsageRecord } from "./types";
+import type { Activity, Counts, DayStats, DayTotals, GroupSummary, Metric, MonthSummary, SessionSummary, Source, ToolSummary, Totals, UsageRecord } from "./types";
 
 export const UNKNOWN_MODEL = "(unknown model)";
 
+/** One stored record and the files holding its key. Most keys have one holder, so the first
+ * holder sits in two fields and a Map is built only when a second file holds the key
+ * (a per-record Map costs ~190 bytes; D50 heap budget). */
 interface Entry {
   record: UsageRecord;
-  /** file → folderId of the file; a call key counts as held by every folder here (D29) */
-  files: Map<string, string>;
+  /** the first (owning) holder and its folderId; a call key counts as held by every folder of its holders (D29) */
+  file: string;
+  folderId: string;
+  /** later holders, file → folderId, in the order they arrived; undefined while there are none */
+  more: Map<string, string> | undefined;
+}
+
+function newEntry(record: UsageRecord, file: string, folderId: string): Entry {
+  return { record, file, folderId, more: undefined };
+}
+
+function hasFile(e: Entry, file: string): boolean {
+  return e.file === file || (e.more?.has(file) ?? false);
 }
 
 function holds(e: Entry, folderId: string): boolean {
-  for (const f of e.files.values()) if (f === folderId) return true;
+  if (e.folderId === folderId) return true;
+  if (e.more) for (const f of e.more.values()) if (f === folderId) return true;
   return false;
 }
+
+/** Drops `file` from `e`'s holders. Returns the folderId it held the key for (undefined if it
+ * did not hold it) and whether no holder is left. A removed first holder is replaced by the
+ * earliest later one, as the first key of an insertion-ordered Map would be. */
+function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean } {
+  if (e.file === file) {
+    const folderId = e.folderId;
+    const next = e.more?.entries().next();
+    if (next === undefined || next.done) return { folderId, empty: true };
+    const [f, id] = next.value;
+    e.more!.delete(f);
+    e.file = f;
+    e.folderId = id;
+    if (e.more!.size === 0) e.more = undefined;
+    return { folderId, empty: false };
+  }
+  const folderId = e.more?.get(file);
+  if (folderId === undefined) return { folderId, empty: false };
+  e.more!.delete(file);
+  if (e.more!.size === 0) e.more = undefined;
+  return { folderId, empty: false };
+}
+
+/** Records keyed by kind and source, then by record key: call keys and session-total keys
+ * never share a namespace, so a log-supplied usageId can never equal (and drop) a
+ * "shutdown:…" key (N10), and an id from one source's log can never equal another
+ * source's (D40). Keying the inner Map by `r.key` itself stores no second key string. */
+type Namespace = Map<string, Entry>;
+
+/** Most distinct strings the store's pool keeps before starting over. */
+const POOL_MAX = 50_000;
 
 function emptyMetric(): Metric {
   return { sum: 0, reported: 0, missing: 0 };
@@ -67,25 +114,77 @@ function callsMissingOf(r: UsageRecord): number {
   return r.kind === "sessionTotal" && r.calls === undefined ? 1 : 0;
 }
 
+/** Only Copilot logs cost: other sources' records neither report nor miss USD (D46). */
+function pricedSource(r: UsageRecord): boolean {
+  return r.source === "copilot";
+}
+
+/** Bumps the per-source record count in `m` (a prototype-free map). */
+function bumpSource(m: Partial<Record<Source, number>>, s: Source): void {
+  m[s] = (m[s] ?? 0) + 1;
+}
+
 function accumulate(c: Counts, r: UsageRecord): void {
   c.records += 1;
   c.calls += callsOf(r);
   c.callsMissing += callsMissingOf(r);
+  const priced = pricedSource(r);
   if (r.kind === "sessionTotal") c.sessionTotals += 1;
-  else count(c.callNanoAiu, r.nanoAiu);
+  else if (priced) count(c.callNanoAiu, r.nanoAiu);
   count(c.input, r.tokens.input);
   count(c.output, r.tokens.output);
   count(c.cacheRead, r.tokens.cacheRead);
   count(c.cacheWrite, r.tokens.cacheWrite);
   count(c.reasoning, r.tokens.reasoning);
   count(c.durationMs, r.durationMs);
-  count(c.nanoAiu, r.nanoAiu);
+  if (priced) count(c.nanoAiu, r.nanoAiu);
+  bumpSource((c.sources ??= Object.create(null) as Partial<Record<Source, number>>), r.source);
 }
 
-/** Store key of a record: call keys and session-total keys never share a namespace,
- * so a log-supplied usageId can never equal (and drop) a "shutdown:…" key (N10). */
-function entryKey(r: UsageRecord): string {
-  return `${r.kind === "call" ? "c" : "t"}|${r.key}`;
+/** Adds `r` to `totals`, its model and its source. */
+function accumulateTotals(totals: Totals, r: UsageRecord): void {
+  accumulate(totals, r);
+  accumulate((totals.byModel[r.model ?? UNKNOWN_MODEL] ??= emptyCounts()), r);
+  const bySource = (totals.bySource ??= Object.create(null) as Partial<Record<Source, Counts>>);
+  accumulate((bySource[r.source] ??= emptyCounts()), r);
+}
+
+/** Fields a later line of the same call in the same file replaces (D42 repeats). */
+const REPEAT_FIELDS = [
+  "tokens", "timestampMs", "model", "finishReason", "sequence", "durationMs", "nanoAiu", "typeCost", "initiator", "toolTokens", "availableTools",
+] as const satisfies readonly (keyof UsageRecord)[];
+
+/** At most this many tool names per record. */
+const MAX_TOOL_NAMES = 64;
+
+/** `r` with the repeat fields of `next` and the tool counts of both, summed per name. */
+function mergeRepeat(r: UsageRecord, next: UsageRecord): UsageRecord {
+  const out: UsageRecord = { ...r };
+  const o = out as unknown as Record<string, unknown>;
+  const n = next as unknown as Record<string, unknown>;
+  for (const f of REPEAT_FIELDS) {
+    if (n[f] === undefined) delete o[f];
+    else o[f] = n[f];
+  }
+  if (next.tools !== undefined) {
+    const tools: Record<string, number> = Object.create(null);
+    for (const [name, k] of Object.entries(r.tools ?? {})) tools[name] = k;
+    let names = Object.keys(tools).length;
+    for (const [name, k] of Object.entries(next.tools)) {
+      if (tools[name] !== undefined) tools[name] += k;
+      else if (names < MAX_TOOL_NAMES) {
+        tools[name] = k;
+        names++;
+      }
+    }
+    if (names > 0) out.tools = tools;
+  }
+  return out;
+}
+
+/** The visibility-map key of `id` within `source`. */
+function idOf(source: Source, id: string): string {
+  return `${source}|${id}`;
 }
 
 function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
@@ -95,29 +194,83 @@ function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
 }
 
 export class UsageStore {
-  private readonly entries = new Map<string, Entry>();
-  /** sessionId → call records held; a session in here hides its session totals */
+  /** kind ("c" or "t") + "|" + source → that namespace's records */
+  private readonly spaces = new Map<string, Namespace>();
+  /** `${source}|${sessionId}` → call records held; a session in here hides its session totals.
+   * Keyed per source, so a call of one source never hides another source's total with the same id. */
   private readonly callsPerSession = new Map<string, number>();
-  /** folderId → call keys held by its files; a folder in here hides its session totals,
+  /** `${source}|${folderId}` → call keys held by its files; a folder in here hides its session totals,
    * whatever sessionId its call records carry (a resumed, forked or copied session) */
   private readonly callsPerFolder = new Map<string, number>();
-  /** folderId → store keys of its current session-total records */
-  private readonly totalKeys = new Map<string, string[]>();
+  /** folderId → its current session-total records (each the record of its own entry) */
+  private readonly totalKeys = new Map<string, UsageRecord[]>();
+  /** One shared copy of each session id, folder id and model id: a reader decodes them afresh
+   * per line, and thousands of records of one session would otherwise each keep a copy (D50).
+   * Bounded: cleared when full, which only costs sharing, never correctness. */
+  private readonly pool = new Map<string, string>();
 
-  /** Returns false if the key was already known; `file` is still recorded for it. */
+  private intern(s: string): string {
+    const known = this.pool.get(s);
+    if (known !== undefined) return known;
+    if (this.pool.size >= POOL_MAX) this.pool.clear();
+    this.pool.set(s, s);
+    return s;
+  }
+
+  /** Points `r`'s repeated strings at the pooled copies (equal strings, so nothing observable changes). */
+  private share(r: UsageRecord): void {
+    const sessionId = this.intern(r.sessionId);
+    r.folderId = r.folderId === r.sessionId ? sessionId : this.intern(r.folderId);
+    r.sessionId = sessionId;
+    if (r.model !== undefined) r.model = this.intern(r.model);
+  }
+
+  /** The namespace of `r`'s kind and source; created when `create`. */
+  private space(r: UsageRecord, create: true): Namespace;
+  private space(r: UsageRecord, create: false): Namespace | undefined;
+  private space(r: UsageRecord, create: boolean): Namespace | undefined {
+    const name = `${r.kind === "call" ? "c" : "t"}|${r.source}`;
+    let m = this.spaces.get(name);
+    if (m === undefined && create) this.spaces.set(name, (m = new Map()));
+    return m;
+  }
+
+  private entry(r: UsageRecord): Entry | undefined {
+    return this.space(r, false)?.get(r.key);
+  }
+
+  /** Calls `fn` with every record, visible or not, in no particular order. */
+  private forEachRecord(fn: (r: UsageRecord) => void): void {
+    for (const m of this.spaces.values()) for (const e of m.values()) fn(e.record);
+  }
+
+  /** Returns whether the store changed. A key already known from another file counts once
+   * (`file` is still recorded for it); a later call line of the same key in the file that
+   * owns the record (its first holder) replaces the record's figures and adds its tools (D42 repeats). */
   add(r: UsageRecord, file: string): boolean {
-    const key = entryKey(r);
-    const existing = this.entries.get(key);
+    const existing = this.entry(r);
+    // Only the owning (first) holder's later lines merge; another holder's repeat counts once,
+    // so tool names never merge twice (D42).
+    if (existing && r.kind === "call" && existing.file === file) {
+      const merged = mergeRepeat(existing.record, r);
+      if (JSON.stringify(merged) === JSON.stringify(existing.record)) return false;
+      this.share(merged);
+      existing.record = merged;
+      return true;
+    }
     if (existing) {
-      // A copied folder delivers the same key: that folder holds it too (D29).
-      if (r.kind === "call" && !existing.files.has(file) && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
-      if (!existing.files.has(file)) existing.files.set(file, r.folderId);
+      if (!hasFile(existing, file)) {
+        // A copied folder delivers the same key: that folder holds it too (D29).
+        if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
+        (existing.more ??= new Map()).set(file, r.folderId);
+      }
       return false;
     }
-    this.entries.set(key, { record: r, files: new Map([[file, r.folderId]]) });
+    this.share(r);
+    this.space(r, true).set(r.key, newEntry(r, file, r.folderId));
     if (r.kind === "call") {
-      bump(this.callsPerSession, r.sessionId, 1);
-      bump(this.callsPerFolder, r.folderId, 1);
+      bump(this.callsPerSession, idOf(r.source, r.sessionId), 1);
+      bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
     }
     return true;
   }
@@ -132,19 +285,25 @@ export class UsageStore {
     const same =
       old.length === records.length &&
       records.every((r, i) => {
-        const e = this.entries.get(old[i]!);
-        return e !== undefined && entryKey(r) === old[i] && e.files.size === 1 && e.files.has(file) && JSON.stringify(e.record) === JSON.stringify(r);
+        const o = old[i]!;
+        const e = this.entry(o);
+        return (
+          e !== undefined && r.kind === o.kind && r.source === o.source && r.key === o.key &&
+          e.more === undefined && e.file === file && JSON.stringify(e.record) === JSON.stringify(r)
+        );
       });
     if (same) return false;
-    for (const key of old) this.entries.delete(key);
-    const keys: string[] = [];
+    for (const o of old) this.space(o, false)?.delete(o.key);
+    const kept: UsageRecord[] = [];
     for (const r of records) {
-      const key = entryKey(r);
-      if (r.kind !== "sessionTotal" || this.entries.has(key)) continue;
-      this.entries.set(key, { record: r, files: new Map([[file, folderId]]) });
-      keys.push(key);
+      if (r.kind !== "sessionTotal") continue;
+      const m = this.space(r, true);
+      if (m.has(r.key)) continue;
+      this.share(r);
+      m.set(r.key, newEntry(r, file, folderId));
+      kept.push(r);
     }
-    if (keys.length > 0) this.totalKeys.set(folderId, keys);
+    if (kept.length > 0) this.totalKeys.set(folderId, kept);
     else this.totalKeys.delete(folderId);
     return true;
   }
@@ -152,37 +311,40 @@ export class UsageStore {
   /** Forgets `file`; records no other file holds are deleted. A folder stops holding a
    * call key once none of its files does. */
   resetFile(file: string): void {
-    for (const [key, entry] of this.entries) {
-      const folderId = entry.files.get(file);
-      if (folderId === undefined) continue;
-      entry.files.delete(file);
-      const r = entry.record;
-      if (r.kind === "call" && !holds(entry, folderId)) bump(this.callsPerFolder, folderId, -1);
-      if (entry.files.size === 0) {
-        this.entries.delete(key);
-        if (r.kind === "call") {
-          bump(this.callsPerSession, r.sessionId, -1);
-        } else {
-          const keys = this.totalKeys.get(r.folderId)?.filter((k) => k !== key) ?? [];
-          if (keys.length > 0) this.totalKeys.set(r.folderId, keys);
-          else this.totalKeys.delete(r.folderId);
+    for (const m of this.spaces.values()) {
+      for (const [key, entry] of m) {
+        const { folderId, empty } = dropFile(entry, file);
+        if (folderId === undefined) continue;
+        const r = entry.record;
+        if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
+        if (empty) {
+          m.delete(key);
+          if (r.kind === "call") {
+            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+          } else {
+            const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
+            if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
+            else this.totalKeys.delete(r.folderId);
+          }
         }
       }
     }
+    // An empty store keeps no pooled strings (ids of files that are gone).
+    if (this.pool.size > 0 && [...this.spaces.values()].every((m) => m.size === 0)) this.pool.clear();
   }
 
   /** A call record always counts; a session total only while neither its session nor its
    * folder has a call record (review 1: sourceSessionId may differ from the folder). */
   private visible(r: UsageRecord): boolean {
-    return r.kind === "call" || (!this.callsPerSession.has(r.sessionId) && !this.callsPerFolder.has(r.folderId));
+    return r.kind === "call" || (!this.callsPerSession.has(idOf(r.source, r.sessionId)) && !this.callsPerFolder.has(idOf(r.source, r.folderId)));
   }
 
   /** Session ids with at least one visible session-total record. */
   sessionTotalSessions(): Set<string> {
     const out = new Set<string>();
-    for (const keys of this.totalKeys.values()) {
-      for (const key of keys) {
-        const r = this.entries.get(key)?.record;
+    for (const recs of this.totalKeys.values()) {
+      for (const o of recs) {
+        const r = this.entry(o)?.record;
         if (r && this.visible(r)) out.add(r.sessionId);
       }
     }
@@ -192,13 +354,9 @@ export class UsageStore {
   /** Aggregates matching records; undefined iff none match. */
   totals(filter: (r: UsageRecord) => boolean): Totals | undefined {
     const totals = emptyTotals();
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record) || !filter(record)) continue;
-      accumulate(totals, record);
-      const model = record.model ?? UNKNOWN_MODEL;
-      const perModel = (totals.byModel[model] ??= emptyCounts());
-      accumulate(perModel, record);
-    }
+    this.forEachRecord((record) => {
+      if (this.visible(record) && filter(record)) accumulateTotals(totals, record);
+    });
     return totals.records === 0 ? undefined : totals;
   }
 
@@ -206,40 +364,41 @@ export class UsageStore {
    * undefined to skip). Entries are undefined for buckets with no record. */
   totalsByBucket(n: number, bucket: (r: UsageRecord) => number | undefined): (Totals | undefined)[] {
     const out: (Totals | undefined)[] = new Array(n).fill(undefined);
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record)) continue;
+    this.forEachRecord((record) => {
+      if (!this.visible(record)) return;
       const i = bucket(record);
-      if (i === undefined || i < 0 || i >= n) continue;
-      const totals = (out[i] ??= emptyTotals());
-      accumulate(totals, record);
-      const model = record.model ?? UNKNOWN_MODEL;
-      accumulate((totals.byModel[model] ??= emptyCounts()), record);
-    }
+      if (i === undefined || i < 0 || i >= n) return;
+      accumulateTotals((out[i] ??= emptyTotals()), record);
+    });
     return out;
   }
 
   /** Calls `fn` for every visible record, in no particular order, without building an array. */
   each(fn: (r: UsageRecord) => void): void {
-    for (const { record } of this.entries.values()) if (this.visible(record)) fn(record);
+    this.forEachRecord((record) => {
+      if (this.visible(record)) fn(record);
+    });
   }
 
   /** Every record matching `filter`, in no particular order. */
   records(filter: (r: UsageRecord) => boolean): UsageRecord[] {
     const out: UsageRecord[] = [];
-    for (const { record } of this.entries.values()) if (this.visible(record) && filter(record)) out.push(record);
+    this.forEachRecord((record) => {
+      if (this.visible(record) && filter(record)) out.push(record);
+    });
     return out;
   }
 
   /** folderId → newest timestampMs over all records. */
   latest(): Map<string, number> {
     const out = new Map<string, number>();
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record)) continue;
+    this.forEachRecord((record) => {
+      if (!this.visible(record)) return;
       const prev = out.get(record.folderId);
       if (prev === undefined || record.timestampMs > prev) {
         out.set(record.folderId, record.timestampMs);
       }
-    }
+    });
     return out;
   }
 }
@@ -331,6 +490,10 @@ function byCost<T extends { name: string; nanoAiu: Metric; tokens: Metric }>(a: 
   return b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.name.localeCompare(b.name);
 }
 
+function emptyGroup(name: string): GroupSummary {
+  return { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric(), sources: Object.create(null) as Partial<Record<Source, number>> };
+}
+
 /** Per-project totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
 export function projectSummaries(
   store: UsageStore,
@@ -344,14 +507,15 @@ export function projectSummaries(
     const name = projectOf(r);
     let g = groups.get(name);
     if (!g) {
-      g = { s: { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() }, ids: new Set() };
+      g = { s: emptyGroup(name), ids: new Set() };
       groups.set(name, g);
     }
     g.ids.add(r.sessionId);
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     count(g.s.tokens, recordTokens(r));
-    count(g.s.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
+    bumpSource(g.s.sources!, r.source);
   }
   return [...groups.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
 }
@@ -373,7 +537,7 @@ export function recentProjects(
   const add = (into: Map<string, Acc>, name: string, r: UsageRecord, tok: number | undefined) => {
     let g = into.get(name);
     if (!g) {
-      g = { s: { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() }, ids: new Set() };
+      g = { s: emptyGroup(name), ids: new Set() };
       into.set(name, g);
     }
     g.ids.add(r.sessionId);
@@ -381,7 +545,8 @@ export function recentProjects(
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     if (r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
     count(g.s.tokens, tok);
-    count(g.s.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
+    bumpSource(g.s.sources!, r.source);
   };
   store.each((r) => {
     if (r.timestampMs < last7StartMs) return;
@@ -394,12 +559,21 @@ export function recentProjects(
   return { today: done(day), last7: done(week) };
 }
 
-/** Copilot CLI's own tools; anything else (MCP servers, extensions, skills' tools) is "added". */
-export const BUILT_IN_TOOLS = new Set([
-  "bash", "read_bash", "write_bash", "stop_bash", "list_bash", "view", "edit", "create", "str_replace_editor",
-  "rg", "grep", "glob", "task", "task_complete", "rename_chat", "report_intent", "skill", "think",
-  "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
-]);
+/** Each source's own tools (D52); anything else (MCP servers, extensions, skills' tools) is "added".
+ * Codex tools are not counted in 0.8, so its set is empty. */
+export const BUILT_IN_TOOLS: Record<Source, ReadonlySet<string>> = {
+  copilot: new Set([
+    "bash", "read_bash", "write_bash", "stop_bash", "list_bash", "view", "edit", "create", "str_replace_editor",
+    "rg", "grep", "glob", "task", "task_complete", "rename_chat", "report_intent", "skill", "think",
+    "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
+  ]),
+  "claude-code": new Set([
+    "Bash", "Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "LS", "Task", "Agent", "WebFetch", "WebSearch",
+    "TodoWrite", "TodoRead", "NotebookEdit", "NotebookRead", "Skill", "AskUserQuestion", "ExitPlanMode", "EnterPlanMode",
+    "KillShell", "BashOutput", "SlashCommand",
+  ]),
+  codex: new Set(),
+};
 
 /** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
  * "mcp__server__tool", else the part before the first "-" or "_". */
@@ -424,23 +598,27 @@ export function toolSummaries(
     for (const [name, uses] of Object.entries(r.tools!)) {
       let t = tools.get(name);
       if (!t) {
-        t = { name, builtIn: BUILT_IN_TOOLS.has(name), uses: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() };
+        t = { name, builtIn: false, uses: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric(), sources: Object.create(null) as Partial<Record<Source, number>> };
         tools.set(name, t);
       }
+      // built in when any source that used it ships it (D52)
+      if (BUILT_IN_TOOLS[r.source].has(name)) t.builtIn = true;
       t.uses += uses;
       t.calls++;
       count(t.tokens, recordTokens(r));
-      count(t.nanoAiu, r.nanoAiu);
+      if (pricedSource(r)) count(t.nanoAiu, r.nanoAiu);
+      bumpSource(t.sources!, r.source);
     }
   }
   return [...tools.values()].sort(byCost);
 }
 
-/** Prompt tokens of a record: input, plus cached tokens when its model reports them apart (N4). */
+/** Prompt tokens of a record: input, plus cached tokens when its Copilot model reports them
+ * apart (N4). Every other source's input already includes cached tokens (D47). */
 export function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): number | undefined {
   const t = r.tokens;
   if (t.input === undefined) return undefined;
-  return r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
+  return r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
 }
 
 /**
@@ -475,7 +653,7 @@ export function sessionSummaries(
     let firstMs = Number.POSITIVE_INFINITY;
     for (const r of recs) {
       count(tokens, recordTokens(r));
-      count(nanoAiu, r.nanoAiu);
+      if (pricedSource(r)) count(nanoAiu, r.nanoAiu);
       count(input, promptOf(r, conventions));
       count(cacheRead, r.tokens.cacheRead);
       calls += callsOf(r);
@@ -494,7 +672,7 @@ export function sessionSummaries(
       }
     }
     // Growth compares calls; a session total is one figure, not a call.
-    const priced = recs.filter((r) => r.kind === "call" && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
+    const priced = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
     let growth: number | undefined;
     let excessNanoAiu: number | undefined;
     if (priced.length >= 2 * GROWTH_SPAN) {
@@ -510,6 +688,7 @@ export function sessionSummaries(
     out.push({
       sessionId,
       folderId: recs[0]!.folderId,
+      source: recs[0]!.source,
       firstMs,
       lastMs: recs.at(-1)!.timestampMs,
       calls,
@@ -557,7 +736,7 @@ export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: n
     const a = (acc[lo] ??= { input: emptyMetric(), output: emptyMetric(), nanoAiu: emptyMetric(), calls: 0, callsMissing: 0, sessionTotals: 0, ids: new Set() });
     count(a.input, r.tokens.input);
     count(a.output, r.tokens.output);
-    count(a.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(a.nanoAiu, r.nanoAiu);
     a.calls += callsOf(r);
     a.callsMissing += callsMissingOf(r);
     if (r.kind === "sessionTotal") a.sessionTotals += 1;

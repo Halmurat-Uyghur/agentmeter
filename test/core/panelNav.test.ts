@@ -277,6 +277,15 @@ describe("nav and page structure", () => {
     expect(PANEL_CSS).toContain("--vscode-contrastActiveBorder");
     expect(PANEL_CSS).not.toMatch(/url\(|@import|@font-face/);
   });
+
+  it("the nav's .lbl spans are not styled by the dashboard captions (their margin lifted the label above the icon)", () => {
+    // Every plain `.lbl` rule that is not nested under .sidenav would also hit <span class="lbl"> in the nav.
+    const bare = PANEL_CSS.split("\n").filter((l) => /(^|[\s,])\.lbl\b/.test(l) && !/\.sidenav/.test(l) && !/p\.lbl/.test(l));
+    expect(bare).toEqual([]);
+    expect(PANEL_CSS).toMatch(/^p\.lbl \{ margin: 0 0 6px;/m);
+    // the captions still use <p class="lbl">
+    expect(render(snap())).toContain('<p class="lbl"');
+  });
 });
 
 describe("overview content (D32)", () => {

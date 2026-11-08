@@ -24,6 +24,7 @@ function call(o: Partial<UsageRecord> = {}): UsageRecord {
     key: `k${n}`,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: S1,
     folderId: S1,
     timestampMs: NOW.getTime() - 3_600_000 + n * 1000,

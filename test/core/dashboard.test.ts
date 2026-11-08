@@ -435,15 +435,23 @@ describe("v0.4 review fixes (panel a11y and design)", () => {
     expect(visible).not.toContain("writes one total when a session ends");
   });
 
-  it("design #4: one muted line and an 'About these figures' fold; the full text openly on Data health", () => {
+  it("design #4: one muted line and an 'About these figures' fold on every section; Data health also lays the full text out in its own content", () => {
+    // Everything above the month bar is shared chrome. It must be the same markup on every
+    // section, or the month bar, the section nav and the content sit at a different height
+    // on one section and jump when the reader clicks to the next (the Data health jump).
+    const chrome = (html: string) => html.slice(html.indexOf('<header class="top">'), html.indexOf('<div class="toolbar"'));
+    const first = chrome(renderPanelHtml(snap(), "x", { unit: "cost" }, SECTIONS[0]!));
+    expect(first).toContain('<header class="top">');
     for (const section of SECTIONS) {
       const html = renderPanelHtml(snap(), "x", { unit: "cost" }, section);
+      expect(chrome(html), section).toBe(first);
+      expect(html, section).toContain('<section class="about" aria-label="About these figures"><span class="muted">Local logs on this computer only · cost is an estimate · updates after each model call</span><details class="more"><summary>About these figures</summary>');
+      const main = html.slice(html.indexOf('<main id="main"'));
       if (section === "health") {
-        expect(html).toMatch(/<section class="note" aria-label="About these figures"><p>Locally observed/);
-        expect(html).not.toContain("<summary>About these figures</summary>");
+        expect(main).toMatch(/<p class="secdesc">[^<]*<\/p>\n<section class="note" aria-label="About these figures"><p>Locally observed/);
+        expect(main).toContain("Cost is an estimate");
       } else {
-        expect(html, section).toContain('<section class="about" aria-label="About these figures"><span class="muted">Local logs on this computer only · cost is an estimate · updates after each model call</span><details class="more"><summary>About these figures</summary>');
-        expect(html, section).not.toContain('<section class="note" aria-label');
+        expect(html, section).not.toContain('<section class="note" aria-label="About these figures"');
       }
     }
   });

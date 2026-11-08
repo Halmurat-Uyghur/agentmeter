@@ -20,8 +20,8 @@ export function commandHref(command: PanelCommand, ...args: string[]): string {
   return `command:${command}?${encodeURIComponent(JSON.stringify(args))}`;
 }
 
-/** A link that sets (or, with "", clears) one filter. */
-export function filterHref(kind: "project" | "tool", value: string): string {
+/** A link that sets (or, with "", clears) one filter; a source value is a member of SOURCES (D40). */
+export function filterHref(kind: "project" | "tool" | "source", value: string): string {
   return commandHref("copilotUsageMonitor.setFilter", kind, value);
 }
 

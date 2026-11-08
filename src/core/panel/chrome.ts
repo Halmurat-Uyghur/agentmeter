@@ -1,12 +1,13 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter / colours toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { costLabel, costNotes, estWord, LOCAL_BANNER, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, estWord, formatChangedSentence, homeSettings, LOADING_NOTE, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
-import type { Health, Snapshot, ViewOptions } from "../types";
+import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
 import { commandHref, filterHref, navToggleHref, paletteHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
+import { sourceOrigins } from "./sources";
 import { clock, escapeHtml, monthKey, monthTitle, plural, projectLabel, viewedStart } from "./shared";
 
 /** `extraCss` is the chosen palette's variable overrides (src/core/palettes.ts), "" for the theme's colours. */
@@ -32,45 +33,56 @@ function rootLabel(h: Health): string {
   return h.rootSource === "setting" ? "Folder: setting" : h.rootSource === "env" ? "Folder: COPILOT_HOME" : "Folder: default";
 }
 
-/** The figures' provenance: one muted line plus a native fold with the full text on every
- * section (design #4); Data health shows the full text openly. */
-function aboutNote(view: ViewOptions, full: boolean): string {
-  const costNote = view.unit === "cost" ? costNotes(view).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
-  const text = `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
-  if (full) return `<section class="note" aria-label="About these figures">${text}</section>`;
-  const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
-  return `<section class="about" aria-label="About these figures"><span class="muted">${escapeHtml(line)}</span><details class="more"><summary>About these figures</summary><div class="aboutbody">${text}</div></details></section>`;
+/** The full provenance text (design #4): the local-only banner, the streaming note and,
+ * in cost view, the estimate notes (with the Copilot-only note when sources mix). Inside the
+ * fold on every section; Data health lays it out openly in its own content (renderHealth). */
+export function aboutText(view: ViewOptions, mixed = false): string {
+  const costNote = view.unit === "cost" ? costNotes(view, mixed).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
+  return `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
 }
 
-export function topBar(s: Snapshot | undefined, view: ViewOptions, fullNote = false): string {
+/** One muted line plus a native fold with the full text. The same markup on every section:
+ * the chrome above the month bar must not change height with the section, or the month
+ * bar, the section nav and the content move when the reader clicks to another section. */
+function aboutNote(view: ViewOptions, mixed = false): string {
+  const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
+  return `<section class="about" aria-label="About these figures"><span class="muted">${escapeHtml(line)}</span><details class="more"><summary>About these figures</summary><div class="aboutbody">${aboutText(view, mixed)}</div></details></section>`;
+}
+
+export function topBar(s: Snapshot | undefined, view: ViewOptions): string {
   const chips: string[] = [];
   if (s) {
     if (s.current) {
       const c = s.current;
-      const state = c.live ? "live" : "ended";
+      const state = c.live ? "live" : notLiveWord(c.source);
       chips.push(`<span class="chip${c.live ? " live" : ""}"><i></i>Current session ${state}${c.pinned ? " (pinned)" : ""}</span>`);
     }
     if (s.health.partial)
       chips.push(`<span class="chip warn" title="Some logs or lines could not be read; figures marked * may be incomplete."><i></i>Partial data</span>`);
     if (s.health.state === "format-changed") chips.push(`<span class="chip warn"><i></i>Format changed</span>`);
-    chips.push(`<span class="chip">${escapeHtml(rootLabel(s.health))}</span>`);
+    const origins = sourceOrigins(s);
+    chips.push(`<span class="chip">${escapeHtml(origins ? `Folders: ${origins}` : rootLabel(s.health))}</span>`);
   }
-  const when = s ? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight` : "Reading Copilot session logs…";
+  const reading = s ? readingLine(s.health) : undefined;
+  const when = !s ? LOADING_NOTE : reading ?? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`;
   return `<header class="top">
   <div><h1 class="wordmark">${logo()}<span class="wm">Copilot Usage</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
 </header>
-${aboutNote(view, fullNote)}`;
+${aboutNote(view, mixedSources(s?.month?.totals?.sources))}`;
 }
 
 /** Not role="alert": the page re-renders after every model call and would re-announce (O3). */
 export function stateNote(h: Health): string {
   const box = (text: string) => `<section class="note alert" aria-labelledby="problem-title"><h2 id="problem-title" class="sr">Problem reading logs</h2><p>${text}</p></section>`;
+  const settings = (all: boolean) => homeSettings(h, all).split(/(copilotUsageMonitor\.\w+)/).map((x, i) => (i % 2 ? `<b>${escapeHtml(x)}</b>` : escapeHtml(x))).join("");
+  if (h.state === "no-dir" && multiSource(h))
+    return box(`No usage logs were found. Set ${settings(false)} if a tool keeps its logs somewhere other than its default folder.`);
   if (h.state === "no-dir")
     return box(`No Copilot session logs were found. Set <b>copilotUsageMonitor.copilotHome</b> if Copilot keeps them somewhere other than COPILOT_HOME or the default folder in your home directory.`);
-  if (h.state === "permission") return box(`The Copilot session log folder could not be read on this computer.`);
+  if (h.state === "permission") return box(`${escapeHtml(PERMISSION_NOTE)} Check the folder's permissions, or set ${settings(true)}.`);
   if (h.state === "format-changed")
-    return box(escapeHtml(`${h.unrecognized > 0 ? `${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ` : ""}Copilot may have changed its log format, so figures may be incomplete.`));
+    return box(escapeHtml(`${h.unrecognized > 0 ? `${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ` : ""}${formatChangedSentence(h)}, so figures may be incomplete.`));
   return "";
 }
 
@@ -97,10 +109,10 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
       ? `<span class="seg on">${label}<span class="sr"> (selected)</span></span>`
       : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? estWord() : "tokens"}`);
   const f = s.filter;
-  const chip = (kind: "project" | "tool", label: string, value: string) =>
+  const chip = (kind: "project" | "tool" | "source", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`Clear ${kind} filter: ${value}`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
   const filters = f
-    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
+    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
     : "";
   const colours = link("btn", "Colours…", paletteHref(), "Choose a colour palette for the panel");
   return `<div class="toolbar" role="group" aria-label="Month, unit, filter and colours">${filters}<div class="nav">

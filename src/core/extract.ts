@@ -5,6 +5,7 @@
 // parseShutdownLine runs only on bounded "shutdown" lines and keeps per-model
 // totals; content-bearing keys are dropped while parsing (D29).
 // Nothing else leaves this module.
+import { folderLabel } from "./label";
 import type { FinishReason, Initiator, ParseResult, ShutdownParseResult, Tokens, TypeCost, UsageRecord } from "./types";
 
 export type LineClass = "usage" | "start" | "shutdown" | "activity" | "suspect" | "skip";
@@ -193,12 +194,8 @@ function baseName(p: string): string | undefined {
   return parts.at(-1);
 }
 
-/**
- * The project label of a session.start line: `context.repository` ("owner/repo")
- * if well-formed, else the last folder name of `context.gitRoot` or `context.cwd`.
- * Only that label is returned; the full path and every other field are dropped.
- */
-export function parseStartLine(line: string): string | undefined {
+/** The `data.context` object of a session.start line, or undefined. */
+function startContext(line: string): Obj | undefined {
   let event: unknown;
   try {
     event = JSON.parse(line);
@@ -207,7 +204,41 @@ export function parseStartLine(line: string): string | undefined {
   }
   if (!isObject(event) || event.type !== START_TYPE) return undefined;
   const data = event.data;
-  const ctx = isObject(data) && isObject(data.context) ? data.context : undefined;
+  return isObject(data) && isObject(data.context) ? data.context : undefined;
+}
+
+/** The project of a session.start line (D44): a grouping key and an optional display label. */
+export interface StartLabel {
+  /** the folder name */
+  key: string;
+  /** `owner/repo`, only when it differs from the key */
+  label?: string;
+}
+
+/**
+ * The project of a session.start line (D44): the key is the folder name of
+ * `context.gitRoot`, else of `context.cwd`, else the repo part of a well-formed
+ * `context.repository`; that `owner/repo` is the display label when it differs
+ * from the key. Paths and every other field are dropped.
+ */
+export function parseStartLabel(line: string): StartLabel | undefined {
+  const ctx = startContext(line);
+  if (!ctx) return undefined;
+  const repo = typeof ctx.repository === "string" && REPO.test(ctx.repository) ? ctx.repository : undefined;
+  const fromPath = (v: unknown): string | undefined => (typeof v === "string" ? folderLabel(v) : undefined);
+  const repoName = repo?.slice(repo.indexOf("/") + 1);
+  const key = fromPath(ctx.gitRoot) ?? fromPath(ctx.cwd) ?? (repoName !== undefined && FOLDER_NAME.test(repoName) && repoName !== "." && repoName !== ".." ? repoName : undefined);
+  if (key === undefined) return undefined;
+  return repo !== undefined && repo !== key ? { key, label: repo } : { key };
+}
+
+/**
+ * The project label of a session.start line: `context.repository` ("owner/repo")
+ * if well-formed, else the last folder name of `context.gitRoot` or `context.cwd`.
+ * Only that label is returned; the full path and every other field are dropped.
+ */
+export function parseStartLine(line: string): string | undefined {
+  const ctx = startContext(line);
   if (!ctx) return undefined;
   if (typeof ctx.repository === "string" && REPO.test(ctx.repository)) return ctx.repository;
   for (const key of ["gitRoot", "cwd"]) {
@@ -337,6 +368,7 @@ export function parseShutdownLine(line: string, folderId: string): ShutdownParse
       key: `shutdown:${folderId}:${model ?? `#${i}`}`,
       keySource: "shutdown",
       kind: "sessionTotal",
+      source: "copilot",
       sessionId: folderId,
       folderId,
       timestampMs,
@@ -469,6 +501,7 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     key,
     keySource: usageId !== undefined ? "usageId" : "eventId",
     kind: "call",
+    source: "copilot",
     // An id not shaped like a session folder name is not trusted: the folder stands in.
     sessionId: safeKey(accounting.sourceSessionId, SESSION_ID) ? accounting.sourceSessionId : folderId,
     folderId,

@@ -1,6 +1,6 @@
 // Insights (D32; O2 rules I1, I2 and I3). Neutral copy: what was seen and what it
 // cost, never a "saving". Session totals are excluded and the footer says so.
-import { money } from "../format";
+import { INSIGHTS_SOURCES_NOTE, mixedSources, money } from "../format";
 import type { Insight, Snapshot, ViewOptions } from "../types";
 import { escapeHtml, plural, shortId, viewedName } from "./shared";
 
@@ -53,7 +53,7 @@ export function renderInsights(s: Snapshot, view: ViewOptions): string {
   const coverage = cov
     ? `Based on ${plural(cov.callSessions, "session")} with per-call records${cov.totalsOnlySessions > 0 ? `; ${plural(cov.totalsOnlySessions, "older session")} counted from session totals ${cov.totalsOnlySessions === 1 ? "is" : "are"} not included, because ${cov.totalsOnlySessions === 1 ? "it has" : "they have"} no per-call figures` : ""}.`
     : "";
-  const foot = `<div class="fine">${coverage ? `<p>${escapeHtml(coverage)}</p>` : ""}<p>Thresholds are rules of thumb, not GitHub guidance. Figures are estimates from logged AI credits.</p></div>`;
+  const foot = `<div class="fine">${coverage ? `<p>${escapeHtml(coverage)}</p>` : ""}<p>Thresholds are rules of thumb, not GitHub guidance. Figures are estimates from logged AI credits.</p>${mixedSources(s.month?.totals?.sources) ? `<p>${escapeHtml(INSIGHTS_SOURCES_NOTE)}</p>` : ""}</div>`;
   if (items.length === 0) {
     return `<section class="box"><p>${escapeHtml(`Nothing to point out in ${month}${s.filter ? " for this filter" : ""}.`)}</p><p class="muted">Insights check long prompts, session growth and cache reuse using only the numbers on this computer.</p>${foot}</section>`;
   }

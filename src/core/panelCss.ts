@@ -169,6 +169,12 @@ tr.on th { box-shadow: inset 3px 0 0 var(--hot); }
 .tag { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10.5px; border: 1px solid var(--line); color: var(--muted); }
 .tag.add { border-color: var(--c-other); color: var(--c-other); }
 .tag.on { border-color: var(--hot); color: var(--fg); }
+.src-copilot { --src: var(--accent); } .src-claude-code { --src: var(--c-claude); } .src-codex { --src: var(--c-gpt); }
+.srcchips { white-space: nowrap; }
+.srcchip { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 4px; font-size: 10.5px; border: 1px solid var(--src); color: var(--src); vertical-align: middle; }
+.srcdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--src); vertical-align: middle; }
+h4.srch { margin: 12px 0 6px; font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+h4.srch .srcchip { margin-left: 0; }
 details.more { margin-top: 6px; }
 details.more > summary { cursor: pointer; color: var(--accent); font-size: 12px; padding: 4px 0; list-style: none; }
 details.more > summary::-webkit-details-marker { display: none; }
@@ -221,8 +227,9 @@ details.more[open] > summary::before { content: "▾ "; }
 .card .sub { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
 .small { font-size: 11px; }
 .hot { color: var(--hot-text); }
-.lbl { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
-.lbl b { margin-left: 4px; font-weight: 600; }
+/* p.lbl, not .lbl: the side nav's label spans share the class name and must not pick up this margin, colour and size */
+p.lbl { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+p.lbl b { margin-left: 4px; font-weight: 600; }
 .hero-grid { display: grid; grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.2fr) auto; gap: 14px 22px; align-items: start; }
 .hero-main { padding-right: 18px; border-right: 1px solid var(--line); min-width: 0; }
 .hero .big { font-size: 40px; line-height: 1.1; letter-spacing: -.02em; }

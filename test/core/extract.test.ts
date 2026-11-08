@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { classifyLine, parseUsageLine } from "../../src/core/extract";
+import { classifyLine, parseStartLabel, parseStartLine, parseUsageLine } from "../../src/core/extract";
 import type { ParseResult, UsageRecord } from "../../src/core/types";
 import {
   CANARY,
@@ -42,6 +42,7 @@ describe("parseUsageLine", () => {
       key: "u-1",
       keySource: "usageId",
       kind: "call",
+      source: "copilot",
       sessionId: SRC,
       folderId: "f",
       timestampMs: Date.parse(TS),
@@ -424,7 +425,7 @@ describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost"
   it("only allowlisted keys reach the record", () => {
     const r = record(parseUsageLine(line({ initiator: "agent", finishReason: "stop", toolTokenCount: 1, availableToolCount: 2, tokenDetails: DETAILS }), "f"));
     expect(Object.keys(r).sort()).toEqual(
-      ["availableTools", "durationMs", "finishReason", "folderId", "initiator", "key", "keySource", "kind", "model", "nanoAiu", "sequence", "sessionId", "timestampMs", "tokens", "toolTokens", "typeCost"].sort(),
+      ["availableTools", "durationMs", "finishReason", "folderId", "initiator", "key", "keySource", "kind", "model", "nanoAiu", "sequence", "sessionId", "source", "timestampMs", "tokens", "toolTokens", "typeCost"].sort(),
     );
   });
 });
@@ -511,5 +512,50 @@ describe("tokenDetails tokenType must be a string (review A6)", () => {
     const r = record(parseUsageLine(line({ tokenDetails: d }), "f"));
     expect("typeCost" in r).toBe(false);
     expect(r.nanoAiu).toBe(2_000_000_000);
+  });
+});
+
+describe("parseStartLabel: folder-name key, owner/repo label (D44)", () => {
+  const start = (context: object) =>
+    JSON.stringify({ type: "session.start", id: "s", parentId: null, timestamp: "2026-01-15T10:00:00.000Z", data: { context, prompt: CANARY } });
+
+  it("gitRoot inside a worktree keys by the repository folder; owner/repo is the label", () => {
+    expect(parseStartLabel(start({ gitRoot: "/x/repo/.claude/worktrees/f", cwd: "/x/other", repository: "o/repo" }))).toStrictEqual({ key: "repo", label: "o/repo" });
+  });
+  it("cwd only: the key alone", () => {
+    expect(parseStartLabel(start({ cwd: "/x/proj" }))).toStrictEqual({ key: "proj" });
+  });
+  it("repository only: the repo part is the key, owner/repo the label", () => {
+    expect(parseStartLabel(start({ repository: "o/repo" }))).toStrictEqual({ key: "repo", label: "o/repo" });
+  });
+  it("gitRoot wins over cwd; a Windows path works", () => {
+    expect(parseStartLabel(start({ gitRoot: "C:\\src\\alpha", cwd: "/x/beta" }))).toStrictEqual({ key: "alpha" });
+  });
+  it("a bad gitRoot falls back to cwd", () => {
+    expect(parseStartLabel(start({ gitRoot: "/", cwd: "/x/beta" }))).toStrictEqual({ key: "beta" });
+  });
+  it("a malformed repository is neither key nor label", () => {
+    expect(parseStartLabel(start({ cwd: "/x/beta", repository: "not a repo" }))).toStrictEqual({ key: "beta" });
+    expect(parseStartLabel(start({ repository: CANARY }))).toBeUndefined();
+  });
+  it("no label when owner/repo equals the key (never: key has no slash) and nothing usable is undefined", () => {
+    expect(parseStartLabel(start({}))).toBeUndefined();
+    expect(parseStartLabel("not json")).toBeUndefined();
+    expect(parseStartLabel(JSON.stringify({ type: "other", data: { context: { cwd: "/x/a" } } }))).toBeUndefined();
+  });
+  it("repository o/.. with no gitRoot or cwd is undefined (the repo part is not a folder name)", () => {
+    expect(parseStartLabel(start({ repository: "o/.." }))).toBeUndefined();
+    expect(parseStartLabel(start({ repository: "o/." }))).toBeUndefined();
+  });
+  it("a gitRoot whose last segment fails the folder-name rule falls back to cwd", () => {
+    expect(parseStartLabel(start({ gitRoot: `/x/${"a".repeat(90)}`, cwd: "/x/beta" }))).toStrictEqual({ key: "beta" });
+  });
+  it("the canary never reaches key or label", () => {
+    const r = parseStartLabel(start({ gitRoot: `/x/${CANARY}/../repo`, cwd: CANARY, repository: "o/repo", branch: CANARY }));
+    expect(JSON.stringify(r)).not.toContain(CANARY);
+  });
+  it("parseStartLine keeps its v0.7 semantics (repository first)", () => {
+    expect(parseStartLine(start({ gitRoot: "/x/repo", repository: "o/repo" }))).toBe("o/repo");
+    expect(parseStartLine(start({ cwd: "/x/proj" }))).toBe("proj");
   });
 });

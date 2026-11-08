@@ -11,10 +11,18 @@ import {
   costNotes,
   currencyCode,
   DEFAULT_VIEW,
+  formatChangedSentence,
   formatCount,
   formatRange,
+  enabledSourceNames,
   formatUsd,
+  foundSources,
+  homeSettings,
+  PERMISSION_NOTE,
+  mixedSources,
+  multiSource,
   PRIOR_SHORT_NOTE,
+  readingLine,
   RANGE_LABEL,
   SESSION_TOTAL_SHORT,
   spoken,
@@ -26,7 +34,7 @@ import {
 } from "./format";
 import { CALLS_MISSING_NOTE, callsCell, callsPhrase, DASH, headlineValue, MONTHS, partialReasons, plural, tokens, withStar } from "./panel/shared";
 import type { SectionId } from "./panel/sections";
-import type { Counts, GroupSummary, Health, Metric, RangeState, Snapshot, ViewOptions } from "./types";
+import { type Counts, type GroupSummary, type Health, type Metric, type RangeState, type Snapshot, SOURCE_LABEL, type ViewOptions } from "./types";
 
 export type SidebarState = "loading" | "no-dir" | "permission" | "ready";
 
@@ -45,12 +53,12 @@ export type SidebarCommand = (typeof SIDEBAR_COMMANDS)[number];
 
 export interface SidebarLink {
   command: SidebarCommand;
-  /** a section id, or ("project", key or "", "projects"); none for showDetails, toggleUnit and selectCurrency */
+  /** a section id, or ("project", key or "", "projects") / ("source", id or "", "overview"); none for showDetails, toggleUnit and selectCurrency */
   args: string[];
 }
 
 /** First sentence of LOCAL_BANNER: every title tooltip opens with it. */
-export const SIDEBAR_BANNER = "Locally observed from Copilot session logs on this computer.";
+export const SIDEBAR_BANNER = "Locally observed from Copilot, Claude Code and Codex session logs on this computer.";
 
 export type MarkerKind = Exclude<RangeState, "none"> | "filtered";
 
@@ -71,7 +79,7 @@ export interface SidebarRow {
 }
 
 export interface SidebarGroup {
-  id: "workspace" | "all" | "projects" | "models";
+  id: "workspace" | "all" | "sources" | "projects" | "models";
   /** plain text; the workspace heading carries the folder name */
   heading: string;
   title: string;
@@ -86,7 +94,7 @@ export interface SidebarModel {
   unitWord: string;
   /** paragraphs shown instead of the groups when state is not "ready" */
   notice: string[];
-  /** set only when there is something to say (an active panel filter) */
+  /** set only when there is something to say (an active panel filter, the first read in progress) */
   message?: string;
   /** [] unless state is "ready" */
   groups: SidebarGroup[];
@@ -112,16 +120,19 @@ export function sidebarRows(m: SidebarModel): SidebarRow[] {
 }
 
 const NOTICES: Record<Exclude<SidebarState, "ready">, string[]> = {
-  loading: ["Reading Copilot session logs on this computer…"],
+  loading: ["Reading session logs on this computer…"],
   "no-dir": [
     "No Copilot session logs were found on this computer.",
     "Only Copilot clients that write session-state/*/events.jsonl are counted (the Copilot CLI and coding agent). If Copilot keeps its folder elsewhere, set copilotUsageMonitor.copilotHome in Settings, then use Refresh in this view's title bar.",
   ],
-  permission: [
-    "The Copilot session log folder could not be read on this computer.",
-    "Check the folder's permissions, or set copilotUsageMonitor.copilotHome in Settings, then use Refresh in this view's title bar.",
-  ],
+  // Replaced by permissionNotice(health) whenever a snapshot is at hand.
+  permission: [PERMISSION_NOTE, "Check the folder's permissions, then use Refresh in this view's title bar."],
 };
+
+/** The permission notice (D49): names the enabled sources' folder settings (all three without per-source health). */
+function permissionNotice(h: Health): string[] {
+  return [PERMISSION_NOTE, `Check the folder's permissions, or set ${homeSettings(h, true)} in Settings, then use Refresh in this view's title bar.`];
+}
 
 function section(id: SectionId): SidebarLink {
   return { command: "copilotUsageMonitor.showSection", args: [id] };
@@ -154,7 +165,7 @@ function detailLines(c: Counts | undefined, view: ViewOptions, h: Health): strin
     out.push("Nothing logged.");
   }
   if (h.partial) out.push(partialReasons(h));
-  if (view.unit === "cost") out.push(...costNotes(view));
+  if (view.unit === "cost") out.push(...costNotes(view, mixedSources(c?.sources)));
   return out;
 }
 
@@ -170,8 +181,16 @@ function groupLines(g: GroupSummary | undefined, view: ViewOptions, h: Health): 
     out.push("Nothing logged.");
   }
   if (h.partial) out.push(partialReasons(h));
-  if (view.unit === "cost") out.push(...costNotes(view));
+  if (view.unit === "cost") out.push(...costNotes(view, mixedSources(g?.sources)));
   return out;
+}
+
+/** The no-dir notice when other sources are enabled: it names every enabled source's setting (D49). */
+function noDirNotice(h: Health): string[] {
+  return [
+    "No usage logs were found on this computer.",
+    `${enabledSourceNames(h)} logs are read when present. If a tool keeps its folder elsewhere, set ${homeSettings(h)} in Settings, then use Refresh in this view's title bar.`,
+  ];
 }
 
 function row(o: Omit<SidebarRow, "spoken" | "title"> & { title: string[]; said?: string }, cost: boolean): SidebarRow {
@@ -230,7 +249,7 @@ function healthNote(h: Health): SidebarModel["health"] {
   else return undefined;
   const title: string[] = [SIDEBAR_BANNER];
   if (h.state === "format-changed")
-    title.push(`${plural(h.unrecognized, "line")} in a format this version doesn't recognize. Copilot may have changed its log format, so figures may be incomplete.`);
+    title.push(`${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ${formatChangedSentence(h)}, so figures may be incomplete.`);
   if (h.partial) title.push(partialReasons(h));
   title.push("Opens Data health.");
   return { text, title: title.join("\n"), link: section("health") };
@@ -251,7 +270,11 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   };
   const footNote = view.unit === "cost" ? `Local logs only · ${currencyCode()} figures are est.` : "Local logs only";
   const state: SidebarState = !s ? "loading" : s.health.state === "no-dir" ? "no-dir" : s.health.state === "permission" ? "permission" : "ready";
-  if (!s || state !== "ready") return finish({ state, unitWord, notice: NOTICES[state as Exclude<SidebarState, "ready">], groups: [], unitSwitch, currencySwitch, footNote });
+  if (!s || state !== "ready") {
+    const notice =
+      s && state === "no-dir" && multiSource(s.health) ? noDirNotice(s.health) : s && state === "permission" ? permissionNotice(s.health) : NOTICES[state as Exclude<SidebarState, "ready">];
+    return finish({ state, unitWord, notice, groups: [], unitSwitch, currencySwitch, footNote });
+  }
 
   const h = s.health;
   const partial = h.partial;
@@ -309,7 +332,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
     status.state === "none"
       ? []
       : view.unit === "cost"
-        ? [`Target ${formatRange(view.range)}: ${RANGE_LABEL[status.state]}.`]
+        ? [`Target ${formatRange(view.range)}${mixedSources(month?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[status.state]}.`]
         : [`Estimated ${currencyCode()} this month is ${RANGE_LABEL[status.state]}.`];
   groups.push({
     id: "all",
@@ -340,6 +363,35 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
       }),
     ],
   });
+  // By source, last 7 days (D49): one row per enabled source whose folder exists, shown only
+  // when a source other than Copilot is enabled and found. Each row filters the panel.
+  const found = foundSources(h);
+  if (found.some((x) => x !== "copilot")) {
+    const activeSource = s.filter?.source;
+    groups.push({
+      id: "sources",
+      heading: "By source, last 7 days",
+      title: [SIDEBAR_BANNER, "Each tool whose logs were found, today and the 6 days before it, never filtered. Click one to filter the panel to it."].join("\n"),
+      rows: found.map((x, i) => {
+        const c = last7?.bySource?.[x];
+        const on = x === activeSource;
+        return r({
+          id: `sources/${i}`,
+          label: SOURCE_LABEL[x],
+          value: countsFigure(c, view, partial || short),
+          ...(on && { marker: { kind: "filtered" as const, text: "filtered" } }),
+          title: [
+            `Source: ${SOURCE_LABEL[x]}.`,
+            ...(short ? [WEEK_SHORT_NOTE] : []),
+            ...detailLines(c, view, h),
+            on ? "The panel is filtered to this source. Click to clear the filter." : "Click to filter the panel to this source and open Overview.",
+          ],
+          link: { command: "copilotUsageMonitor.setFilter", args: ["source", on ? "" : x, "overview"] },
+        });
+      }),
+    });
+  }
+
   // Top projects of the last 7 days, never filtered; the active filter's project stays listed.
   const all = byHeadline(last7Projects, (g) => groupValue(g, view), (g) => g.name);
   const top = all.slice(0, TOP_N);
@@ -385,7 +437,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   // Insights of the month the panel shows, under the panel's filter (the monitor computes
   // them for the panel's Insights section); unlike the rows above, so the copy says so.
   const n = s.month?.insights?.items.length ?? 0;
-  const filtered = s.filter?.project !== undefined || s.filter?.tool !== undefined ? " for the panel's filter" : "";
+  const filtered = s.filter?.project !== undefined || s.filter?.tool !== undefined || s.filter?.source !== undefined ? " for the panel's filter" : "";
   const insights =
     n > 0
       ? {
@@ -396,7 +448,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         }
       : undefined;
   const health = healthNote(h);
-  const message = s.filter ? "The panel is filtered; these figures are not." : undefined;
+  const message = [readingLine(h), s.filter ? "The panel is filtered; these figures are not." : undefined].filter(Boolean).join(" ") || undefined;
   const coverage = { text: CHAT_NOT_COVERED_SHORT, title: [SIDEBAR_BANNER, CHAT_NOT_COVERED, "Opens Data health."].join("\n"), link: section("health") };
   return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, currencySwitch, footNote });
 }

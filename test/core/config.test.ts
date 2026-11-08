@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { resolveCopilotRoot } from "../../src/core/config";
+import { resolveCopilotRoot, resolveRoot } from "../../src/core/config";
 
 describe("resolveCopilotRoot", () => {
   it("defaults to <homedir>/.copilot", () => {
@@ -81,5 +81,41 @@ describe("resolveCopilotRoot", () => {
       vi.doUnmock("node:path");
       vi.resetModules();
     }
+  });
+});
+
+describe("resolveRoot", () => {
+  it("copilot kind matches resolveCopilotRoot", () => {
+    const o = { setting: "~/alt", env: { COPILOT_HOME: "/x" }, homedir: "/h" };
+    expect(resolveRoot("copilot", o)).toEqual(resolveCopilotRoot(o));
+    expect(resolveRoot("copilot", { env: {}, homedir: "/h" })).toEqual({ root: "/h/.copilot", source: "default" });
+  });
+
+  it.each([
+    ["claude", "CLAUDE_CONFIG_DIR", ".claude"],
+    ["codex", "CODEX_HOME", ".codex"],
+  ] as const)("%s: setting, then %s, then ~/%s", (kind, envVar, dir) => {
+    expect(resolveRoot(kind, { env: {}, homedir: "/h" })).toEqual({ root: `/h/${dir}`, source: "default" });
+    expect(resolveRoot(kind, { env: { [envVar]: "/x/e" }, homedir: "/h" })).toEqual({ root: "/x/e", source: "env" });
+    expect(resolveRoot(kind, { setting: "~/alt", env: { [envVar]: "/x/e" }, homedir: "/h" })).toEqual({
+      root: "/h/alt",
+      source: "setting",
+    });
+    expect(resolveRoot(kind, { setting: "~", env: {}, homedir: "/h" })).toEqual({ root: "/h", source: "setting" });
+    expect(resolveRoot(kind, { setting: "  ", env: { [envVar]: " " }, homedir: "/h" })).toEqual({
+      root: `/h/${dir}`,
+      source: "default",
+    });
+    expect(resolveRoot(kind, { env: { [envVar]: "rel" }, homedir: "/h" })).toEqual({ root: "/h/rel", source: "env" });
+    expect(resolveRoot(kind, { setting: "rel", env: {}, homedir: "/h" })).toEqual({ root: "/h/rel", source: "setting" });
+    expect(resolveRoot(kind, { setting: 42, env: { [envVar]: "/x/e" }, homedir: "/h" })).toEqual({ root: "/x/e", source: "env" });
+  });
+
+  it("each kind reads only its own environment variable", () => {
+    const env = { COPILOT_HOME: "/cp", CLAUDE_CONFIG_DIR: "/cl", CODEX_HOME: "/cx" };
+    expect(resolveRoot("copilot", { env, homedir: "/h" }).root).toBe("/cp");
+    expect(resolveRoot("claude", { env, homedir: "/h" }).root).toBe("/cl");
+    expect(resolveRoot("codex", { env, homedir: "/h" }).root).toBe("/cx");
+    expect(resolveRoot("claude", { env: { COPILOT_HOME: "/cp", CODEX_HOME: "/cx" }, homedir: "/h" }).root).toBe("/h/.claude");
   });
 });

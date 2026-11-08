@@ -7,7 +7,24 @@ import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Snapshot, ViewOptions } from "../../src/core/types";
+import type { MonitorOptions } from "../../src/core/monitor";
+import { SOURCE_LABEL, type Snapshot, type ViewOptions } from "../../src/core/types";
+import { codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex";
+
+/** Every UsageMonitor the extension constructs, with its options (survives vi.resetModules). */
+const built = vi.hoisted(() => [] as { sources?: MonitorOptions["sources"] }[]);
+/** When set, every monitor reads this instant as now (a test then never depends on the wall clock). */
+const fixedNow = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock("../../src/core/monitor", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../../src/core/monitor")>();
+  class Spy extends mod.UsageMonitor {
+    constructor(o: MonitorOptions) {
+      super(fixedNow.ms === undefined ? o : { ...o, now: () => new Date(fixedNow.ms!) });
+      built.push({ ...(o.sources && { sources: o.sources }) });
+    }
+  }
+  return { ...mod, UsageMonitor: Spy };
+});
 
 type Fake = typeof import("../fakes/vscode");
 const SECTION = "copilotUsageMonitor";
@@ -21,7 +38,8 @@ let resolvers: ((v: Response) => void)[];
 async function load(settings: Record<string, unknown> = {}) {
   vi.resetModules();
   const fake: Fake = await import("../fakes/vscode");
-  Object.assign(fake.state.global, { [`${SECTION}.copilotHome`]: home }, ...Object.entries(settings).map(([k, v]) => ({ [`${SECTION}.${k}`]: v })));
+  // Claude Code and Codex roots under the temp home, so no test reads the real ~/.claude or ~/.codex.
+  Object.assign(fake.state.global, { [`${SECTION}.copilotHome`]: home, [`${SECTION}.claudeHome`]: join(home, "claude"), [`${SECTION}.codexHome`]: join(home, "codex") }, ...Object.entries(settings).map(([k, v]) => ({ [`${SECTION}.${k}`]: v })));
   const ext = await import("../../src/extension");
   const ctx = { subscriptions: [] as { dispose(): unknown }[], extensionMode: fake.ExtensionMode.Test };
   ext.activate(ctx as never);
@@ -47,6 +65,8 @@ beforeEach(() => {
   mkdirSync(join(home, "session-state"));
   fetchCalls = [];
   resolvers = [];
+  built.length = 0;
+  fixedNow.ms = undefined;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   vi.stubGlobal("fetch", (url: string) => {
     fetchCalls.push(url);
@@ -195,6 +215,181 @@ describe("extension lifecycle: viewed month across restarts (F4)", () => {
     }
     await vi.waitFor(() => expect(testState().snapshot?.history).toHaveLength(12));
     expect(testState().snapshot?.month?.monthStartMs).toBe(current);
+    deactivate();
+  });
+});
+
+describe("extension lifecycle: Claude Code and Codex sources (D48, D49)", () => {
+  it("both sources are passed by default, each with its resolved root", async () => {
+    const { deactivate } = await load();
+    expect(built).toHaveLength(1);
+    expect(built[0]!.sources).toEqual({
+      claude: { root: join(home, "claude"), rootSource: "setting" },
+      codex: { root: join(home, "codex"), rootSource: "setting" },
+    });
+    deactivate();
+  });
+
+  it("claudeCode: false constructs the monitor without sources.claude", async () => {
+    const { deactivate } = await load({ claudeCode: false });
+    expect(built).toHaveLength(1);
+    expect(built[0]!.sources?.claude).toBeUndefined();
+    expect(built[0]!.sources?.codex).toBeDefined();
+    deactivate();
+  });
+
+  it("a claudeCode change restarts the monitor exactly once", async () => {
+    const { fake, deactivate } = await load();
+    expect(built).toHaveLength(1);
+    fake.state.global[`${SECTION}.claudeCode`] = false;
+    fake.fireConfigChange(`${SECTION}.claudeCode`);
+    expect(built).toHaveLength(2);
+    expect(built[1]!.sources?.claude).toBeUndefined();
+    fake.fireConfigChange(`${SECTION}.claudeCode`); // no value change: no restart
+    expect(built).toHaveLength(2);
+    fake.state.global[`${SECTION}.claudeCode`] = true;
+    fake.fireConfigChange(`${SECTION}.claudeCode`);
+    expect(built).toHaveLength(3);
+    expect(built[2]!.sources?.claude).toBeDefined();
+    deactivate();
+  });
+
+  it("codex, claudeHome and codexHome changes restart once each; an unchanged value does not", async () => {
+    const { fake, deactivate } = await load();
+    fake.state.global[`${SECTION}.codex`] = false;
+    fake.fireConfigChange(`${SECTION}.codex`);
+    expect(built).toHaveLength(2);
+    expect(built[1]!.sources?.codex).toBeUndefined();
+    fake.state.global[`${SECTION}.claudeHome`] = join(home, "claude2");
+    fake.fireConfigChange(`${SECTION}.claudeHome`);
+    expect(built).toHaveLength(3);
+    expect(built[2]!.sources?.claude?.root).toBe(join(home, "claude2"));
+    fake.fireConfigChange(`${SECTION}.claudeHome`);
+    fake.fireConfigChange(`${SECTION}.codexHome`); // codex is off: its folder does not matter
+    expect(built).toHaveLength(3);
+    deactivate();
+  });
+
+  it("setFilter accepts a source, clears it with an empty value, and ignores an unknown one", async () => {
+    const { cmd, testState, deactivate } = await load();
+    await vi.waitFor(() => expect(testState().snapshot).toBeDefined());
+    await cmd("setFilter")("source", "codex");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("codex"));
+    await cmd("setFilter")("source", "nope");
+    await cmd("setFilter")("source", { evil: 1 });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(testState().snapshot?.filter?.source).toBe("codex");
+    await cmd("setFilter")("source", "");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBeUndefined());
+    deactivate();
+  });
+
+  it("a source filter survives a monitor restart", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    await cmd("setFilter")("source", "claude-code");
+    fake.state.global[`${SECTION}.codex`] = false;
+    fake.fireConfigChange(`${SECTION}.codex`);
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("claude-code"));
+    deactivate();
+  });
+});
+
+describe("extension lifecycle: source filter, batched config events, pinSession items", () => {
+  it("turning codex off drops a codex source filter on the one restart", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    await cmd("setFilter")("source", "codex");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("codex"));
+    expect(built).toHaveLength(1);
+    fake.state.global[`${SECTION}.codex`] = false;
+    fake.fireConfigChange(`${SECTION}.codex`);
+    expect(built).toHaveLength(2);
+    expect(built[1]!.sources?.codex).toBeUndefined();
+    await vi.waitFor(() => expect(testState().snapshot).toBeDefined());
+    expect(testState().snapshot?.filter?.source).toBeUndefined();
+    deactivate();
+  });
+
+  it("one config event changing two watched keys constructs exactly one new monitor", async () => {
+    const { fake, deactivate } = await load();
+    expect(built).toHaveLength(1);
+    // The fake's section form: one event for the whole section. Its affectsConfiguration
+    // reports only the section itself, so the value-compared settings drive this restart.
+    fake.state.global[`${SECTION}.historyMonths`] = 3;
+    fake.state.global[`${SECTION}.projectNames`] = false;
+    fake.fireConfigChange(SECTION);
+    expect(built).toHaveLength(2);
+    // An event naming two source keys at once (as VS Code sends for a multi-key settings.json edit).
+    fake.state.global[`${SECTION}.claudeCode`] = false;
+    fake.state.global[`${SECTION}.codex`] = false;
+    const keys = [`${SECTION}.claudeCode`, `${SECTION}.codex`];
+    const e = { affectsConfiguration: (x: string) => x === SECTION || keys.includes(x) };
+    for (const l of [...fake.state.configListeners]) l(e);
+    expect(built).toHaveLength(3);
+    expect(built[2]!.sources).toEqual({});
+    deactivate();
+  });
+
+  it("pinSession items carry the source label and say idle, not ended, for a non-Copilot session", async () => {
+    // A fixed mid-month instant fed to the monitor as now: no month or day boundary is near.
+    fixedNow.ms = new Date(2026, 9, 15, 12, 0, 0).getTime();
+    const ms = fixedNow.ms - 10 * 60 * 1000; // past the live window, so the session is idle
+    const d = new Date(ms);
+    const date = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    const id = "c0de0000-0000-4000-8000-000000000001";
+    const ts = new Date(ms).toISOString();
+    await codexTree(join(home, "codex"), [{ date, sessionId: id, lines: [codexMeta({ id, timestamp: ts }), codexTurn({ timestamp: ts }), codexRecord({ sessionId: id, timestamp: ts })], mtime: new Date(ms) }]);
+    const { fake, cmd, testState, deactivate } = await load();
+    await vi.waitFor(() => expect(testState().snapshot?.sessions.some((x) => x.source === "codex")).toBe(true));
+    expect(testState().snapshot?.generatedAtMs).toBe(fixedNow.ms);
+    let captured: { label: string; description?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; description?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("pinSession")();
+    const row = captured.find((x) => x.label === id.slice(0, 8));
+    expect(row).toBeDefined();
+    const parts = row!.description!.split(" · ");
+    expect(parts[0]).toBe(SOURCE_LABEL.codex);
+    expect(parts).toContain("idle");
+    expect(parts).not.toContain("ended");
+    expect(parts).not.toContain("live");
+    deactivate();
+  });
+});
+
+describe("extension lifecycle: enabled sources only (F3a)", () => {
+  it("the filter quick pick lists only enabled sources, and setFilter ignores a source that is off", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ codex: false });
+    await vi.waitFor(() => expect(testState().snapshot?.health.sources).toBeDefined());
+    expect(Object.keys(testState().snapshot!.health.sources!)).toEqual(["copilot", "claude-code"]);
+    let captured: { label: string; filterKind?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; filterKind?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("setFilter")();
+    expect(captured.filter((x) => x.filterKind === "source").map((x) => x.label)).toEqual([SOURCE_LABEL.copilot, SOURCE_LABEL["claude-code"]]);
+    await cmd("setFilter")("source", "codex");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(testState().snapshot?.filter?.source).toBeUndefined();
+    await cmd("setFilter")("source", "claude-code");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("claude-code"));
+    deactivate();
+  });
+
+  it("pinSession items have no source label when Copilot is the only source", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ claudeCode: false, codex: false });
+    await vi.waitFor(() => expect(testState().snapshot?.health.sources).toBeDefined());
+    // A session list as the monitor would report it; only its description is under test.
+    testState().snapshot!.sessions = [{ folderId: "aaaa0000-0000-4000-8000-000000000001", live: false, source: "copilot" }];
+    let captured: { label: string; description?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; description?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("pinSession")();
+    expect(captured.find((x) => x.label === "aaaa0000")?.description).toBe("ended · no per-call records");
     deactivate();
   });
 });

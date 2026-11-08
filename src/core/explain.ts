@@ -182,7 +182,7 @@ export function toolOverhead(calls: UsageRecord[], conventions: Conventions): To
     out.toolTokens += tt;
     out.input += input;
     const used = new Set<string>();
-    for (const name of Object.keys(r.tools ?? {})) used.add(BUILT_IN_TOOLS.has(name) ? "builtIn|" : `added|${toolGroup(name)}`);
+    for (const name of Object.keys(r.tools ?? {})) used.add(BUILT_IN_TOOLS[r.source].has(name) ? "builtIn|" : `added|${toolGroup(name)}`);
     if (used.size === 0) bump("none", "", tt, input);
     for (const u of used) {
       const bar = u.indexOf("|");

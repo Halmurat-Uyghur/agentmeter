@@ -11,7 +11,7 @@ import type { Snapshot, UsageRecord } from "../../src/core/types";
 import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
 
 function rec(key: string, ts: number, o: Partial<UsageRecord> = {}): UsageRecord {
-  return { key, keySource: "usageId", kind: "call", sessionId: "s1", folderId: "s1", timestampMs: ts, model: "model-a", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
+  return { key, keySource: "usageId", kind: "call", source: "copilot", sessionId: "s1", folderId: "s1", timestampMs: ts, model: "model-a", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
 }
 
 describe("recentProjects", () => {
@@ -30,7 +30,7 @@ describe("recentProjects", () => {
     const { today: t, last7: w } = recentProjects(st, last7, today, projectOf);
     expect(w.map((g) => g.name)).toEqual(["tools", "acme/web"]);
     expect(w[1]).toMatchObject({ name: "acme/web", sessions: 2, calls: 3, tokens: { sum: 330, reported: 3, missing: 0 }, nanoAiu: { sum: 2e9, reported: 2, missing: 1 } });
-    expect(t).toEqual([{ name: "acme/web", sessions: 1, calls: 2, tokens: { sum: 220, reported: 2, missing: 0 }, nanoAiu: { sum: 1e9, reported: 1, missing: 1 } }]);
+    expect(t).toEqual([{ name: "acme/web", sessions: 1, calls: 2, tokens: { sum: 220, reported: 2, missing: 0 }, nanoAiu: { sum: 1e9, reported: 1, missing: 1 }, sources: { copilot: 2 } }]);
   });
 
   it("session totals count their request count; one without it is marked callsMissing", () => {

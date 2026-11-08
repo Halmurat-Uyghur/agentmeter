@@ -11,7 +11,7 @@ import type { Snapshot, UsageRecord } from "../../src/core/types";
 import { CANARY, jsonl, otherEvent, sessionTree, shutdownEvent, usageEvent } from "../fixtures/build";
 
 function rec(key: string, ts: number, o: Partial<UsageRecord> = {}): UsageRecord {
-  return { key, keySource: "usageId", kind: "call", sessionId: "s1", folderId: "s1", timestampMs: ts, model: "model-a", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
+  return { key, keySource: "usageId", kind: "call", source: "copilot", sessionId: "s1", folderId: "s1", timestampMs: ts, model: "model-a", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
 }
 
 describe("dailyActivity", () => {

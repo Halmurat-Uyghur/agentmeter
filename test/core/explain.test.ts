@@ -14,6 +14,7 @@ function call(o: Partial<UsageRecord> & { input?: number; cacheRead?: number; ca
     key: `k${n}`,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: "s1",
     folderId: "s1",
     timestampMs: 1_000 + n,

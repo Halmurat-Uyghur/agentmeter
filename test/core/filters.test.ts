@@ -108,7 +108,7 @@ describe("tailer: start lines only when asked", () => {
 });
 
 function rec(key: string, o: Partial<UsageRecord> = {}): UsageRecord {
-  return { key, keySource: "usageId", kind: "call", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
+  return { key, keySource: "usageId", kind: "call", source: "copilot", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
 }
 
 describe("store: projects and tools", () => {
@@ -168,7 +168,9 @@ describe("monitor: project labels and filters", () => {
     const m = make(true);
     await m.refresh({ full: true });
     const s = snaps.at(-1)!;
-    expect(s.month!.projects.map((p) => [p.name, p.calls])).toEqual([["acme/web", 2], ["tools-cli", 1]]);
+    expect(s.month!.projects.map((p) => [p.name, p.calls])).toEqual([["web", 2], ["tools-cli", 1]]);
+    // D44: the key is the folder name; `owner/repo` is the display label.
+    expect(s.month!.projects.find((p) => p.name === "web")?.label).toBe("acme/web");
     expect(s.month!.tools.map((t) => [t.name, t.uses])).toEqual([["bash", 3], ["github-mcp/get_pr", 1], ["view", 1]]);
     const json = JSON.stringify(snaps);
     expect(json).not.toContain(CANARY);
@@ -234,7 +236,7 @@ describe("monitor: project labels and filters", () => {
     let s = snaps.at(-1)!;
     expect(s.month!.totals!.records).toBe(1);
     expect(s.month!.totals!.nanoAiu.sum).toBe(4e9);
-    expect(s.month!.projects.map((p) => p.name)).toEqual(["acme/web"]);
+    expect(s.month!.projects.map((p) => p.name)).toEqual(["web"]);
     expect(s.month!.sessions.map((x) => x.sessionId)).toEqual([A]);
     m.setFilter({});
     await m.refresh();
@@ -414,7 +416,7 @@ describe("monitor: last month's projects and tools for the change column (v0.6, 
     const m = make();
     await m.refresh({ full: true });
     const p = snaps.at(-1)!.month!.prior!;
-    expect(p.projects!.map((g) => [g.name, g.nanoAiu.sum])).toEqual([["acme/web", 4e9], ["tools-cli", 2e9]]);
+    expect(p.projects!.map((g) => [g.name, g.nanoAiu.sum])).toEqual([["web", 4e9], ["tools-cli", 2e9]]);
     expect(p.tools!.map((t) => [t.name, t.nanoAiu.sum])).toEqual([["bash", 4e9], ["view", 2e9]]);
     expect(p.totals!.byModel["model-a"]!.nanoAiu.sum).toBe(6e9);
   });
@@ -422,10 +424,10 @@ describe("monitor: last month's projects and tools for the change column (v0.6, 
   it("filters: projects honour the tool filter only, tools the project filter only, models both", async () => {
     const m = make();
     await m.refresh({ full: true });
-    m.setFilter({ project: "acme/web" });
+    m.setFilter({ project: "web" });
     await m.refresh();
     let p = snaps.at(-1)!.month!.prior!;
-    expect(p.projects!.map((g) => g.name)).toEqual(["acme/web", "tools-cli"]);
+    expect(p.projects!.map((g) => g.name)).toEqual(["web", "tools-cli"]);
     expect(p.tools!.map((t) => t.name)).toEqual(["bash"]);
     expect(p.totals!.nanoAiu.sum).toBe(4e9);
     m.setFilter({ tool: "view" });

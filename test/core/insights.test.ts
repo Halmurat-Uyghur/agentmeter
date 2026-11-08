@@ -1,6 +1,7 @@
 // v0.4 Insights (D32; O2 rules I2 and I3). Pure engine tests.
 import { describe, expect, it } from "vitest";
 import { computeInsights, LONG_CONTEXT_THRESHOLDS, longContextThreshold, promptConventions } from "../../src/core/insights";
+import { promptOf } from "../../src/core/store";
 import type { Metric, SessionSummary, UsageRecord } from "../../src/core/types";
 
 const m = (sum: number, reported: number, missing = 0): Metric => ({ sum, reported, missing });
@@ -29,6 +30,7 @@ function call(o: Partial<UsageRecord> & { input?: number; cacheRead?: number; ca
     key: `k${n}`,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: "s1",
     folderId: "s1",
     timestampMs: n,
@@ -222,5 +224,47 @@ describe("ranking and coverage", () => {
     });
     expect(v.items.map((x) => x.id)).toEqual(["context-growth", "cache-reuse"]);
     expect(v.coverage).toEqual({ callSessions: 1, totalsOnlySessions: 1 });
+  });
+});
+
+describe("v0.8 sources (D47)", () => {
+  it("a Claude Code record's prompt tokens are its input; promptConventions ignores it", () => {
+    const r = call({ source: "claude-code", keySource: "claudeMessageId", model: "claude-x", input: 100, cacheRead: 100_000, cacheWrite: 5_000, nanoAiu: undefined });
+    const conv = promptConventions([r]);
+    expect(conv.has("claude-x")).toBe(false);
+    expect(promptOf(r, conv)).toBe(100);
+    expect(promptOf(r, new Map([["claude-x", "separate"]]))).toBe(100);
+    // a Copilot record of the same model still drives the inference
+    const cop = call({ model: "claude-x", input: 100, cacheRead: 100_000 });
+    expect(promptConventions([r, cop]).get("claude-x")).toBe("separate");
+  });
+});
+
+describe("fix wave F2: I1 and I3 read Copilot calls only", () => {
+  const codexCall = (i: number, o: Parameters<typeof call>[0] = {}) =>
+    call({ source: "codex", keySource: "codexResponseId", sessionId: `x${i % 5}`, folderId: `x${i % 5}`, sequence: i + 2, cacheRead: 0, nanoAiu: undefined, ...o });
+
+  it("24 priced Copilot calls with good reuse fire nothing; 60 Codex calls of the same model without cache reads still fire nothing", () => {
+    const copilot = cacheMonth(3, 8, { cacheRead: 27_000 });
+    expect(run({ monthRecords: copilot }).items).toEqual([]);
+    const codex = Array.from({ length: 60 }, (_, i) => codexCall(i));
+    const recs = [...copilot, ...codex];
+    expect(run({ monthRecords: recs, allRecords: recs }).items).toEqual([]);
+  });
+
+  it("long-context counts only Copilot calls: Codex calls past the threshold change nothing", () => {
+    const long = (k: number) => Array.from({ length: k }, (_, i) => call({ model: "gpt-6-sol", input: 300_000, cacheRead: 0, sessionId: `l${i % 2}`, folderId: `l${i % 2}`, nanoAiu: 0.2 * USD }));
+    const base = run({ monthRecords: long(3) }).items;
+    expect(base.map((i) => i.id)).toEqual(["long-context"]);
+    const codex = Array.from({ length: 10 }, (_, i) => codexCall(i, { model: "gpt-6-sol", input: 900_000 }));
+    const recs = [...long(3), ...codex];
+    const with_ = run({ monthRecords: recs, allRecords: recs }).items;
+    expect(with_).toHaveLength(1);
+    const i = with_[0]!;
+    if (i.id !== "long-context") throw new Error();
+    expect(i.calls).toBe(3);
+    expect(i.maxPromptTokens).toBe(300_000);
+    // Codex calls alone never fire it
+    expect(run({ monthRecords: codex, allRecords: codex }).items).toEqual([]);
   });
 });
