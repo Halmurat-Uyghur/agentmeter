@@ -12,11 +12,13 @@ import { codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex"
 
 /** Every UsageMonitor the extension constructs, with its options (survives vi.resetModules). */
 const built = vi.hoisted(() => [] as { sources?: MonitorOptions["sources"] }[]);
+/** When set, every monitor reads this instant as now (a test then never depends on the wall clock). */
+const fixedNow = vi.hoisted(() => ({ ms: undefined as number | undefined }));
 vi.mock("../../src/core/monitor", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../../src/core/monitor")>();
   class Spy extends mod.UsageMonitor {
     constructor(o: MonitorOptions) {
-      super(o);
+      super(fixedNow.ms === undefined ? o : { ...o, now: () => new Date(fixedNow.ms!) });
       built.push({ ...(o.sources && { sources: o.sources }) });
     }
   }
@@ -63,6 +65,7 @@ beforeEach(() => {
   fetchCalls = [];
   resolvers = [];
   built.length = 0;
+  fixedNow.ms = undefined;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
   vi.stubGlobal("fetch", (url: string) => {
     fetchCalls.push(url);
@@ -271,8 +274,9 @@ describe("extension lifecycle: source filter, batched config events, pinSession 
   });
 
   it("pinSession items carry the source label and say idle, not ended, for a non-Copilot session", async () => {
-    const now = Date.now();
-    const ms = now - 10 * 60 * 1000; // past the live window, so the session is idle
+    // A fixed mid-month instant fed to the monitor as now: no month or day boundary is near.
+    fixedNow.ms = new Date(2026, 9, 15, 12, 0, 0).getTime();
+    const ms = fixedNow.ms - 10 * 60 * 1000; // past the live window, so the session is idle
     const d = new Date(ms);
     const date = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
     const id = "c0de0000-0000-4000-8000-000000000001";
@@ -280,6 +284,7 @@ describe("extension lifecycle: source filter, batched config events, pinSession 
     await codexTree(join(home, "codex"), [{ date, sessionId: id, lines: [codexMeta({ id, timestamp: ts }), codexTurn({ timestamp: ts }), codexRecord({ sessionId: id, timestamp: ts })], mtime: new Date(ms) }]);
     const { fake, cmd, testState, deactivate } = await load();
     await vi.waitFor(() => expect(testState().snapshot?.sessions.some((x) => x.source === "codex")).toBe(true));
+    expect(testState().snapshot?.generatedAtMs).toBe(fixedNow.ms);
     let captured: { label: string; description?: string }[] = [];
     fake.window.showQuickPick = (async (items: { label: string; description?: string }[]) => {
       captured = items;
