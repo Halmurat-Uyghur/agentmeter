@@ -85,13 +85,14 @@ const ROOT = join(__dirname, "..", "..");
 const render = (s: Snapshot | undefined, section?: SectionId, view?: Parameters<typeof renderPanelHtml>[2]) => renderPanelHtml(s, "x", view, section);
 
 describe("command allowlist", () => {
-  it("PANEL_COMMANDS is exactly the five panel commands", () => {
+  it("PANEL_COMMANDS is exactly the six panel commands", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.showSection",
       "copilotUsageMonitor.showSession",
+      "copilotUsageMonitor.toggleNav",
     ]);
   });
 
@@ -189,15 +190,33 @@ describe("nav and page structure", () => {
       expect(links.filter((l) => l[2]).map((l) => l[1])).toEqual([escapeHtml(sectionHref(active))]);
       expect(sectionHref(active)).toBe(`command:copilotUsageMonitor.showSection?${encodeURIComponent(JSON.stringify([active]))}`);
       // Overview on top with no group, then three labelled groups (A2)
-      expect(nav).toMatch(/^<nav class="sidenav" aria-label="Sections"><ul><li><a [^>]*>(<svg [^]*?<\/svg>)Overview<\/a><\/li><\/ul><p class="grp" id="nav-usage">Usage<\/p><ul aria-labelledby="nav-usage">/);
+      expect(nav).toMatch(/^<nav class="sidenav" aria-label="Sections"><div class="navtop"><a class="navtoggle" [^>]*>(<svg [^]*?<\/svg>)<\/a><\/div><ul><li><a [^>]*>(<svg [^]*?<\/svg>)<span class="lbl">Overview<\/span><\/a><\/li><\/ul><p class="grp" id="nav-usage">Usage<\/p><ul aria-labelledby="nav-usage">/);
       const groups = [...nav.matchAll(/<p class="grp" id="(nav-\w+)">(\w+)<\/p><ul aria-labelledby="(nav-\w+)">([^]*?)<\/ul>/g)];
       expect(groups.map((g) => g[2])).toEqual(["Usage", "Insight", "Health"]);
       for (const g of groups) expect(g[1]).toBe(g[3]);
-      const labels = (body: string) => [...body.matchAll(/<\/svg>([^<]+)/g)].map((x) => x[1]);
+      const labels = (body: string) => [...body.matchAll(/<\/svg><span class="lbl">([^<]+)/g)].map((x) => x[1]);
       expect(groups.map((g) => labels(g[4]!))).toEqual([["Sessions", "Daily", "Models", "Projects", "Tools"], ["Insights"], ["Data health"]]);
-      // every link carries a decorative inline icon
-      expect(nav.match(/<a [^>]*><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" focusable="false">/g)).toHaveLength(8);
+      // every link (eight sections plus the collapse toggle) carries a decorative inline icon
+      expect(nav.match(/<a [^>]*><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" focusable="false">/g)).toHaveLength(9);
     }
+  });
+
+  it("nav toggle: collapses to an icon rail and expands again, labels kept for screen readers", () => {
+    const toggleHref = escapeHtml(`command:copilotUsageMonitor.toggleNav?${encodeURIComponent(JSON.stringify([]))}`);
+    const open = renderPanelHtml(snap(), "x", undefined, "sessions");
+    expect(open).toContain('<div class="shell">');
+    expect(open).toContain('<nav class="sidenav" aria-label="Sections">');
+    expect(open).toContain(`<a class="navtoggle" href="${toggleHref}" title="Collapse side navigation" aria-label="Collapse side navigation" aria-expanded="true">`);
+    expect(open).not.toMatch(/<a href="[^"]+"( aria-current="page")? title=/);
+
+    const shut = renderPanelHtml(snap(), "x", undefined, "sessions", true);
+    expect(shut).toContain('<div class="shell navcollapsed">');
+    expect(shut).toContain('<nav class="sidenav collapsed" aria-label="Sections">');
+    expect(shut).toContain(`<a class="navtoggle" href="${toggleHref}" title="Expand side navigation" aria-label="Expand side navigation" aria-expanded="false">`);
+    // each section link keeps its label (visually hidden by CSS) and gains a tooltip
+    expect(shut).toMatch(/aria-current="page" title="Sessions"><svg [^]*?<\/svg><span class="lbl">Sessions<\/span>/);
+    expect(renderPanelHtml(undefined, "x", undefined, "overview", true)).toContain('<nav class="sidenav collapsed"');
+    expect(PANEL_CSS).toContain(".shell.navcollapsed { grid-template-columns: 44px minmax(0, 1fr); }");
   });
 
   it("toolbar, banner and state note are chrome: on every section", () => {
@@ -226,16 +245,16 @@ describe("nav and page structure", () => {
   it("nav marks: Insights count, Data health * when partial and ! when it needs attention, in words too", () => {
     const ins: Insight = { id: "cache-reuse", nanoAiu: 3e11, tokens: 1, calls: 21, sessions: 3, model: "m", share: 0.3, meanPromptTokens: 30000 };
     const withIns = snap({ month: month({ insights: { items: [ins], coverage: { callSessions: 3, totalsOnlySessions: 0 } } }) });
-    expect(render(withIns)).toMatch(/>Insights<span class="cnt num" aria-hidden="true"> · 1<\/span><span class="sr"> \(1 finding\)<\/span><\/a>/);
-    expect(render(snap())).toMatch(/>Insights<\/a>/);
+    expect(render(withIns)).toMatch(/>Insights<\/span><span class="cnt num" aria-hidden="true"> · 1<\/span><span class="sr"> \(1 finding\)<\/span><\/a>/);
+    expect(render(snap())).toMatch(/>Insights<\/span><\/a>/);
     expect(render(snap({ health: health({ partial: true, malformed: 1 }) }))).toContain('<span class="sr"> (partial data)</span>');
     expect(render(snap({ health: health({ state: "format-changed" }) }))).toContain('<span class="sr"> (needs attention)</span>');
-    expect(render(snap())).toMatch(/>Data health<\/a>/);
+    expect(render(snap())).toMatch(/>Data health<\/span><\/a>/);
   });
 
   it("loading renders the nav and Loading…, with no figures", () => {
     const html = render(undefined, "sessions");
-    expect(html).toMatch(/aria-current="page"><svg [^]*?<\/svg>Sessions/);
+    expect(html).toMatch(/aria-current="page"><svg [^]*?<\/svg><span class="lbl">Sessions/);
     expect(text(html)).toContain("Loading…");
     expect(html).not.toContain("Costliest sessions");
   });

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Collapsible section navigation.** A toggle at the top of the details panel's section nav collapses it to a narrow icon rail and expands it again. In the rail each icon keeps its section name as a tooltip and for screen readers, Data health still shows its `!` or `*` mark, and the groups are separated by a line. The choice is remembered in the `copilotUsageMonitor.panelNavCollapsed` user setting (also "Copilot Usage: Collapse or Expand Panel Navigation" in the Command Palette). A narrow panel, where the nav is already a row above the content, shows full labels and no toggle.
+
 ## 0.6.0 - 2026-11-07
 
 ### Added

@@ -139,6 +139,11 @@
         "category": "Copilot Usage"
       },
       {
+        "command": "copilotUsageMonitor.toggleNav",
+        "title": "Collapse or Expand Panel Navigation",
+        "category": "Copilot Usage"
+      },
+      {
         "command": "copilotUsageMonitor.selectCurrency",
         "title": "Choose Currency…",
         "category": "Copilot Usage"
@@ -213,6 +218,11 @@
             "Estimated USD: Copilot's logged AI credits × $0.01."
           ],
           "description": "Unit for the status bar and panel figures."
+        },
+        "copilotUsageMonitor.panelNavCollapsed": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the details panel's section navigation as a narrow icon rail. The toggle at the top of the navigation sets this."
         },
         "copilotUsageMonitor.statusBar": {
           "type": "string",
