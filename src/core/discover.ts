@@ -10,6 +10,8 @@ export interface Candidate {
   folderId: string;
   eventsPath: string;
   mtimeMs: number;
+  /** events.jsonl size at discovery (lstat) */
+  size: number;
   live: boolean;
 }
 
@@ -30,7 +32,8 @@ export type DiscoverResult =
     }
   | { ok: false; error: "no-dir" | "permission" | "OTHER" };
 
-const FOLDER_RE = /^[0-9a-f-]{8,64}$/i;
+/** A session folder name under session-state. */
+export const FOLDER_RE = /^[0-9a-f-]{8,64}$/i;
 const LOCK_RE = /^inuse\.(\d+)\.lock$/;
 
 function codeOf(err: unknown): string | undefined {
@@ -79,12 +82,13 @@ async function inspectFolder(
   }
   if (!st.isFile()) return { kind: "no-events" };
   const mtimeMs = st.mtimeMs;
+  const size = st.size;
   if (mtimeMs < dayStartMs) return { kind: "skip" };
 
   let names: string[];
   if (mtimeMs < liveSinceMs) {
     // In the window but not written today: never live, so no listing needed.
-    return { kind: "candidate", candidate: { folderId, eventsPath, mtimeMs, live: false } };
+    return { kind: "candidate", candidate: { folderId, eventsPath, mtimeMs, size, live: false } };
   }
   try {
     names = await fs.promises.readdir(folder);
@@ -104,7 +108,7 @@ async function inspectFolder(
   }
   return {
     kind: "candidate",
-    candidate: { folderId, eventsPath, mtimeMs, live },
+    candidate: { folderId, eventsPath, mtimeMs, size, live },
   };
 }
 
