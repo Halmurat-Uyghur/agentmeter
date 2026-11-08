@@ -42,6 +42,7 @@ describe("parseUsageLine", () => {
       key: "u-1",
       keySource: "usageId",
       kind: "call",
+      source: "copilot",
       sessionId: SRC,
       folderId: "f",
       timestampMs: Date.parse(TS),
@@ -424,7 +425,7 @@ describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost"
   it("only allowlisted keys reach the record", () => {
     const r = record(parseUsageLine(line({ initiator: "agent", finishReason: "stop", toolTokenCount: 1, availableToolCount: 2, tokenDetails: DETAILS }), "f"));
     expect(Object.keys(r).sort()).toEqual(
-      ["availableTools", "durationMs", "finishReason", "folderId", "initiator", "key", "keySource", "kind", "model", "nanoAiu", "sequence", "sessionId", "timestampMs", "tokens", "toolTokens", "typeCost"].sort(),
+      ["availableTools", "durationMs", "finishReason", "folderId", "initiator", "key", "keySource", "kind", "model", "nanoAiu", "sequence", "sessionId", "source", "timestampMs", "tokens", "toolTokens", "typeCost"].sort(),
     );
   });
 });

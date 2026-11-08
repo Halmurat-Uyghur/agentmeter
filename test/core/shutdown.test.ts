@@ -80,6 +80,7 @@ describe("parseShutdownLine", () => {
         key: "shutdown:f:model-a",
         keySource: "shutdown",
         kind: "sessionTotal",
+        source: "copilot",
         sessionId: "f",
         folderId: "f",
         timestampMs: Date.parse(TS),
@@ -93,6 +94,7 @@ describe("parseShutdownLine", () => {
         key: "shutdown:f:model-b",
         keySource: "shutdown",
         kind: "sessionTotal",
+        source: "copilot",
         sessionId: "f",
         folderId: "f",
         timestampMs: Date.parse(TS),
@@ -151,7 +153,7 @@ describe("parseShutdownLine", () => {
     for (const r of records(res)) {
       for (const k of ["tools", "sequence", "linesAdded", "durationMs"]) expect(k in r).toBe(false);
       expect(Object.keys(r).sort()).toStrictEqual(
-        ["calls", "folderId", "key", "keySource", "kind", "model", "nanoAiu", "sessionId", "startedMs", "timestampMs", "tokens"],
+        ["calls", "folderId", "key", "keySource", "kind", "model", "nanoAiu", "sessionId", "source", "startedMs", "timestampMs", "tokens"],
       );
     }
   });

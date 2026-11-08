@@ -4,7 +4,11 @@ import {
   addMetrics,
   localDayStart,
   nextLocalMidnight,
+  BUILT_IN_TOOLS,
+  dailyActivity,
   projectSummaries,
+  promptOf,
+  recentProjects,
   sessionSummaries,
   toolSummaries,
 } from "../../src/core/store";
@@ -21,6 +25,7 @@ function rec(
     key,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: "s1",
     folderId: "f1",
     timestampMs: T0,
@@ -244,7 +249,7 @@ describe("byLocalDay", () => {
     const { byLocalDay } = await import("../../src/core/store");
     const store = new UsageStore();
     const now = new Date(2026, 10, 5, 10, 0, 0);
-    store.add({ key: "skew", keySource: "usageId", kind: "call", sessionId: "s", folderId: "s", timestampMs: new Date(2026, 10, 6, 3).getTime(), tokens: { input: 1 } }, "f");
+    store.add({ key: "skew", keySource: "usageId", kind: "call", source: "copilot", sessionId: "s", folderId: "s", timestampMs: new Date(2026, 10, 6, 3).getTime(), tokens: { input: 1 } }, "f");
     const d = byLocalDay(store, now);
     expect(d).toHaveLength(5);
     expect(d[4]!.totals!.records).toBe(1);
@@ -257,6 +262,7 @@ function total(f: string, model: string, o: Partial<UsageRecord> = {}): UsageRec
     key: `shutdown:${f}:${model}`,
     keySource: "shutdown",
     kind: "sessionTotal",
+    source: "copilot",
     sessionId: f,
     folderId: f,
     timestampMs: T0,
@@ -489,5 +495,143 @@ describe("v0.4 review fixes (store)", () => {
     const list = sessionSummaries(s, 0, Number.POSITIVE_INFINITY, 10, all, conv);
     expect(list.find((x) => x.sessionId === "g")!.input!.sum).toBe(500);
     expect(list.find((x) => x.sessionId === "h")!.input!.sum).toBe(1000);
+  });
+});
+
+describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
+  const cc = (key: string, o: Partial<Omit<UsageRecord, "tokens">> & { tokens?: Tokens } = {}) =>
+    rec(key, { source: "claude-code", keySource: "claudeMessageId", sessionId: "c1", folderId: "c1", nanoAiu: undefined, ...o });
+
+  it("store keys are namespaced by source: the same key from two sources counts twice", () => {
+    const s = new UsageStore();
+    expect(s.add(rec("k", { nanoAiu: 1 }), "a.jsonl")).toBe(true);
+    expect(s.add(cc("k"), "b.jsonl")).toBe(true);
+    expect(s.totals(all)!.records).toBe(2);
+  });
+
+  it("a same-file repeat replaces tokens and scalars, sums tools and reports the change", () => {
+    const s = new UsageStore();
+    s.add(cc("m1", { tokens: { input: 10, output: 1 }, tools: { Read: 1 }, finishReason: "tool_calls" }), "a.jsonl");
+    const changed = s.add(cc("m1", { tokens: { input: 10, output: 50 }, timestampMs: T0 + 1000, tools: { Read: 1, Bash: 2 }, finishReason: "stop" }), "a.jsonl");
+    expect(changed).toBe(true);
+    const [r] = s.records(all);
+    expect(r!.tokens).toStrictEqual({ input: 10, output: 50 });
+    expect(r!.timestampMs).toBe(T0 + 1000);
+    expect(r!.finishReason).toBe("stop");
+    expect(r!.tools).toEqual({ Read: 2, Bash: 2 });
+    expect(Object.getPrototypeOf(r!.tools)).toBeNull();
+    expect(s.totals(all)!.records).toBe(1);
+  });
+
+  it("a same-file repeat with identical figures and no tools reports no change", () => {
+    const s = new UsageStore();
+    s.add(cc("m1"), "a.jsonl");
+    expect(s.add(cc("m1"), "a.jsonl")).toBe(false);
+  });
+
+  it("a same-file repeat drops a field the new line does not report", () => {
+    const s = new UsageStore();
+    s.add(cc("m1", { finishReason: "tool_calls", durationMs: 5 }), "a.jsonl");
+    expect(s.add(cc("m1", { finishReason: undefined, durationMs: 7 }), "a.jsonl")).toBe(true);
+    const [r] = s.records(all);
+    expect("finishReason" in r!).toBe(false);
+    expect(r!.durationMs).toBe(7);
+  });
+
+  it("same-file tool merge keeps at most 64 names", () => {
+    const s = new UsageStore();
+    const many = (from: number) => Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`t${from + i}`, 1]));
+    s.add(cc("m1", { tools: many(0) }), "a.jsonl");
+    s.add(cc("m1", { tools: { ...many(40), t0: 1 } }), "a.jsonl");
+    const tools = s.records(all)[0]!.tools!;
+    expect(Object.keys(tools)).toHaveLength(64);
+    expect(tools.t0).toBe(2);
+  });
+
+  it("a cross-file repeat returns false and keeps the first file's record", () => {
+    const s = new UsageStore();
+    s.add(cc("m1", { tokens: { input: 10 } }), "a.jsonl");
+    expect(s.add(cc("m1", { tokens: { input: 99 } }), "b.jsonl")).toBe(false);
+    expect(s.records(all)[0]!.tokens.input).toBe(10);
+  });
+
+  it("USD metrics count Copilot records only: a Claude Code record is never 'missing'", () => {
+    const s = new UsageStore();
+    s.add(cc("m1"), "a.jsonl");
+    s.add(cc("m2"), "a.jsonl");
+    const t = s.totals(all)!;
+    expect(t.nanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
+    expect(t.callNanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
+    expect(t.input.reported).toBe(2);
+  });
+
+  it("a Copilot session total without AIU still bumps missing", () => {
+    const s = new UsageStore();
+    s.add(cc("m1"), "a.jsonl");
+    s.setSessionTotals("f", "t.jsonl", [total("f", "m")]);
+    const t = s.totals(all)!;
+    expect(t.nanoAiu.missing).toBe(1);
+    expect(t.callNanoAiu.missing).toBe(0);
+  });
+
+  it("totals fill sources and bySource", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { nanoAiu: 7 }), "a");
+    s.add(rec("u2", { nanoAiu: 3 }), "a");
+    s.add(cc("m1"), "b");
+    const t = s.totals(all)!;
+    expect(t.sources).toEqual({ copilot: 2, "claude-code": 1 });
+    expect(Object.getPrototypeOf(t.sources)).toBeNull();
+    expect(t.bySource!.copilot!.records).toBe(2);
+    expect(t.bySource!.copilot!.nanoAiu.sum).toBe(10);
+    expect(t.bySource!["claude-code"]!.records).toBe(1);
+    expect(t.bySource!["claude-code"]!.sources).toEqual({ "claude-code": 1 });
+    expect(t.bySource!.codex).toBeUndefined();
+    const [day] = s.totalsByBucket(1, () => 0);
+    expect(day!.bySource!["claude-code"]!.records).toBe(1);
+  });
+
+  it("toolSummaries marks Read built-in for Claude Code and bash for Copilot, with sources", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { tools: { bash: 1, Read: 1 } }), "a");
+    s.add(cc("m1", { tools: { Read: 2, bash: 1, mcp__gh__issue: 1 } }), "b");
+    const by = Object.fromEntries(toolSummaries(s, 0, Number.POSITIVE_INFINITY).map((t) => [t.name, t]));
+    expect(by.bash!.builtIn).toBe(true);
+    expect(by.Read!.builtIn).toBe(true);
+    expect(by.mcp__gh__issue!.builtIn).toBe(false);
+    expect(by.Read!.sources).toEqual({ copilot: 1, "claude-code": 1 });
+    expect(BUILT_IN_TOOLS.codex.size).toBe(0);
+    expect(BUILT_IN_TOOLS["claude-code"].has("Read")).toBe(true);
+    expect(BUILT_IN_TOOLS.copilot.has("Read")).toBe(false);
+  });
+
+  it("toolSummaries judges built-in by the using source only", () => {
+    const s = new UsageStore();
+    s.add(cc("m1", { tools: { bash: 1 } }), "b");
+    expect(toolSummaries(s, 0, Number.POSITIVE_INFINITY)[0]!.builtIn).toBe(false);
+  });
+
+  it("project, recent and session summaries carry the source; USD stays Copilot-only", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { nanoAiu: 5 }), "a");
+    s.add(cc("m1"), "b");
+    const [p] = projectSummaries(s, 0, Number.POSITIVE_INFINITY, () => "repo");
+    expect(p!.sources).toEqual({ copilot: 1, "claude-code": 1 });
+    expect(p!.nanoAiu).toStrictEqual({ sum: 5, reported: 1, missing: 0 });
+    const recent = recentProjects(s, 0, 0, () => "repo");
+    expect(recent.today[0]!.sources).toEqual({ copilot: 1, "claude-code": 1 });
+    expect(recent.last7[0]!.nanoAiu.missing).toBe(0);
+    const sessions = sessionSummaries(s, 0, Number.POSITIVE_INFINITY);
+    const c1 = sessions.find((x) => x.sessionId === "c1")!;
+    expect(c1.source).toBe("claude-code");
+    expect(c1.nanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
+    expect(sessions.find((x) => x.sessionId === "s1")!.source).toBe("copilot");
+    const act = dailyActivity(s, T0, localDayStart(new Date(T0)));
+    expect(act.days[0]!.nanoAiu).toStrictEqual({ sum: 5, reported: 1, missing: 0 });
+  });
+
+  it("promptOf: a non-Copilot record's prompt is its input, whatever the convention", () => {
+    const r = cc("m1", { model: "claude-x", tokens: { input: 100, cacheRead: 100_000, cacheWrite: 5_000 } });
+    expect(promptOf(r, new Map([["claude-x", "separate"]]))).toBe(100);
   });
 });

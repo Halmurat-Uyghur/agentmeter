@@ -1,6 +1,7 @@
 // v0.4 Insights (D32; O2 rules I2 and I3). Pure engine tests.
 import { describe, expect, it } from "vitest";
 import { computeInsights, LONG_CONTEXT_THRESHOLDS, longContextThreshold, promptConventions } from "../../src/core/insights";
+import { promptOf } from "../../src/core/store";
 import type { Metric, SessionSummary, UsageRecord } from "../../src/core/types";
 
 const m = (sum: number, reported: number, missing = 0): Metric => ({ sum, reported, missing });
@@ -29,6 +30,7 @@ function call(o: Partial<UsageRecord> & { input?: number; cacheRead?: number; ca
     key: `k${n}`,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: "s1",
     folderId: "s1",
     timestampMs: n,
@@ -222,5 +224,18 @@ describe("ranking and coverage", () => {
     });
     expect(v.items.map((x) => x.id)).toEqual(["context-growth", "cache-reuse"]);
     expect(v.coverage).toEqual({ callSessions: 1, totalsOnlySessions: 1 });
+  });
+});
+
+describe("v0.8 sources (D47)", () => {
+  it("a Claude Code record's prompt tokens are its input; promptConventions ignores it", () => {
+    const r = call({ source: "claude-code", keySource: "claudeMessageId", model: "claude-x", input: 100, cacheRead: 100_000, cacheWrite: 5_000, nanoAiu: undefined });
+    const conv = promptConventions([r]);
+    expect(conv.has("claude-x")).toBe(false);
+    expect(promptOf(r, conv)).toBe(100);
+    expect(promptOf(r, new Map([["claude-x", "separate"]]))).toBe(100);
+    // a Copilot record of the same model still drives the inference
+    const cop = call({ model: "claude-x", input: 100, cacheRead: 100_000 });
+    expect(promptConventions([r, cop]).get("claude-x")).toBe("separate");
   });
 });

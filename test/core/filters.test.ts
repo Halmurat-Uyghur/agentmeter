@@ -108,7 +108,7 @@ describe("tailer: start lines only when asked", () => {
 });
 
 function rec(key: string, o: Partial<UsageRecord> = {}): UsageRecord {
-  return { key, keySource: "usageId", kind: "call", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
+  return { key, keySource: "usageId", kind: "call", source: "copilot", sessionId: "s1", folderId: "f1", timestampMs: 1000, model: "m", tokens: { input: 100, output: 10 }, nanoAiu: 1e9, ...o };
 }
 
 describe("store: projects and tools", () => {

@@ -337,6 +337,7 @@ export function parseShutdownLine(line: string, folderId: string): ShutdownParse
       key: `shutdown:${folderId}:${model ?? `#${i}`}`,
       keySource: "shutdown",
       kind: "sessionTotal",
+      source: "copilot",
       sessionId: folderId,
       folderId,
       timestampMs,
@@ -469,6 +470,7 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     key,
     keySource: usageId !== undefined ? "usageId" : "eventId",
     kind: "call",
+    source: "copilot",
     // An id not shaped like a session folder name is not trusted: the folder stands in.
     sessionId: safeKey(accounting.sourceSessionId, SESSION_ID) ? accounting.sourceSessionId : folderId,
     folderId,

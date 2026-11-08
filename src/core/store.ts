@@ -3,10 +3,11 @@
 // has been reset. Metrics keep "not reported" apart from zero. A session's
 // totals from session.shutdown are hidden while the same session, or the same
 // session folder, has any per-call record, so no session is counted twice (D29).
-// Call records and session totals live in separate key namespaces.
+// Call records and session totals live in separate key namespaces, and each
+// source has its own (D40). USD metrics count Copilot records only (D46).
 
 import type { PromptConvention } from "./insights";
-import type { Activity, Counts, DayStats, DayTotals, GroupSummary, Metric, MonthSummary, SessionSummary, ToolSummary, Totals, UsageRecord } from "./types";
+import type { Activity, Counts, DayStats, DayTotals, GroupSummary, Metric, MonthSummary, SessionSummary, Source, ToolSummary, Totals, UsageRecord } from "./types";
 
 export const UNKNOWN_MODEL = "(unknown model)";
 
@@ -67,25 +68,79 @@ function callsMissingOf(r: UsageRecord): number {
   return r.kind === "sessionTotal" && r.calls === undefined ? 1 : 0;
 }
 
+/** Only Copilot logs cost: other sources' records neither report nor miss USD (D46). */
+function pricedSource(r: UsageRecord): boolean {
+  return r.source === "copilot";
+}
+
+/** Bumps the per-source record count in `m` (a prototype-free map). */
+function bumpSource(m: Partial<Record<Source, number>>, s: Source): void {
+  m[s] = (m[s] ?? 0) + 1;
+}
+
 function accumulate(c: Counts, r: UsageRecord): void {
   c.records += 1;
   c.calls += callsOf(r);
   c.callsMissing += callsMissingOf(r);
+  const priced = pricedSource(r);
   if (r.kind === "sessionTotal") c.sessionTotals += 1;
-  else count(c.callNanoAiu, r.nanoAiu);
+  else if (priced) count(c.callNanoAiu, r.nanoAiu);
   count(c.input, r.tokens.input);
   count(c.output, r.tokens.output);
   count(c.cacheRead, r.tokens.cacheRead);
   count(c.cacheWrite, r.tokens.cacheWrite);
   count(c.reasoning, r.tokens.reasoning);
   count(c.durationMs, r.durationMs);
-  count(c.nanoAiu, r.nanoAiu);
+  if (priced) count(c.nanoAiu, r.nanoAiu);
+  bumpSource((c.sources ??= Object.create(null) as Partial<Record<Source, number>>), r.source);
+}
+
+/** Adds `r` to `totals`, its model and its source. */
+function accumulateTotals(totals: Totals, r: UsageRecord): void {
+  accumulate(totals, r);
+  accumulate((totals.byModel[r.model ?? UNKNOWN_MODEL] ??= emptyCounts()), r);
+  const bySource = (totals.bySource ??= Object.create(null) as Partial<Record<Source, Counts>>);
+  accumulate((bySource[r.source] ??= emptyCounts()), r);
 }
 
 /** Store key of a record: call keys and session-total keys never share a namespace,
- * so a log-supplied usageId can never equal (and drop) a "shutdown:…" key (N10). */
+ * so a log-supplied usageId can never equal (and drop) a "shutdown:…" key (N10), and
+ * an id from one source's log can never equal another source's (D40). */
 function entryKey(r: UsageRecord): string {
-  return `${r.kind === "call" ? "c" : "t"}|${r.key}`;
+  return `${r.kind === "call" ? "c" : "t"}|${r.source}|${r.key}`;
+}
+
+/** Fields a later line of the same call in the same file replaces (D42 repeats). */
+const REPEAT_FIELDS = [
+  "tokens", "timestampMs", "model", "finishReason", "sequence", "durationMs", "nanoAiu", "typeCost", "initiator", "toolTokens", "availableTools",
+] as const satisfies readonly (keyof UsageRecord)[];
+
+/** At most this many tool names per record. */
+const MAX_TOOL_NAMES = 64;
+
+/** `r` with the repeat fields of `next` and the tool counts of both, summed per name. */
+function mergeRepeat(r: UsageRecord, next: UsageRecord): UsageRecord {
+  const out: UsageRecord = { ...r };
+  const o = out as unknown as Record<string, unknown>;
+  const n = next as unknown as Record<string, unknown>;
+  for (const f of REPEAT_FIELDS) {
+    if (n[f] === undefined) delete o[f];
+    else o[f] = n[f];
+  }
+  if (next.tools !== undefined) {
+    const tools: Record<string, number> = Object.create(null);
+    for (const [name, k] of Object.entries(r.tools ?? {})) tools[name] = k;
+    let names = Object.keys(tools).length;
+    for (const [name, k] of Object.entries(next.tools)) {
+      if (tools[name] !== undefined) tools[name] += k;
+      else if (names < MAX_TOOL_NAMES) {
+        tools[name] = k;
+        names++;
+      }
+    }
+    out.tools = tools;
+  }
+  return out;
 }
 
 function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
@@ -104,10 +159,18 @@ export class UsageStore {
   /** folderId → store keys of its current session-total records */
   private readonly totalKeys = new Map<string, string[]>();
 
-  /** Returns false if the key was already known; `file` is still recorded for it. */
+  /** Returns whether the store changed. A key already known from another file counts once
+   * (`file` is still recorded for it); a later call line of the same key in the same file
+   * replaces the record's figures and adds its tools (D42 repeats). */
   add(r: UsageRecord, file: string): boolean {
     const key = entryKey(r);
     const existing = this.entries.get(key);
+    if (existing && r.kind === "call" && existing.files.has(file)) {
+      const merged = mergeRepeat(existing.record, r);
+      if (JSON.stringify(merged) === JSON.stringify(existing.record)) return false;
+      existing.record = merged;
+      return true;
+    }
     if (existing) {
       // A copied folder delivers the same key: that folder holds it too (D29).
       if (r.kind === "call" && !existing.files.has(file) && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
@@ -194,10 +257,7 @@ export class UsageStore {
     const totals = emptyTotals();
     for (const { record } of this.entries.values()) {
       if (!this.visible(record) || !filter(record)) continue;
-      accumulate(totals, record);
-      const model = record.model ?? UNKNOWN_MODEL;
-      const perModel = (totals.byModel[model] ??= emptyCounts());
-      accumulate(perModel, record);
+      accumulateTotals(totals, record);
     }
     return totals.records === 0 ? undefined : totals;
   }
@@ -210,10 +270,7 @@ export class UsageStore {
       if (!this.visible(record)) continue;
       const i = bucket(record);
       if (i === undefined || i < 0 || i >= n) continue;
-      const totals = (out[i] ??= emptyTotals());
-      accumulate(totals, record);
-      const model = record.model ?? UNKNOWN_MODEL;
-      accumulate((totals.byModel[model] ??= emptyCounts()), record);
+      accumulateTotals((out[i] ??= emptyTotals()), record);
     }
     return out;
   }
@@ -331,6 +388,10 @@ function byCost<T extends { name: string; nanoAiu: Metric; tokens: Metric }>(a: 
   return b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.name.localeCompare(b.name);
 }
 
+function emptyGroup(name: string): GroupSummary {
+  return { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric(), sources: Object.create(null) as Partial<Record<Source, number>> };
+}
+
 /** Per-project totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
 export function projectSummaries(
   store: UsageStore,
@@ -344,14 +405,15 @@ export function projectSummaries(
     const name = projectOf(r);
     let g = groups.get(name);
     if (!g) {
-      g = { s: { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() }, ids: new Set() };
+      g = { s: emptyGroup(name), ids: new Set() };
       groups.set(name, g);
     }
     g.ids.add(r.sessionId);
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     count(g.s.tokens, recordTokens(r));
-    count(g.s.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
+    bumpSource(g.s.sources!, r.source);
   }
   return [...groups.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
 }
@@ -373,7 +435,7 @@ export function recentProjects(
   const add = (into: Map<string, Acc>, name: string, r: UsageRecord, tok: number | undefined) => {
     let g = into.get(name);
     if (!g) {
-      g = { s: { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() }, ids: new Set() };
+      g = { s: emptyGroup(name), ids: new Set() };
       into.set(name, g);
     }
     g.ids.add(r.sessionId);
@@ -381,7 +443,8 @@ export function recentProjects(
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     if (r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
     count(g.s.tokens, tok);
-    count(g.s.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
+    bumpSource(g.s.sources!, r.source);
   };
   store.each((r) => {
     if (r.timestampMs < last7StartMs) return;
@@ -394,12 +457,21 @@ export function recentProjects(
   return { today: done(day), last7: done(week) };
 }
 
-/** Copilot CLI's own tools; anything else (MCP servers, extensions, skills' tools) is "added". */
-export const BUILT_IN_TOOLS = new Set([
-  "bash", "read_bash", "write_bash", "stop_bash", "list_bash", "view", "edit", "create", "str_replace_editor",
-  "rg", "grep", "glob", "task", "task_complete", "rename_chat", "report_intent", "skill", "think",
-  "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
-]);
+/** Each source's own tools (D52); anything else (MCP servers, extensions, skills' tools) is "added".
+ * Codex tools are not counted in 0.8, so its set is empty. */
+export const BUILT_IN_TOOLS: Record<Source, ReadonlySet<string>> = {
+  copilot: new Set([
+    "bash", "read_bash", "write_bash", "stop_bash", "list_bash", "view", "edit", "create", "str_replace_editor",
+    "rg", "grep", "glob", "task", "task_complete", "rename_chat", "report_intent", "skill", "think",
+    "update_todo", "fetch", "web_fetch", "web_search", "read_agent", "list_agents",
+  ]),
+  "claude-code": new Set([
+    "Bash", "Read", "Edit", "Write", "MultiEdit", "Glob", "Grep", "LS", "Task", "Agent", "WebFetch", "WebSearch",
+    "TodoWrite", "TodoRead", "NotebookEdit", "NotebookRead", "Skill", "AskUserQuestion", "ExitPlanMode", "EnterPlanMode",
+    "KillShell", "BashOutput", "SlashCommand",
+  ]),
+  codex: new Set(),
+};
 
 /** Server or plugin an added tool belongs to, from its name (D27): "server/tool",
  * "mcp__server__tool", else the part before the first "-" or "_". */
@@ -424,23 +496,27 @@ export function toolSummaries(
     for (const [name, uses] of Object.entries(r.tools!)) {
       let t = tools.get(name);
       if (!t) {
-        t = { name, builtIn: BUILT_IN_TOOLS.has(name), uses: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric() };
+        t = { name, builtIn: false, uses: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric(), sources: Object.create(null) as Partial<Record<Source, number>> };
         tools.set(name, t);
       }
+      // built in when any source that used it ships it (D52)
+      if (BUILT_IN_TOOLS[r.source].has(name)) t.builtIn = true;
       t.uses += uses;
       t.calls++;
       count(t.tokens, recordTokens(r));
-      count(t.nanoAiu, r.nanoAiu);
+      if (pricedSource(r)) count(t.nanoAiu, r.nanoAiu);
+      bumpSource(t.sources!, r.source);
     }
   }
   return [...tools.values()].sort(byCost);
 }
 
-/** Prompt tokens of a record: input, plus cached tokens when its model reports them apart (N4). */
+/** Prompt tokens of a record: input, plus cached tokens when its Copilot model reports them
+ * apart (N4). Every other source's input already includes cached tokens (D47). */
 export function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): number | undefined {
   const t = r.tokens;
   if (t.input === undefined) return undefined;
-  return r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
+  return r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
 }
 
 /**
@@ -475,7 +551,7 @@ export function sessionSummaries(
     let firstMs = Number.POSITIVE_INFINITY;
     for (const r of recs) {
       count(tokens, recordTokens(r));
-      count(nanoAiu, r.nanoAiu);
+      if (pricedSource(r)) count(nanoAiu, r.nanoAiu);
       count(input, promptOf(r, conventions));
       count(cacheRead, r.tokens.cacheRead);
       calls += callsOf(r);
@@ -510,6 +586,7 @@ export function sessionSummaries(
     out.push({
       sessionId,
       folderId: recs[0]!.folderId,
+      source: recs[0]!.source,
       firstMs,
       lastMs: recs.at(-1)!.timestampMs,
       calls,
@@ -557,7 +634,7 @@ export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: n
     const a = (acc[lo] ??= { input: emptyMetric(), output: emptyMetric(), nanoAiu: emptyMetric(), calls: 0, callsMissing: 0, sessionTotals: 0, ids: new Set() });
     count(a.input, r.tokens.input);
     count(a.output, r.tokens.output);
-    count(a.nanoAiu, r.nanoAiu);
+    if (pricedSource(r)) count(a.nanoAiu, r.nanoAiu);
     a.calls += callsOf(r);
     a.callsMissing += callsMissingOf(r);
     if (r.kind === "sessionTotal") a.sessionTotals += 1;

@@ -52,9 +52,10 @@ export function longContextThreshold(model: string): number | undefined {
 export type PromptConvention = "included" | "separate";
 
 /**
- * Whether a model's `input` already includes cached tokens, inferred per model:
- * "separate" once any call has cacheRead + cacheWrite > input (impossible if
- * input included them), else "included". A wrong "included" only makes I3 fire less.
+ * Whether a model's `input` already includes cached tokens, inferred per model from
+ * Copilot calls only: "separate" once any call has cacheRead + cacheWrite > input
+ * (impossible if input included them), else "included". A wrong "included" only makes
+ * I3 fire less. Other sources' input always includes cached tokens (D47).
  */
 export function promptConventions(records: UsageRecord[]): Map<string, PromptConvention> {
   return scanCalls(records).conventions;
@@ -62,7 +63,7 @@ export function promptConventions(records: UsageRecord[]): Map<string, PromptCon
 
 function promptTokens(r: UsageRecord, convention: PromptConvention | undefined): number {
   const t = r.tokens;
-  return convention === "separate" ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : (t.input ?? 0);
+  return r.source === "copilot" && convention === "separate" ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : (t.input ?? 0);
 }
 
 /**
@@ -76,7 +77,7 @@ function scanCalls(records: UsageRecord[]): { conventions: Map<string, PromptCon
     a.sequence !== undefined && b.sequence !== undefined ? a.sequence < b.sequence : a.timestampMs < b.timestampMs;
   for (const r of records) {
     if (r.kind !== "call") continue;
-    if (r.model !== undefined) {
+    if (r.model !== undefined && r.source === "copilot") {
       const t = r.tokens;
       const cached = (t.cacheRead ?? 0) + (t.cacheWrite ?? 0);
       if (t.input !== undefined && cached > t.input) conventions.set(r.model, "separate");
