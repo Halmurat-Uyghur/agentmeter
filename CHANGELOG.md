@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.6.1 - 2026-11-07
+
+### Fixed
+
+- **Day dates on hover.** The daily charts now name the day under the pointer at once, with its weekday: "Wed Nov 4: $0.600 USD (est.)". This covers the Overview's 30-day bars, the daily activity squares (a readout line under the grid, with a "Hover a square to see its date" hint) and the Daily section's trend bars and calendar. Before, the date was only in a native tooltip, which is slow or missing in the panel. Still no scripts: the readouts are CSS only, and readouts at either end of a chart stay inside it.
+
 ## 0.6.0 - 2026-11-07
 
 ### Added

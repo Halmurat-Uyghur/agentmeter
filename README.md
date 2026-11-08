@@ -60,7 +60,7 @@ The extension is not on the Marketplace yet. Build a `.vsix` and install it:
 npm ci
 npm run build
 npm run package
-code --install-extension copilot-usage-monitor-0.6.0.vsix
+code --install-extension copilot-usage-monitor-0.6.1.vsix
 ```
 
 Alternatively, in VS Code use **Extensions → … → Install from VSIX…**.

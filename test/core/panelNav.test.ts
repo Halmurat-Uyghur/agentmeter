@@ -284,8 +284,8 @@ describe("daily content (D32)", () => {
   it("calendar and bar titles name session totals; a footnote says they land on the end day", () => {
     const t = totals({ sessionTotals: 1 });
     const html = render(snap({ month: month({ days: days(5, { 3: t }), totals: t }) }), "daily");
-    expect(html).toContain('title="Nov 3: 1.5M tokens (includes 1 session total)"');
-    expect(html).toContain('title="Nov 3: 1.5M tokens (includes 1 session total)"><span class="track">');
+    expect(html).toContain('data-tip="Tue Nov 3: 1.5M tokens (includes 1 session total)">3<small>');
+    expect(html).toContain('data-tip="Tue Nov 3: 1.5M tokens (includes 1 session total)"><span class="track">');
     const v = text(html);
     expect(v).toContain("November includes 1 session total: each is counted on the day its session ended");
     expect(v).toContain(SESSION_TOTAL_NOTE);

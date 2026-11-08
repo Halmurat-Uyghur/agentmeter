@@ -127,7 +127,7 @@ a.btn:hover, a.seg:hover { border-color: var(--accent); color: var(--accent); }
 .trend ol.tcols { flex: 1 1 auto; display: flex; align-items: stretch; gap: 6px; list-style: none; margin: 0; padding: 0; min-width: 0; }
 .trend ol.tcols > li { flex: 1 1 0; min-width: 0; display: flex; }
 .trend .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: stretch; text-decoration: none; color: var(--fg); border-radius: 6px; padding: 0 2px; position: relative; z-index: 1; }
-.trend .col:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.trend .col:hover { z-index: 2; background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .trend .col.sel { outline: 1px solid var(--hot); outline-offset: -1px; }
 .trend .col .v { font-family: var(--mono); font-size: 10.5px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; height: 16px; }
 .trend .col .track { flex: 1 1 auto; display: flex; align-items: flex-end; justify-content: center; border-bottom: 1px solid var(--line); }
@@ -255,8 +255,20 @@ details.more[open] > summary::before { content: "▾ "; }
 .yaxis span { line-height: 1; }
 .dbar { fill: var(--bar); }
 .dbar-today { fill: var(--hot); }
-.bar-hit { fill: transparent; }
-.bar-hit:hover { fill: var(--soft); }
+.plotwrap { position: relative; }
+.hits { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); }
+.hits .hit:hover { background: var(--soft); }
+/* Instant hover readouts: the webview runs no scripts and native tooltips are slow or missing there */
+[data-tip] { position: relative; }
+[data-tip]:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); z-index: 5; padding: 3px 8px; border-radius: 5px; border: 1px solid var(--vscode-editorHoverWidget-border, var(--line)); background: var(--vscode-editorHoverWidget-background, var(--card)); color: var(--vscode-editorHoverWidget-foreground, var(--fg)); font: 11.5px/1.4 var(--vscode-font-family, system-ui, sans-serif); white-space: nowrap; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
+[data-tip].tip-l:hover::after { left: 0; transform: none; }
+[data-tip].tip-r:hover::after { left: auto; right: 0; transform: none; }
+.heat .hint { fill: var(--muted); font-size: 10.5px; font-style: italic; font-family: var(--vscode-font-family, system-ui, sans-serif); }
+.heat .tip { visibility: hidden; fill: var(--fg); font-size: 11px; font-weight: 600; font-family: var(--vscode-font-family, system-ui, sans-serif); }
+.heat .hc:hover .tip { visibility: visible; }
+.heat:has(.hc:hover) .hint { visibility: hidden; }
+.heat .hc:hover .hm { stroke: var(--fg); stroke-width: 1.5; }
+.heat { overflow: visible; }
 .bar-avg { stroke: var(--hot); stroke-width: 1; stroke-dasharray: 4 3; opacity: .85; }
 .xaxis { grid-column: 1; display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); margin-top: 4px; color: var(--muted); font-size: 10.5px; }
 details.daytable table { max-width: 520px; }
@@ -281,7 +293,7 @@ body.vscode-high-contrast .fill, body.vscode-high-contrast .bar, body.vscode-hig
   .sidenav a[aria-current="page"] { forced-color-adjust: none; background: Highlight; color: HighlightText; }
   .fill, .bar { forced-color-adjust: none; background: CanvasText; }
   .hm, .dbar, .ring-fg, .spark-line { forced-color-adjust: none; fill: CanvasText; stroke: CanvasText; }
-  .hm.h0, .ring-bg, .bar-hit, .spark-area { forced-color-adjust: none; fill: Canvas; stroke: GrayText; }
+  .hm.h0, .ring-bg, .spark-area { forced-color-adjust: none; fill: Canvas; stroke: GrayText; }
   .dbar-today, .ring-fg { forced-color-adjust: none; fill: Highlight; stroke: Highlight; }
   .ring-fg { fill: none; }
   .hm.now { stroke: Highlight; stroke-width: 2; }
