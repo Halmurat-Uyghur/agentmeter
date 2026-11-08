@@ -150,6 +150,12 @@
         "title": "Choose Currency…",
         "category": "Copilot Usage",
         "icon": "$(globe)"
+      },
+      {
+        "command": "copilotUsageMonitor.selectPalette",
+        "title": "Choose Colours…",
+        "category": "Copilot Usage",
+        "icon": "$(symbol-color)"
       }
     ],
     "walkthroughs": [
@@ -227,6 +233,30 @@
           "default": false,
           "scope": "application",
           "description": "Show the details panel's section navigation as a narrow icon rail. The toggle at the top of the navigation sets this."
+        },
+        "copilotUsageMonitor.palette": {
+          "type": "string",
+          "default": "theme",
+          "scope": "application",
+          "enum": [
+            "theme",
+            "ember",
+            "ocean",
+            "forest",
+            "violet",
+            "rose",
+            "graphite"
+          ],
+          "enumDescriptions": [
+            "Follow the colour theme: its chart colours set the accent and the model colours.",
+            "Orange accent: the panel's classic look, the same on every theme.",
+            "Blue accent.",
+            "Green accent.",
+            "Purple accent.",
+            "Rose accent.",
+            "Slate-grey accent, for a quieter panel."
+          ],
+          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Colours… button and \"Copilot Usage: Choose Colours…\" set this."
         },
         "copilotUsageMonitor.statusBar": {
           "type": "string",
@@ -362,6 +392,11 @@
           "command": "copilotUsageMonitor.pinSession",
           "when": "view == copilotUsageMonitor.summary",
           "group": "1_view@4"
+        },
+        {
+          "command": "copilotUsageMonitor.selectPalette",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@5"
         }
       ]
     }

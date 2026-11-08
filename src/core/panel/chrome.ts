@@ -1,15 +1,16 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
-// the month / unit / filter toolbar and the section nav. Scripts stay off; the
+// the month / unit / filter / colours toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
 import { costLabel, costNotes, estWord, LOCAL_BANNER, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
 import type { Health, Snapshot, ViewOptions } from "../types";
 import { icon, logo } from "./icons";
-import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
+import { commandHref, filterHref, navToggleHref, paletteHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
 import { clock, escapeHtml, monthKey, monthTitle, plural, projectLabel, viewedStart } from "./shared";
 
-export function page(body: string, cspSource: string, sectionLabel: string): string {
+/** `extraCss` is the chosen palette's variable overrides (src/core/palettes.ts), "" for the theme's colours. */
+export function page(body: string, cspSource: string, sectionLabel: string, extraCss = ""): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -17,7 +18,7 @@ export function page(body: string, cspSource: string, sectionLabel: string): str
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${escapeHtml(cspSource)} 'unsafe-inline';">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(sectionLabel)} · Copilot Usage (Local)</title>
-<style>${PANEL_CSS}</style>
+<style>${PANEL_CSS}${extraCss}</style>
 </head>
 <body>
 <div class="page">
@@ -73,7 +74,7 @@ export function stateNote(h: Health): string {
   return "";
 }
 
-/** Filter chips, month navigation and the tokens / cost switch: the same on every section. */
+/** Filter chips, month navigation, the tokens / cost switch and the colours button: the same on every section. */
 export function toolbar(s: Snapshot, view: ViewOptions): string {
   const viewed = viewedStart(s);
   const starts = (s.history ?? []).map((h) => h.monthStartMs);
@@ -101,9 +102,10 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
   const filters = f
     ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
     : "";
-  return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
+  const colours = link("btn", "Colours…", paletteHref(), "Choose a colour palette for the panel");
+  return `<div class="toolbar" role="group" aria-label="Month, unit, filter and colours">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>
-  <div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div>
+  <div class="tools"><div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div>${colours}</div>
 </div></div>`;
 }
 

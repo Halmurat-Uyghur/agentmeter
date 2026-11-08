@@ -222,7 +222,7 @@ describe("gates", () => {
     expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
-  it("settings writes: panelNavCollapsed, display and currency from extension.ts, targetAlert (to false) only from the alert", () => {
+  it("settings writes: panelNavCollapsed, display, currency and palette from extension.ts, targetAlert (to false) only from the alert", () => {
     const writes = new Map<string, string[]>();
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
       const src = readFileSync(f, "utf8");
@@ -232,13 +232,13 @@ describe("gates", () => {
       if (keys.length) writes.set(f.slice(ROOT.length + 1), keys);
     }
     expect(Object.fromEntries(writes)).toEqual({
-      [join("src", "extension.ts")]: ["panelNavCollapsed", "display", "currency"],
+      [join("src", "extension.ts")]: ["panelNavCollapsed", "display", "currency", "palette"],
       [join("src", "vscode", "targetAlert.ts")]: ["targetAlert"],
     });
     expect(readFileSync(join(ROOT, "src", "vscode", "targetAlert.ts"), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
   });
 
-  it("the panel allows exactly six commands, wired as the webview's allowlist (D30; showSession v0.6; toggleNav)", () => {
+  it("the panel allows exactly seven commands, wired as the webview's allowlist (D30; showSession v0.6; toggleNav; selectPalette v0.8)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
@@ -246,6 +246,7 @@ describe("gates", () => {
       "copilotUsageMonitor.showSection",
       "copilotUsageMonitor.showSession",
       "copilotUsageMonitor.toggleNav",
+      "copilotUsageMonitor.selectPalette",
     ]);
     const panel = readFileSync(join(ROOT, "src", "vscode", "panel.ts"), "utf8");
     expect(panel).toContain("enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: []");
@@ -302,8 +303,30 @@ describe("gates", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const scope = (k: string) => pkg.contributes.configuration.properties[`copilotUsageMonitor.${k}`].scope;
     for (const k of ["copilotHome", "projectNames", "sessionTotals"]) expect(scope(k), k).toBe("machine");
-    // application: a workspace's settings can neither turn on the rate request nor the alert
-    for (const k of ["currency", "targetAlert"]) expect(scope(k), k).toBe("application");
+    // application: a workspace's settings can neither turn on the rate request nor the alert; the
+    // palette and the nav state are the user's look, written Global by their commands (v0.8)
+    for (const k of ["currency", "targetAlert", "palette", "panelNavCollapsed"]) expect(scope(k), k).toBe("application");
+  });
+
+  it("manifest (v0.8): the palette setting, its command and the side bar menu entry", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const p = pkg.contributes.configuration.properties["copilotUsageMonitor.palette"];
+    expect(p).toMatchObject({ type: "string", default: "theme", scope: "application" });
+    expect(p.enum[0]).toBe("theme");
+    expect(p.enumDescriptions).toHaveLength(p.enum.length);
+    for (const t of [p.description, ...p.enumDescriptions]) expect(t).not.toMatch(COPY_RE);
+    expect(pkg.contributes.commands).toContainEqual({ command: "copilotUsageMonitor.selectPalette", title: "Choose Colours…", category: "Copilot Usage", icon: "$(symbol-color)" });
+    expect(pkg.contributes.menus["view/title"]).toContainEqual({ command: "copilotUsageMonitor.selectPalette", when: "view == copilotUsageMonitor.summary", group: "1_view@5" });
+    // the handler writes the user settings only, after validating the id against the closed list
+    const ext = readFileSync(join(ROOT, "src", "extension.ts"), "utf8");
+    const handler = /const selectPalette = async \(arg\?: unknown\) => \{([\s\S]*?)\n  \};/.exec(ext);
+    expect(handler, "selectPalette handler").not.toBeNull();
+    expect(handler![1]).toContain("else if (isPaletteId(arg)) id = arg;");
+    expect(handler![1]).toContain("else return;");
+    expect(handler![1]).toContain('.update("palette", id, vscode.ConfigurationTarget.Global)');
+    const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+    expect(readme).toContain("`copilotUsageMonitor.palette`");
+    expect(readme).toContain("the panel allows exactly seven commands");
   });
 
   it("the rate reply is size-capped before parsing (v0.7)", () => {

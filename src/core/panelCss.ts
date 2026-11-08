@@ -1,7 +1,9 @@
 // Styles for the details panel. Colours come from the VS Code theme variables
 // that every webview receives, so the panel follows light, dark and
 // high-contrast themes; the fallbacks only matter outside VS Code (tests,
-// previews). No fonts, images or URLs are loaded.
+// previews). A chosen palette (src/core/palettes.ts) appends overrides of --hot and
+// the --c-* family variables on body.vscode-light / body.vscode-dark after this sheet.
+// No fonts, images or URLs are loaded.
 export const PANEL_CSS = `
 :root {
   --bg: var(--vscode-editor-background, #fbfaf7);
@@ -27,7 +29,9 @@ export const PANEL_CSS = `
   --mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif); font-size: 13px; line-height: 1.45; }
+/* --hot-text sits on body, not :root, so it follows a palette's --hot override (a custom property
+   resolves its var() references where it is declared) */
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif); font-size: 13px; line-height: 1.45; --hot-text: color-mix(in srgb, var(--hot) 75%, var(--fg)); }
 .page { max-width: 1240px; margin: 0 auto; padding: 18px 22px 30px; }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
@@ -113,6 +117,7 @@ ul.plain li { margin: 3px 0; }
 
 .nav { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 16px; margin: 4px 0 0; }
 .nav .months, .nav .unit { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nav .tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .nav .months b { font-size: 14px; min-width: 128px; text-align: center; }
 .btn, .seg { display: inline-block; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); text-decoration: none; font-size: 12px; }
 a.btn:hover, a.seg:hover { border-color: var(--accent); color: var(--accent); }
@@ -215,7 +220,7 @@ details.more[open] > summary::before { content: "▾ "; }
 .card .big { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
 .card .sub { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
 .small { font-size: 11px; }
-.hot { color: var(--hot); }
+.hot { color: var(--hot-text); }
 .lbl { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
 .lbl b { margin-left: 4px; font-weight: 600; }
 .hero-grid { display: grid; grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.2fr) auto; gap: 14px 22px; align-items: start; }

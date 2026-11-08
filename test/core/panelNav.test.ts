@@ -85,7 +85,7 @@ const ROOT = join(__dirname, "..", "..");
 const render = (s: Snapshot | undefined, section?: SectionId, view?: Parameters<typeof renderPanelHtml>[2]) => renderPanelHtml(s, "x", view, section);
 
 describe("command allowlist", () => {
-  it("PANEL_COMMANDS is exactly the six panel commands", () => {
+  it("PANEL_COMMANDS is exactly the seven panel commands", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
@@ -93,6 +93,7 @@ describe("command allowlist", () => {
       "copilotUsageMonitor.showSection",
       "copilotUsageMonitor.showSession",
       "copilotUsageMonitor.toggleNav",
+      "copilotUsageMonitor.selectPalette",
     ]);
   });
 
@@ -226,8 +227,10 @@ describe("nav and page structure", () => {
     const s = snap({ health: health({ state: "no-dir" }), filter: { tool: "bash" } });
     for (const section of SECTIONS) {
       const html = render(s, section);
-      expect(html).toContain('role="group" aria-label="Month, unit and filter"');
+      expect(html).toContain('role="group" aria-label="Month, unit, filter and colours"');
       expect(html).toContain("Pick month…");
+      // the colours button (v0.8) sits after the unit switch and takes no argument
+      expect(html).toMatch(/<div class="tools"><div class="unit">.*<\/div><a class="btn" href="command:copilotUsageMonitor.selectPalette\?%5B%5D" title="Choose a colour palette for the panel">Colours…<\/a><\/div>/);
       expect(html).toContain("USD (est.)");
       expect(html).toMatch(/class="fchip"[^>]*>Tool: <b>bash<\/b>/);
       expect(html).toContain("copilotUsageMonitor.copilotHome");

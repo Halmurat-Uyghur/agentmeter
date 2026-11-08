@@ -25,6 +25,7 @@ interface TestState {
   panelOpen: boolean;
   panelTitle?: string;
   panelSection: string;
+  panelPalette: string;
   panelRenders: number;
   panelActive: boolean;
   panelHeld: boolean;
@@ -182,7 +183,8 @@ suite("Copilot Usage Monitor", () => {
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
     const c = ext.packageJSON.contributes;
     assert.strictEqual(c.viewsContainers.activitybar[0].id, "copilotUsageMonitor");
-    assert.strictEqual(c.viewsContainers.activitybar[0].icon, "$(graph)");
+    // the logo (media/activity.svg) replaced the generic graph glyph in 0.7.x
+    assert.strictEqual(c.viewsContainers.activitybar[0].icon, "media/activity.svg");
     assert.strictEqual(c.views.copilotUsageMonitor[0].id, "copilotUsageMonitor.summary");
     assert.strictEqual(c.views.copilotUsageMonitor[0].type, "webview");
     assert.strictEqual(c.viewsWelcome, undefined);
@@ -394,6 +396,25 @@ suite("Copilot Usage Monitor", () => {
       await config().update("statusBar", undefined, vscode.ConfigurationTarget.Global);
     }
     await waitFor((x) => x.statusText.startsWith("$(pulse) Local today: "));
+  });
+
+  test("v0.8: copilotUsageMonitor.palette recolours the panel; selectPalette with an id writes the user setting, other ids are ignored", async () => {
+    try {
+      await vscode.commands.executeCommand("copilotUsageMonitor.showDetails");
+      assert.strictEqual((await state()).panelPalette, "theme");
+      await config().update("palette", "ocean", vscode.ConfigurationTarget.Global);
+      await waitFor((x) => x.panelPalette === "ocean");
+      await vscode.commands.executeCommand("copilotUsageMonitor.selectPalette", "forest");
+      await waitFor((x) => x.panelPalette === "forest");
+      assert.strictEqual(config().inspect("palette")?.globalValue, "forest");
+      await vscode.commands.executeCommand("copilotUsageMonitor.selectPalette", "Forest");
+      await sleep(200);
+      assert.strictEqual((await state()).panelPalette, "forest");
+      assert.strictEqual(config().inspect("palette")?.globalValue, "forest");
+    } finally {
+      await config().update("palette", undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.panelPalette === "theme");
   });
 
   test("v0.6: the getting-started walkthrough is contributed and opens", async () => {

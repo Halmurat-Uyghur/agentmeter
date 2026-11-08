@@ -12,6 +12,7 @@ import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./c
 import { isSessionId } from "./core/extract";
 import { cleanRange, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor } from "./core/monitor";
+import { cleanPaletteId, isPaletteId, palettePickItems, type PaletteId } from "./core/palettes";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
@@ -80,12 +81,18 @@ function readNavCollapsed(): boolean {
   return vscode.workspace.getConfiguration(SECTION).get<unknown>("panelNavCollapsed") === true;
 }
 
+/** `copilotUsageMonitor.palette`: the panel's colour palette; anything unknown is "theme" (v0.8). */
+function readPalette(): PaletteId {
+  return cleanPaletteId(vscode.workspace.getConfiguration(SECTION).get<unknown>("palette"));
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const { sink, channel } = createOutputSink();
   const log = new Logger(sink);
   const status = new StatusBar("copilotUsageMonitor.showDetails");
   const panel = new DetailsPanel(undefined, context.extensionUri && vscode.Uri.joinPath(context.extensionUri, "media", "icon.svg"));
   panel.setNavCollapsed(readNavCollapsed());
+  panel.setPalette(readPalette());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */
   const alert = new TargetAlert(() => panel.show(), log);
@@ -285,6 +292,26 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.workspace.getConfiguration(SECTION).update("currency", pick.code, vscode.ConfigurationTarget.Global);
   };
 
+  /** A palette id applies that palette; no argument opens a picker; anything else is ignored (v0.8).
+   * Drawn at once and saved in the user settings (application scope, like the currency); a
+   * rejected write is logged and the panel goes back to the saved palette. */
+  const selectPalette = async (arg?: unknown) => {
+    let id: PaletteId;
+    if (arg === undefined) {
+      const pick = await vscode.window.showQuickPick(palettePickItems(readPalette()), { placeHolder: "Colour palette for the details panel" });
+      if (!pick) return;
+      id = pick.id;
+    } else if (isPaletteId(arg)) id = arg;
+    else return;
+    panel.setPalette(id);
+    try {
+      await vscode.workspace.getConfiguration(SECTION).update("palette", id, vscode.ConfigurationTarget.Global);
+    } catch {
+      log.error("palette.write", "WRITE_FAILED");
+      panel.setPalette(readPalette());
+    }
+  };
+
   const start = () => {
     stop();
     const { root, source } = resolve();
@@ -359,6 +386,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.showSection", showSection),
     vscode.commands.registerCommand("copilotUsageMonitor.showSession", showSession),
     vscode.commands.registerCommand("copilotUsageMonitor.toggleNav", toggleNav),
+    vscode.commands.registerCommand("copilotUsageMonitor.selectPalette", selectPalette),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       folders = readFolders();
       render();
@@ -370,6 +398,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       if (e.affectsConfiguration(`${SECTION}.currency`)) void refreshRate();
       if (e.affectsConfiguration(`${SECTION}.panelNavCollapsed`)) panel.setNavCollapsed(readNavCollapsed());
+      if (e.affectsConfiguration(`${SECTION}.palette`)) panel.setPalette(readPalette());
       const h = readHistory();
       let rootChanged = false;
       if (e.affectsConfiguration(SETTING)) {
@@ -397,6 +426,7 @@ export function activate(context: vscode.ExtensionContext): void {
         panelTitle: panel.title,
         panelSection: panel.section,
         panelNavCollapsed: panel.navCollapsed,
+        panelPalette: panel.paletteId,
         panelRenders: panel.renders,
         panelActive: panel.active,
         panelHeld: panel.held,

@@ -1,14 +1,17 @@
 import * as vscode from "vscode";
 import { DEFAULT_VIEW } from "../core/format";
+import { DEFAULT_PALETTE, type PaletteId } from "../core/palettes";
 import { DEFAULT_SECTION, PANEL_COMMANDS, renderPanelHtml, type SectionId } from "../core/panelHtml";
 import { FOCUSED_REDRAW_MS, RedrawThrottle } from "../core/redrawThrottle";
 import type { Snapshot, ViewOptions } from "../core/types";
 
 /** The details webview: scripts off, no local resources, command links limited
- * to PANEL_COMMANDS (month, unit, filter, section, session calls and the nav toggle), re-rendered per snapshot.
+ * to PANEL_COMMANDS (month, unit, filter, section, session calls, the nav toggle and the colour
+ * picker), re-rendered per snapshot.
  * The selected section is held here for the VS Code session only (D30): never
  * persisted and not part of ViewOptions. Whether the section nav is collapsed to an icon
- * rail is set by the extension (which remembers it across sessions) and drawn at once.
+ * rail, and which colour palette is used, are set by the extension (which remembers them in
+ * the user settings) and drawn at once.
  *
  * Redraws (A11y C1): while the panel is the active editor, a new snapshot redraws it
  * at most once per FOCUSED_REDRAW_MS (trailing), so keyboard and screen-reader users
@@ -22,6 +25,7 @@ export class DetailsPanel implements vscode.Disposable {
   private html: string | undefined;
   private current: SectionId = DEFAULT_SECTION;
   private collapsed = false;
+  private palette: PaletteId = DEFAULT_PALETTE;
   private readonly throttle: RedrawThrottle;
   /** webview.html assignments, for the integration tests */
   renders = 0;
@@ -78,6 +82,17 @@ export class DetailsPanel implements vscode.Disposable {
     this.render(true);
   }
 
+  get paletteId(): PaletteId {
+    return this.palette;
+  }
+
+  /** Switches the colour palette (v0.8); a change is drawn at once. */
+  setPalette(id: PaletteId): void {
+    if (id === this.palette) return;
+    this.palette = id;
+    this.render(true);
+  }
+
   get isOpen(): boolean {
     return this.panel !== undefined;
   }
@@ -105,7 +120,7 @@ export class DetailsPanel implements vscode.Disposable {
   /** What the user chose: a change here is drawn at once, never held back. */
   private key(): string {
     const s = this.last;
-    return JSON.stringify([this.current, this.collapsed, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state, s?.month?.detail?.sessionId ?? null]);
+    return JSON.stringify([this.current, this.collapsed, this.palette, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state, s?.month?.detail?.sessionId ?? null]);
   }
 
   /** `now`: a user action (show, a section switch) that must not wait for the throttle. */
@@ -119,7 +134,7 @@ export class DetailsPanel implements vscode.Disposable {
    * so an unchanged document is not assigned again. */
   private draw(): boolean {
     if (!this.panel) return false;
-    const html = renderPanelHtml(this.last, this.panel.webview.cspSource, this.view, this.current, this.collapsed);
+    const html = renderPanelHtml(this.last, this.panel.webview.cspSource, this.view, this.current, this.collapsed, this.palette);
     if (html === this.html) return false;
     this.html = html;
     this.renders++;

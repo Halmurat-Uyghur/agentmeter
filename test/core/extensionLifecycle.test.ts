@@ -1,7 +1,8 @@
 // src/extension.ts and src/vscode/* against the fake `vscode` module (test/fakes/vscode.ts,
 // aliased in vitest.config.ts): the rate timer's lifecycle (F1), the unit command (F2),
-// the alert's "Don't show again" write (F3), the viewed month across restarts (F4) and
-// the rate response size cap (F5). Ported from review agent 7's harness (v0.7).
+// the alert's "Don't show again" write (F3), the viewed month across restarts (F4),
+// the rate response size cap (F5) and the colour palette command (v0.8). Ported from review
+// agent 7's harness (v0.7).
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ async function load(settings: Record<string, unknown> = {}) {
   return {
     fake,
     cmd,
-    testState: () => cmd("_testState")() as { snapshot?: Snapshot; view: ViewOptions },
+    testState: () => cmd("_testState")() as { snapshot?: Snapshot; view: ViewOptions; panelPalette: string },
     deactivate: () => {
       for (const d of ctx.subscriptions) d.dispose();
     },
@@ -119,6 +120,61 @@ describe("extension lifecycle: setUnit (F2)", () => {
     await expect(cmd("setUnit")("cost")).resolves.toBeUndefined();
     expect(testState().view.unit).toBe("tokens");
     expect(fake.state.log).toContain("error unit.write WRITE_FAILED");
+    deactivate();
+  });
+});
+
+describe("extension lifecycle: colour palette (v0.8)", () => {
+  it("starts from the setting, falls back to theme on junk, and follows setting changes", async () => {
+    const { fake, testState, deactivate } = await load({ palette: "forest" });
+    expect(testState().panelPalette).toBe("forest");
+    fake.state.global[`${SECTION}.palette`] = "Forest";
+    fake.fireConfigChange(`${SECTION}.palette`);
+    expect(testState().panelPalette).toBe("theme");
+    fake.state.global[`${SECTION}.palette`] = "rose";
+    fake.fireConfigChange(`${SECTION}.palette`);
+    expect(testState().panelPalette).toBe("rose");
+    expect(fake.state.updates).toEqual([]);
+    deactivate();
+  });
+
+  it("selectPalette with an id draws it at once and writes the user setting; other arguments are ignored", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    expect(testState().panelPalette).toBe("theme");
+    await cmd("selectPalette")("ocean");
+    expect(testState().panelPalette).toBe("ocean");
+    expect(fake.state.updates).toEqual([["palette", "ocean", fake.ConfigurationTarget.Global]]);
+    for (const bad of ["Ocean", "", 3, null, ["ember"], { id: "ember" }]) await cmd("selectPalette")(bad);
+    expect(testState().panelPalette).toBe("ocean");
+    expect(fake.state.updates).toHaveLength(1);
+    deactivate();
+  });
+
+  it("selectPalette with no argument offers every palette, the current one marked, and writes the pick", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ palette: "violet" });
+    let offered: { label: string; description: string; id: string }[] = [];
+    fake.window.showQuickPick = (async (items: typeof offered) => {
+      offered = items;
+      return undefined;
+    }) as never;
+    await cmd("selectPalette")();
+    expect(offered.map((i) => i.id)).toEqual(["theme", "ember", "ocean", "forest", "violet", "rose", "graphite"]);
+    expect(offered.find((i) => i.id === "violet")!.description).toMatch(/ · current$/);
+    expect(fake.state.updates).toEqual([]);
+    expect(testState().panelPalette).toBe("violet");
+    fake.window.showQuickPick = (async (items: typeof offered) => items.find((i) => i.id === "graphite")) as never;
+    await cmd("selectPalette")();
+    expect(testState().panelPalette).toBe("graphite");
+    expect(fake.state.updates).toEqual([["palette", "graphite", fake.ConfigurationTarget.Global]]);
+    deactivate();
+  });
+
+  it("a rejected palette write is logged and the panel goes back to the saved palette", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ palette: "ember" });
+    fake.state.updateReject = true;
+    await expect(cmd("selectPalette")("ocean")).resolves.toBeUndefined();
+    expect(testState().panelPalette).toBe("ember");
+    expect(fake.state.log).toContain("error palette.write WRITE_FAILED");
     deactivate();
   });
 });

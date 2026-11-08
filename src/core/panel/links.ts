@@ -1,5 +1,5 @@
-// The panel's command links (D20, D26, D30; showSession v0.6). The webview allows exactly
-// PANEL_COMMANDS; every argument is JSON-encoded, then URI-encoded, and the
+// The panel's command links (D20, D26, D30; showSession v0.6; selectPalette v0.8). The webview
+// allows exactly PANEL_COMMANDS; every argument is JSON-encoded, then URI-encoded, and the
 // receiving handler validates it (a section id is only compared to a closed list).
 import type { SectionId } from "./sections";
 
@@ -11,6 +11,7 @@ export const PANEL_COMMANDS = [
   "copilotUsageMonitor.showSection",
   "copilotUsageMonitor.showSession",
   "copilotUsageMonitor.toggleNav",
+  "copilotUsageMonitor.selectPalette",
 ] as const;
 
 export type PanelCommand = (typeof PANEL_COMMANDS)[number];
@@ -39,4 +40,9 @@ export function sessionCallsHref(sessionId: string): string {
 /** A link that collapses or expands the section nav; the handler takes no argument. */
 export function navToggleHref(): string {
   return commandHref("copilotUsageMonitor.toggleNav");
+}
+
+/** A link that opens the colour palette picker (no argument: the handler shows a quick pick). */
+export function paletteHref(): string {
+  return commandHref("copilotUsageMonitor.selectPalette");
 }
