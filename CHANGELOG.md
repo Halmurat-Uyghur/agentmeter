@@ -31,7 +31,7 @@ Claude Code and the Codex CLI join the Copilot CLI as usage sources, read from t
 
 ### Fixed
 
-- No 0.7.0 behaviour needed a fix in this release; the fixes made while building the new readers are part of the features above.
+- No 0.7.1 behaviour needed a fix in this release; the fixes made while building the new readers are part of the features above.
 
 ## 0.7.1 - 2026-11-08
 
