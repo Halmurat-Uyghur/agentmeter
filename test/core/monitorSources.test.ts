@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { Logger } from "../../src/core/log";
 import { ClaudeSourceReader } from "../../src/core/claude";
-import { UsageMonitor, SESSION_ROWS } from "../../src/core/monitor";
-import { emptyReadResult, type FileReader, type SourceCandidate, type SourceDiscoverResult, type SourceReader } from "../../src/core/source";
-import type { Snapshot } from "../../src/core/types";
+import { COLD_REDISCOVER_MS, PRIOR_REFRESH_MS, RECENT_MS, UsageMonitor, SESSION_ROWS } from "../../src/core/monitor";
+import { emptyReadResult, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceReader } from "../../src/core/source";
+import type { Snapshot, Source, UsageRecord } from "../../src/core/types";
 import { jsonl, sessionTree, usageEvent } from "../fixtures/build";
 import { CLAUDE_CANARY, claudeAssistantLine, claudeTree, claudeUserLine } from "../fixtures/claude";
 import { CODEX_CANARY, codexMeta, codexRecord, codexTokenCount, codexTree, codexTurn } from "../fixtures/codex";
@@ -83,6 +83,7 @@ const last = (): Snapshot => {
   return s;
 };
 
+// codexTree takes a Date (or seconds), claudeTree milliseconds.
 const touch = (p: string, ms: number) => utimes(p, ms / 1000, ms / 1000);
 
 beforeEach(async () => {
@@ -136,7 +137,7 @@ describe("multi-source monitor", () => {
   it("three sources: bySource sums, byModel source counts, and the source filter narrows the month", async () => {
     await sessionTree(copilotRoot, [{ id: A, lines: jsonl([pRec(A, 1), pRec(A, 2)]), mtime: new Date(HOT) }]);
     await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1), cRec(cs(1), 2), cRec(cs(1), 3)], mtime: HOT }]);
-    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 4), mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 4), mtime: new Date(HOT) }]);
     make();
     await monitor!.refresh({ full: true });
     const s = last();
@@ -242,7 +243,7 @@ describe("multi-source monitor", () => {
     clock += 500;
     await monitor!.refresh();
     expect(open.mock.calls.some((c) => String(c[0]) === edited)).toBe(false); // not before discovery
-    clock += 10_000;
+    clock += 60_000; // a file edit leaves the directory mtimes alone: the next 60 s walk sees it (D50)
     await monitor!.refresh();
     expect(open.mock.calls.some((c) => String(c[0]) === edited)).toBe(true);
     expect(last().today?.records).toBe(53);
@@ -305,7 +306,7 @@ describe("multi-source monitor", () => {
 
   it("sessionsBySource counts every session of the month, beyond the session rows", async () => {
     for (let i = 0; i < 60; i++) await claudeTree(claudeRoot, [{ sessionId: cs(i), lines: [cRec(cs(i), 1)], mtime: COLD }]);
-    await codexTree(codexRoot, [1, 2, 3].map((n) => ({ date: "2026/11/08", sessionId: xs(n), lines: xFile(xs(n), 1), mtime: COLD })));
+    await codexTree(codexRoot, [1, 2, 3].map((n) => ({ date: "2026/11/08", sessionId: xs(n), lines: xFile(xs(n), 1), mtime: new Date(COLD) })));
     make();
     await monitor!.refresh({ full: true });
     const m = last().month!;
@@ -317,7 +318,7 @@ describe("multi-source monitor", () => {
   it("a Codex token_count-only file yields a session total, hidden once a record arrives", async () => {
     const ms = T0 - 3_600_000;
     const [file] = await codexTree(codexRoot, [
-      { date: "2026/11/08", sessionId: xs(1), lines: [codexMeta({ id: xs(1), timestamp: iso(ms) }), codexTurn({ timestamp: iso(ms) }), codexTokenCount({ timestamp: iso(ms) })], mtime: HOT },
+      { date: "2026/11/08", sessionId: xs(1), lines: [codexMeta({ id: xs(1), timestamp: iso(ms) }), codexTurn({ timestamp: iso(ms) }), codexTokenCount({ timestamp: iso(ms) })], mtime: new Date(HOT) },
     ]);
     make();
     await monitor!.refresh({ full: true });
@@ -366,7 +367,7 @@ describe("multi-source monitor", () => {
 
   it("an off source's root is never touched", async () => {
     await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: HOT }]);
-    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 1), mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 1), mtime: new Date(HOT) }]);
     await sessionTree(copilotRoot, [{ id: B, lines: jsonl([pRec(B, 1)]), mtime: new Date(HOT) }]);
     const spies = [vi.spyOn(fs.promises, "readdir"), vi.spyOn(fs.promises, "lstat"), vi.spyOn(fs.promises, "stat"), vi.spyOn(fs.promises, "open")];
     make({ sources: { codex: { root: codexRoot, rootSource: "default" } } });
@@ -379,7 +380,7 @@ describe("multi-source monitor", () => {
 
   it("canary: no snapshot or log line carries Claude Code or Codex log content", async () => {
     await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1), claudeUserLine({ sessionId: cs(1) })], subagents: [{ id: "a1", lines: [cRec(cs(1), 2)] }], mtime: HOT }]);
-    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: [...xFile(xs(1), 2), codexTokenCount()], mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: [...xFile(xs(1), 2), codexTokenCount()], mtime: new Date(HOT) }]);
     make();
     await monitor!.refresh({ full: true });
     const all = JSON.stringify(snaps) + logLines.join("\n");
@@ -459,7 +460,7 @@ describe("multi-source monitor", () => {
     for (const p of paths) expect(reads.get(p)).toBe(1);
     // A changed mtime seen by the next discovery retries each file once.
     mtimeMs = COLD + 1000;
-    clock += 10_000;
+    clock += 60_000; // the next walk (COLD_REDISCOVER_MS; the stub's directory mtime never changes)
     await monitor!.refresh();
     for (const p of paths) expect(reads.get(p)).toBe(2);
     clock += 500;
@@ -504,7 +505,7 @@ describe("multi-source monitor", () => {
   });
   it("idle ticks over primed Claude Code and Codex files with project names on emit no snapshot", async () => {
     await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: HOT }]);
-    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 2), mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 2), mtime: new Date(HOT) }]);
     await sessionTree(copilotRoot, [{ id: A, lines: jsonl([pRec(A, 1)]), mtime: new Date(HOT) }]);
     make();
     await monitor!.refresh({ full: true });
@@ -529,7 +530,7 @@ describe("multi-source monitor", () => {
       await monitor!.refresh();
     }
     expect(snaps.length).toBe(before);
-    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 1), mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 1), mtime: new Date(HOT) }]);
     clock += 500;
     await monitor!.refresh();
     expect(snaps.length).toBe(before + 1);
@@ -581,7 +582,7 @@ describe("multi-source monitor", () => {
     expect(last().health.unreadableFiles).toBe(0);
     // A root that goes permission → ok re-reads its files once.
     rootError = "permission";
-    clock += 10_000;
+    clock += 60_000;
     await monitor!.refresh();
     expect(last().health.sources?.["claude-code"]?.state).toBe("permission");
     const locked = reads;
@@ -595,5 +596,203 @@ describe("multi-source monitor", () => {
     clock += 500;
     await monitor!.refresh();
     expect(reads).toBe(locked + 1);
+  });
+});
+
+/** A stub reader: candidates (one file each), counted discover() and rootDirMtime() calls, scripted reads. */
+interface StubFile {
+  sessionId: string;
+  folderId?: string;
+  mtimeMs: number;
+  live?: boolean;
+  read?: () => Partial<FileReadResult>;
+}
+function stubReader(source: Source, files: StubFile[], o: { dirMtime?: () => number; capped?: number } = {}) {
+  const counts = { discover: 0, dirMtime: 0, reads: new Map<string, number>() };
+  const base = join(dir, `stub-${source}`);
+  const reader: SourceReader = {
+    source,
+    root: base,
+    rootSource: "default",
+    rootDirMtime: async () => {
+      counts.dirMtime++;
+      return o.dirMtime?.() ?? 1;
+    },
+    discover: async (): Promise<SourceDiscoverResult> => {
+      counts.discover++;
+      return {
+        ok: true,
+        candidates: files.map((f) => ({
+          source,
+          sessionId: f.sessionId,
+          folderId: f.folderId ?? f.sessionId,
+          files: [{ path: join(base, `${f.sessionId}.jsonl`), mtimeMs: f.mtimeMs, size: 10 }],
+          mtimeMs: f.mtimeMs,
+          live: f.live ?? false,
+        })),
+        unreadable: [],
+        dirMtimeMs: o.dirMtime?.() ?? 1,
+        ...(o.capped !== undefined && { capped: o.capped }),
+      };
+    },
+    pathAllowed: () => true,
+    open: (p: string, c: SourceCandidate): FileReader => {
+      const f = files.find((x) => x.sessionId === c.sessionId)!;
+      return {
+        read: async () => {
+          counts.reads.set(p, (counts.reads.get(p) ?? 0) + 1);
+          // a scripted result is delivered once; later reads find nothing new
+          const r = (counts.reads.get(p) === 1 && f.read?.()) || {};
+          return { ...emptyReadResult(), ...r };
+        },
+      };
+    },
+  };
+  return { reader, counts };
+}
+
+function stubRec(source: Source, sessionId: string, folderId: string, n: number, ms = T0 - 3_600_000 + n * 1000): UsageRecord {
+  return {
+    key: `${source}-${sessionId}-${n}`,
+    keySource: source === "codex" ? "codexResponseId" : source === "copilot" ? "usageId" : "claudeMessageId",
+    source,
+    kind: "call",
+    sessionId,
+    folderId,
+    timestampMs: ms,
+    model: "model-a",
+    tokens: { input: 100, output: 10 },
+  };
+}
+
+describe("fix wave F2", () => {
+  it("D42: a non-Copilot session counts as without usage only when it had candidate lines; Copilot keeps its rule", async () => {
+    const claude = stubReader("claude-code", [
+      { sessionId: cs(1), mtimeMs: COLD, read: () => ({ activity: 1, candidates: 0 }) }, // user lines only
+      { sessionId: cs(2), mtimeMs: COLD, read: () => ({ activity: 2, candidates: 1 }) }, // an assistant line without usage
+      { sessionId: cs(3), mtimeMs: COLD, read: () => ({ activity: 2, candidates: 2, usage: 1, records: [stubRec("claude-code", cs(3), cs(3), 1)] }) },
+    ]);
+    const copilot = stubReader("copilot", [{ sessionId: A, mtimeMs: COLD, read: () => ({ activity: 1 }) }]);
+    make({ readers: [copilot.reader, claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    expect(last().health.sessionsWithoutUsage).toBe(2); // cs(2) and the Copilot session
+  });
+
+  it("D50: a cold Claude tree is walked at 0 s and 60 s, not at 10-50 s while its directory mtime is unchanged; Copilot every 10 s", async () => {
+    let dirMtime = 1;
+    const claude = stubReader("claude-code", [{ sessionId: cs(1), mtimeMs: COLD }], { dirMtime: () => dirMtime });
+    const copilot = stubReader("copilot", [{ sessionId: A, mtimeMs: COLD }]);
+    make({ readers: [copilot.reader, claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    expect(claude.counts.discover).toBe(1);
+    expect(copilot.counts.discover).toBe(1);
+    // one directory check just before the walk, as its baseline
+    expect(claude.counts.dirMtime).toBe(1);
+    // 500 ms ticks: the Claude directory check runs at the 10 s cadence, not every tick
+    for (let i = 0; i < 19; i++) {
+      clock += 500;
+      await monitor!.refresh();
+    }
+    expect(claude.counts.dirMtime).toBe(1);
+    clock += 500; // 10 s
+    await monitor!.refresh();
+    expect(claude.counts.dirMtime).toBe(2);
+    expect(claude.counts.discover).toBe(1);
+    expect(copilot.counts.discover).toBe(2);
+    for (const _ of [20, 30, 40, 50]) {
+      clock += 10_000;
+      await monitor!.refresh();
+      expect(claude.counts.discover).toBe(1);
+    }
+    expect(copilot.counts.discover).toBe(6);
+    clock += 10_000; // 60 s
+    expect(COLD_REDISCOVER_MS).toBe(60_000);
+    await monitor!.refresh();
+    expect(claude.counts.discover).toBe(2);
+    expect(copilot.counts.discover).toBe(7);
+    // a changed directory mtime at the next 10 s check walks at once
+    dirMtime = 2;
+    clock += 10_000;
+    await monitor!.refresh();
+    expect(claude.counts.discover).toBe(3);
+    // a full refresh always walks
+    await monitor!.refresh({ full: true });
+    expect(claude.counts.discover).toBe(4);
+  });
+
+  it("D50: hot files are read every tick between walks", async () => {
+    const claude = stubReader("claude-code", [{ sessionId: cs(1), mtimeMs: HOT }]);
+    make({ readers: [claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    for (let i = 0; i < 10; i++) {
+      clock += 500;
+      await monitor!.refresh();
+    }
+    expect(claude.counts.discover).toBe(1);
+    expect([...claude.counts.reads.values()]).toEqual([11]);
+  });
+
+  it("a future mtime is neither hot nor live", async () => {
+    const future = T0 + 2 * RECENT_MS;
+    const claude = stubReader("claude-code", [{ sessionId: cs(1), mtimeMs: future, live: true, read: () => ({ activity: 1, candidates: 1, usage: 1, records: [stubRec("claude-code", cs(1), cs(1), 1)] }) }]);
+    make({ readers: [claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    for (let i = 0; i < 5; i++) {
+      clock += 500;
+      await monitor!.refresh();
+    }
+    expect([...claude.counts.reads.values()]).toEqual([1]);
+    expect(last().sessions.find((x) => x.folderId === cs(1))?.live).toBe(false);
+    expect(last().current?.live ?? false).toBe(false);
+  });
+
+  it("the prior month's comparison point advances at least every 60 s while the current month is viewed", async () => {
+    const copilot = stubReader("copilot", []);
+    make({ readers: [copilot.reader], historyMonths: 2 }, false);
+    await monitor!.refresh({ full: true });
+    const first = last().month?.prior?.toMs;
+    expect(first).toBeDefined();
+    const before = snaps.length;
+    for (let i = 0; i < 5; i++) {
+      clock += 10_000;
+      await monitor!.refresh();
+    }
+    expect(snaps.length).toBe(before);
+    clock += 10_000; // 60 s
+    expect(PRIOR_REFRESH_MS).toBe(60_000);
+    await monitor!.refresh();
+    expect(snaps.length).toBe(before + 1);
+    expect(last().month?.prior?.toMs).toBe(first! + 60_000);
+  });
+
+  it("a capped discovery sets health.partial", async () => {
+    const claude = stubReader("claude-code", [{ sessionId: cs(1), mtimeMs: COLD }], { capped: 5 });
+    make({ readers: [claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    expect(last().health.sources?.["claude-code"]?.capped).toBe(5);
+    expect(last().health.partial).toBe(true);
+  });
+
+  it("a copied-history line keeps its file's project label and source; a record of an unknown folder falls back to its own source", async () => {
+    const copied = cs(9);
+    const foreign = cs(7);
+    const claude = stubReader("claude-code", [
+      {
+        sessionId: cs(1),
+        mtimeMs: COLD,
+        read: () => ({ activity: 2, candidates: 2, usage: 2, label: "proj", records: [stubRec("claude-code", copied, cs(1), 1), stubRec("claude-code", cs(1), cs(1), 2)] }),
+      },
+      { sessionId: cs(2), mtimeMs: COLD, read: () => ({ activity: 1, candidates: 1, usage: 1, records: [stubRec("claude-code", foreign, foreign, 3)] }) },
+    ]);
+    make({ readers: [claude.reader] }, false);
+    await monitor!.refresh({ full: true });
+    const s = last();
+    expect(s.month!.projects.find((p) => p.name === "proj")?.calls).toBe(2);
+    expect(s.sessions.find((x) => x.folderId === cs(1))?.source).toBe("claude-code");
+    expect(s.sessions.find((x) => x.folderId === foreign)?.source).toBe("claude-code");
+    expect(s.month!.sessions.find((x) => x.sessionId === copied)?.source).toBe("claude-code");
+    monitor!.pin(foreign);
+    await monitor!.refresh();
+    expect(last().current).toMatchObject({ folderId: foreign, source: "claude-code" });
   });
 });

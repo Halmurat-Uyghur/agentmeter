@@ -182,6 +182,11 @@ function mergeRepeat(r: UsageRecord, next: UsageRecord): UsageRecord {
   return out;
 }
 
+/** The visibility-map key of `id` within `source`. */
+function idOf(source: Source, id: string): string {
+  return `${source}|${id}`;
+}
+
 function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
   const n = (m.get(id) ?? 0) + by;
   if (n > 0) m.set(id, n);
@@ -191,9 +196,10 @@ function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
 export class UsageStore {
   /** kind ("c" or "t") + "|" + source → that namespace's records */
   private readonly spaces = new Map<string, Namespace>();
-  /** sessionId → call records held; a session in here hides its session totals */
+  /** `${source}|${sessionId}` → call records held; a session in here hides its session totals.
+   * Keyed per source, so a call of one source never hides another source's total with the same id. */
   private readonly callsPerSession = new Map<string, number>();
-  /** folderId → call keys held by its files; a folder in here hides its session totals,
+  /** `${source}|${folderId}` → call keys held by its files; a folder in here hides its session totals,
    * whatever sessionId its call records carry (a resumed, forked or copied session) */
   private readonly callsPerFolder = new Map<string, number>();
   /** folderId → its current session-total records (each the record of its own entry) */
@@ -255,7 +261,7 @@ export class UsageStore {
     if (existing) {
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
-        if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
+        if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
         (existing.more ??= new Map()).set(file, r.folderId);
       }
       return false;
@@ -263,8 +269,8 @@ export class UsageStore {
     this.share(r);
     this.space(r, true).set(r.key, newEntry(r, file, r.folderId));
     if (r.kind === "call") {
-      bump(this.callsPerSession, r.sessionId, 1);
-      bump(this.callsPerFolder, r.folderId, 1);
+      bump(this.callsPerSession, idOf(r.source, r.sessionId), 1);
+      bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
     }
     return true;
   }
@@ -310,11 +316,11 @@ export class UsageStore {
         const { folderId, empty } = dropFile(entry, file);
         if (folderId === undefined) continue;
         const r = entry.record;
-        if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, folderId, -1);
+        if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
         if (empty) {
           m.delete(key);
           if (r.kind === "call") {
-            bump(this.callsPerSession, r.sessionId, -1);
+            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
           } else {
             const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
             if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
@@ -323,12 +329,14 @@ export class UsageStore {
         }
       }
     }
+    // An empty store keeps no pooled strings (ids of files that are gone).
+    if (this.pool.size > 0 && [...this.spaces.values()].every((m) => m.size === 0)) this.pool.clear();
   }
 
   /** A call record always counts; a session total only while neither its session nor its
    * folder has a call record (review 1: sourceSessionId may differ from the folder). */
   private visible(r: UsageRecord): boolean {
-    return r.kind === "call" || (!this.callsPerSession.has(r.sessionId) && !this.callsPerFolder.has(r.folderId));
+    return r.kind === "call" || (!this.callsPerSession.has(idOf(r.source, r.sessionId)) && !this.callsPerFolder.has(idOf(r.source, r.folderId)));
   }
 
   /** Session ids with at least one visible session-total record. */

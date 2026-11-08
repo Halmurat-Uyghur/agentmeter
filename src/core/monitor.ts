@@ -75,6 +75,8 @@ interface FileState {
   /** activity / usage lines over the whole file (since the last reset) */
   activity: number;
   usage: number;
+  /** lines that could have yielded a record or total (FileReadResult.candidates), since the last reset (D42) */
+  candidates: number;
   /** activity / usage lines read after the first read (the format-change window) */
   windowActivity: number;
   windowUsage: number;
@@ -96,6 +98,8 @@ interface ReaderState {
   reader: SourceReader;
   discovered: boolean;
   lastDiscoverAt: number;
+  /** when rootDirMtime() was last compared (non-Copilot readers check it every REDISCOVER_MS, D50) */
+  lastDirCheckAt: number;
   lastDirMtimeMs: number | undefined;
   error: "no-dir" | "permission" | undefined;
   /** sessionId → candidate from the last successful discover */
@@ -111,6 +115,12 @@ interface ReaderState {
 }
 
 const REDISCOVER_MS = 10_000;
+/** Claude Code and Codex: the full walk runs this often, or sooner when the 10 s directory-mtime
+ * check sees a change (a walk of thousands of files costs ~200 ms of CPU; D50). */
+export const COLD_REDISCOVER_MS = 60_000;
+/** While the current month is viewed with a prior-month comparison, the snapshot is rebuilt at
+ * least this often so the comparison's end point (`prior.toMs`) follows the clock. */
+export const PRIOR_REFRESH_MS = 60_000;
 const FORMAT_ACTIVITY = 3;
 /** progress snapshots during the first read, at most this often (D50) */
 const PROGRESS_MS = 500;
@@ -147,6 +157,9 @@ export class UsageMonitor {
   private lastDayStartMs: number | undefined;
   private pinned: string | undefined;
   private lastSignature: string | undefined;
+  /** when the last snapshot was built, and whether it compared the current month with a prior one */
+  private lastBuildMs = 0;
+  private priorFollowsClock = false;
   private disposed = false;
   /** set when something other than new lines can change the snapshot */
   private dirty = true;
@@ -179,6 +192,7 @@ export class UsageMonitor {
       reader,
       discovered: false,
       lastDiscoverAt: 0,
+      lastDirCheckAt: 0,
       lastDirMtimeMs: undefined,
       error: undefined,
       candidates: new Map(),
@@ -252,6 +266,8 @@ export class UsageMonitor {
       const dayStartMs = localDayStart(new Date(nowMs));
       // A full refresh (a command, a settings change) always rebuilds the snapshot.
       let changed = full || this.dirty || dayStartMs !== this.lastDayStartMs;
+      // The current month's prior-month comparison runs up to "now": rebuild it at least every minute.
+      if (this.priorFollowsClock && Math.abs(nowMs - this.lastBuildMs) >= PRIOR_REFRESH_MS) changed = true;
       this.dirty = false;
       for (const rs of this.readers) {
         if (await this.shouldDiscover(rs, full, nowMs, dayStartMs)) {
@@ -309,10 +325,21 @@ export class UsageMonitor {
     return done < this.files.size ? { done, total: this.files.size } : undefined;
   }
 
+  /**
+   * Copilot: every REDISCOVER_MS, or when its directory mtime changes (checked every tick; it is
+   * one stat). Claude Code and Codex: every COLD_REDISCOVER_MS, or sooner when their directory
+   * mtimes, checked every REDISCOVER_MS, change (D50). Always on a full refresh, a new day, before
+   * the first discovery and while the last one failed.
+   */
   private async shouldDiscover(rs: ReaderState, full: boolean, nowMs: number, dayStartMs: number): Promise<boolean> {
     if (full || !rs.discovered || rs.error !== undefined) return true;
     if (dayStartMs !== this.lastDayStartMs) return true;
-    if (Math.abs(nowMs - rs.lastDiscoverAt) >= REDISCOVER_MS) return true;
+    const copilot = rs.reader.source === "copilot";
+    if (Math.abs(nowMs - rs.lastDiscoverAt) >= (copilot ? REDISCOVER_MS : COLD_REDISCOVER_MS)) return true;
+    if (!copilot) {
+      if (Math.abs(nowMs - rs.lastDirCheckAt) < REDISCOVER_MS) return false;
+      rs.lastDirCheckAt = nowMs;
+    }
     return (await rs.reader.rootDirMtime()) !== rs.lastDirMtimeMs;
   }
 
@@ -327,17 +354,24 @@ export class UsageMonitor {
 
   /** Discovers one reader's files; true when the outcome differs from the last discovery's. */
   private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<boolean> {
-    this.discoverOnce(rs, await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs), nowMs);
+    // Claude Code and Codex: the 10 s check compares rootDirMtime() with its own value taken just
+    // before the walk (a change during the walk still differs), so a walk's dirMtimeMs that covers
+    // fewer directories than rootDirMtime() can never make every check look like a change (D50).
+    const before = rs.reader.source === "copilot" ? undefined : await rs.reader.rootDirMtime();
+    const result = await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs);
+    this.discoverOnce(rs, result, nowMs, dayStartMs);
+    if (result.ok && rs.reader.source !== "copilot") rs.lastDirMtimeMs = before;
     const fp = this.fingerprint(rs);
     if (fp === rs.fingerprint) return false;
     rs.fingerprint = fp;
     return true;
   }
 
-  private discoverOnce(rs: ReaderState, result: SourceDiscoverResult, nowMs: number): void {
+  private discoverOnce(rs: ReaderState, result: SourceDiscoverResult, nowMs: number, dayStartMs: number): void {
     const reader = rs.reader;
     rs.discovered = true;
     rs.lastDiscoverAt = nowMs;
+    rs.lastDirCheckAt = nowMs;
     if (!result.ok) {
       rs.lastDirMtimeMs = undefined;
       if (result.error === "OTHER") {
@@ -365,9 +399,17 @@ export class UsageMonitor {
     else delete rs.capped;
     if (result.archived !== undefined) rs.archived = result.archived;
     else delete rs.archived;
+    // A file dated more than RECENT_MS ahead of the clock (clock skew, a corrupt mtime) is
+    // neither hot nor live: otherwise it would stay so until the clock caught up. Copilot's
+    // liveness is its lock PID, not an mtime, and is kept.
+    const futureMs = nowMs + RECENT_MS;
+    const liveSinceMs = Math.max(dayStartMs, nowMs - RECENT_MS);
+    const liveOf = (c: SourceCandidate): boolean =>
+      c.live && (reader.source === "copilot" || c.files.some((f) => f.mtimeMs >= liveSinceMs && f.mtimeMs <= futureMs));
     // One candidate per session: files of the same session id join it.
     const candidates = new Map<string, SourceCandidate>();
-    for (const c of result.candidates) {
+    for (const raw of result.candidates) {
+      const c = { ...raw, live: liveOf(raw) };
       const prev = candidates.get(c.sessionId);
       if (prev === undefined) candidates.set(c.sessionId, { ...c, files: [...c.files] });
       else {
@@ -419,7 +461,7 @@ export class UsageMonitor {
         if (mtimeMs !== f.lastMtimeMs || size !== f.lastSize) f.changed = true;
         f.lastMtimeMs = mtimeMs;
         f.lastSize = size;
-        f.hot = mtimeMs >= hotSinceMs;
+        f.hot = mtimeMs >= hotSinceMs && mtimeMs <= futureMs;
         continue;
       }
       // Only a path the reader itself vouches for is ever opened.
@@ -443,11 +485,12 @@ export class UsageMonitor {
         hasTotals: false,
         activity: 0,
         usage: 0,
+        candidates: 0,
         windowActivity: 0,
         windowUsage: 0,
         lastMtimeMs: mtimeMs,
         lastSize: size,
-        hot: mtimeMs >= hotSinceMs,
+        hot: mtimeMs >= hotSinceMs && mtimeMs <= futureMs,
         changed: false,
       });
     }
@@ -476,6 +519,7 @@ export class UsageMonitor {
       r.usage > 0 ||
       r.shutdownOversize > 0 ||
       r.activity > 0 ||
+      (r.candidates ?? 0) > 0 ||
       r.suspect > 0 ||
       r.unrecognized > 0 ||
       r.malformed > 0 ||
@@ -492,7 +536,7 @@ export class UsageMonitor {
       f.hasTotals = false;
       delete f.label;
       delete f.title;
-      f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
+      f.activity = f.usage = f.candidates = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
     const inWindow = f.primed;
@@ -518,6 +562,7 @@ export class UsageMonitor {
     f.overlongOther += r.overlongOther;
     f.activity += r.activity;
     f.usage += r.usage;
+    f.candidates += r.candidates ?? 0;
     if (inWindow) {
       f.windowActivity += r.activity;
       f.windowUsage += r.usage;
@@ -542,7 +587,7 @@ export class UsageMonitor {
       s.add(r.folderId);
     });
     const sources = Object.create(null) as Partial<Record<Source, SourceHealth>>;
-    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0 };
+    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, capped: 0 };
     const states: SourceHealth["state"][] = [];
     for (const rs of this.readers) {
       const src = rs.reader.source;
@@ -563,7 +608,7 @@ export class UsageMonitor {
         ...(rs.archived !== undefined && { archived: rs.archived }),
       };
       /** per session: the files' activity and usage summed (a Claude session has several files) */
-      const sessions = new Map<string, { activity: number; usage: number; hasTotals: boolean; windowActivity: number; windowUsage: number }>();
+      const sessions = new Map<string, { activity: number; usage: number; candidates: number; hasTotals: boolean; windowActivity: number; windowUsage: number }>();
       for (const [path, f] of this.files) {
         if (f.source !== src) continue;
         h.files++;
@@ -574,9 +619,10 @@ export class UsageMonitor {
         g.shutdownOversize += f.shutdownOversize;
         if (f.usage === 0) g.shutdownOversizeNeeded += f.shutdownOversize;
         if (f.error !== undefined && !rs.unreadable.has(path)) h.unreadableFiles++;
-        const s = sessions.get(f.folderId) ?? { activity: 0, usage: 0, hasTotals: false, windowActivity: 0, windowUsage: 0 };
+        const s = sessions.get(f.folderId) ?? { activity: 0, usage: 0, candidates: 0, hasTotals: false, windowActivity: 0, windowUsage: 0 };
         s.activity += f.activity;
         s.usage += f.usage;
+        s.candidates += f.candidates;
         s.hasTotals ||= f.hasTotals;
         s.windowActivity += f.windowActivity;
         s.windowUsage += f.windowUsage;
@@ -585,6 +631,9 @@ export class UsageMonitor {
       let silentLive = false;
       for (const [folderId, s] of sessions) {
         if ((s.activity === 0 && !s.hasTotals) || s.usage > 0) continue;
+        // D42: a Claude Code or Codex session none of whose lines could have held usage (only
+        // user lines, say) never called a model; it is neither "without usage" nor silent.
+        if (src !== "copilot" && s.candidates === 0 && !s.hasTotals) continue;
         if (fromTotals.has(folderId)) {
           g.sessionsFromTotals++;
           continue;
@@ -606,6 +655,7 @@ export class UsageMonitor {
       g.overlong += h.overlong;
       g.overlongOther += h.overlongOther;
       g.unreadableFiles += h.unreadableFiles;
+      g.capped += rs.capped ?? 0;
       sources[src] = h;
     }
     const missing = (s: SourceHealth["state"]) => s === "no-dir" || s === "permission";
@@ -627,7 +677,8 @@ export class UsageMonitor {
       rootSource: this.rootSource,
       // A log with per-call records hides its session total anyway, so an unread
       // shutdown line there loses nothing (review 3); Data health still counts it.
-      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded > 0,
+      // A capped discovery left files unread (D42, D50): the figures miss them, so they are partial.
+      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded + g.capped > 0,
       unrecognized: g.unrecognized,
       malformed: g.malformed,
       overlong: g.overlong,
@@ -663,6 +714,15 @@ export class UsageMonitor {
     const sourceOf = new Map<string, Source>();
     for (const f of this.files.values()) if (!sourceOf.has(f.folderId)) sourceOf.set(f.folderId, f.source);
     for (const [id, c] of folders) if (!sourceOf.has(id)) sourceOf.set(id, c.source);
+    // A record whose folder is neither a file's nor a candidate's (its session id is no file's)
+    // shows its own source: one pass, only when there is such a folder.
+    const orphans = new Set<string>();
+    for (const id of latest.keys()) if (!sourceOf.has(id)) orphans.add(id);
+    if (orphans.size > 0) {
+      this.store.each((r) => {
+        if (orphans.has(r.folderId) && !sourceOf.has(r.folderId)) sourceOf.set(r.folderId, r.source);
+      });
+    }
 
     const health = this.health(isToday, live);
     const reading = this.reading();
@@ -776,12 +836,14 @@ export class UsageMonitor {
       });
     }
     const filter = unfiltered ? undefined : { ...this.filter };
+    this.lastBuildMs = nowMs;
+    this.priorFollowsClock = month.isCurrent && month.prior !== undefined;
 
     return {
       generatedAtMs: nowMs,
       dayStartMs,
       ...(today !== undefined && { today }),
-      ...this.current(latest, dayStartMs, folders),
+      ...this.current(latest, dayStartMs, folders, sourceOf),
       sessions,
       health,
       month,
@@ -892,6 +954,7 @@ export class UsageMonitor {
     latest: Map<string, number>,
     dayStartMs: number,
     folders: Map<string, { source: Source; live: boolean; mtimeMs: number }>,
+    sourceOf: Map<string, Source>,
   ): Pick<Snapshot, "current"> {
     let folderId = this.pinned;
     const pinned = folderId !== undefined;
@@ -916,8 +979,13 @@ export class UsageMonitor {
     const totals = this.store.totals((r) => r.sessionId === id);
     const live = folders.get(id)?.live === true;
     const last = lastPrompt(this.store.records((r) => r.kind === "call" && r.sessionId === id));
+    // The candidate's source, else its files', else (a folder only records name) the records' own (fix wave F2).
     let source: Source | undefined = folders.get(id)?.source;
     if (source === undefined) for (const f of this.files.values()) if (f.folderId === id) source = f.source;
+    if (source === undefined) source = sourceOf.get(id);
+    if (source === undefined) this.store.each((r) => {
+      if (source === undefined && (r.folderId === id || r.sessionId === id)) source = r.source;
+    });
     return {
       current: {
         folderId: id,

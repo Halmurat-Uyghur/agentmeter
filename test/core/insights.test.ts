@@ -239,3 +239,32 @@ describe("v0.8 sources (D47)", () => {
     expect(promptConventions([r, cop]).get("claude-x")).toBe("separate");
   });
 });
+
+describe("fix wave F2: I1 and I3 read Copilot calls only", () => {
+  const codexCall = (i: number, o: Parameters<typeof call>[0] = {}) =>
+    call({ source: "codex", keySource: "codexResponseId", sessionId: `x${i % 5}`, folderId: `x${i % 5}`, sequence: i + 2, cacheRead: 0, nanoAiu: undefined, ...o });
+
+  it("24 priced Copilot calls with good reuse fire nothing; 60 Codex calls of the same model without cache reads still fire nothing", () => {
+    const copilot = cacheMonth(3, 8, { cacheRead: 27_000 });
+    expect(run({ monthRecords: copilot }).items).toEqual([]);
+    const codex = Array.from({ length: 60 }, (_, i) => codexCall(i));
+    const recs = [...copilot, ...codex];
+    expect(run({ monthRecords: recs, allRecords: recs }).items).toEqual([]);
+  });
+
+  it("long-context counts only Copilot calls: Codex calls past the threshold change nothing", () => {
+    const long = (k: number) => Array.from({ length: k }, (_, i) => call({ model: "gpt-6-sol", input: 300_000, cacheRead: 0, sessionId: `l${i % 2}`, folderId: `l${i % 2}`, nanoAiu: 0.2 * USD }));
+    const base = run({ monthRecords: long(3) }).items;
+    expect(base.map((i) => i.id)).toEqual(["long-context"]);
+    const codex = Array.from({ length: 10 }, (_, i) => codexCall(i, { model: "gpt-6-sol", input: 900_000 }));
+    const recs = [...long(3), ...codex];
+    const with_ = run({ monthRecords: recs, allRecords: recs }).items;
+    expect(with_).toHaveLength(1);
+    const i = with_[0]!;
+    if (i.id !== "long-context") throw new Error();
+    expect(i.calls).toBe(3);
+    expect(i.maxPromptTokens).toBe(300_000);
+    // Codex calls alone never fire it
+    expect(run({ monthRecords: codex, allRecords: codex }).items).toEqual([]);
+  });
+});

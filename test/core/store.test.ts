@@ -713,3 +713,30 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect(promptOf(r, new Map([["claude-x", "separate"]]))).toBe(100);
   });
 });
+
+describe("fix wave F2: per-source visibility and the string pool", () => {
+  it("a Claude Code call never hides a Codex session total that has the same session and folder id", () => {
+    const s = new UsageStore();
+    s.add(rec("m1", { source: "claude-code", keySource: "claudeMessageId", sessionId: "x", folderId: "x" }), "claude/x.jsonl");
+    s.setSessionTotals("x", "codex/x.jsonl", [total("x", "gpt-x", { source: "codex", key: "codex-total:x" })]);
+    const t = s.totals(all)!;
+    expect(t.sessionTotals).toBe(1);
+    expect(t.bySource?.codex?.records).toBe(1);
+    expect(t.bySource?.["claude-code"]?.records).toBe(1);
+    expect([...s.sessionTotalSessions()]).toEqual(["x"]);
+    // a call of the same source still hides it
+    s.add(rec("c1", { source: "codex", keySource: "codexResponseId", sessionId: "x", folderId: "x" }), "codex/x.jsonl");
+    expect(s.totals(all)!.sessionTotals).toBe(0);
+    s.resetFile("codex/x.jsonl");
+    expect(s.totals(all)!.records).toBe(1);
+  });
+
+  it("the string pool is cleared once the store holds no record", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { sessionId: "pooled-s", folderId: "pooled-f" }), "a");
+    expect((s as unknown as { pool: Map<string, string> }).pool.size).toBeGreaterThan(0);
+    s.resetFile("a");
+    expect(s.totals(all)).toBeUndefined();
+    expect((s as unknown as { pool: Map<string, string> }).pool.size).toBe(0);
+  });
+});

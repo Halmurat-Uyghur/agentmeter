@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Logger } from "../../src/core/log";
+import { ClaudeSourceReader } from "../../src/core/claude";
+import { CopilotSourceReader } from "../../src/core/copilot";
 import { UsageMonitor } from "../../src/core/monitor";
+import type { SourceReader } from "../../src/core/source";
 import type { Snapshot } from "../../src/core/types";
 import { CANARY, jsonl, otherEvent, shutdownEvent, usageEvent } from "../fixtures/build";
 import { CLAUDE_CANARY, claudeAssistantLine, claudeOtherLine, claudeUserLine } from "../fixtures/claude";
@@ -159,6 +162,7 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
   let codexRoot: string;
   let bytes = 0;
   let assistants = 0;
+  let claudeLines = 0;
   let hotFile = "";
   const assistant = assistantTemplate();
 
@@ -180,7 +184,10 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
       const dir = join(claudeRoot, "projects", `-${CLAUDE_CANARY}-${CLAUDE_CANARY}-slug${i % 60}`);
       if (i < 60) await mkdir(dir, { recursive: true });
       const parts: Buffer[] = [];
-      if (i % 100 === 50) parts.push(huge);
+      if (i % 100 === 50) {
+        parts.push(huge);
+        claudeLines++;
+      }
       for (let k = 0; k < 12; k++) {
         line++;
         if (line % 100 === 0) {
@@ -188,6 +195,7 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
           assistants++;
         } else parts.push(content[line % content.length]!);
       }
+      claudeLines += 12;
       const buf = Buffer.concat(parts);
       bytes += buf.length;
       const p = join(dir, `${cs(i)}.jsonl`);
@@ -201,11 +209,14 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
     const files = Array.from({ length: 20 }, (_, i) => ({
       date,
       sessionId: xs(i),
-      mtime: cold,
+      mtime: new Date(cold * 1000), // a Date: codexTree reads a number as milliseconds
       lines: [codexMeta({ id: xs(i), timestamp: ts }), codexTurn({ timestamp: ts }), ...Array.from({ length: 50 }, (_, k) => codexRecord({ sessionId: xs(i), responseId: `resp_${i}_${k}`, timestamp: ts, ordinal: k + 2 }))],
     }));
     for (const p of await codexTree(codexRoot, files)) bytes += statSync(p).size;
-    console.log(`sources corpus: ${(bytes / 1e6).toFixed(0)} MB, ${assistants} assistant lines, written in ${(performance.now() - t).toFixed(0)}ms`);
+    console.log(`sources corpus: ${(bytes / 1e6).toFixed(0)} MB, ${assistants} assistant lines of ${claudeLines} Claude lines (${((assistants / claudeLines) * 100).toFixed(2)} %), written in ${(performance.now() - t).toFixed(0)}ms`);
+    // D50: about 1 % assistant lines.
+    expect(assistants / claudeLines).toBeGreaterThan(0.009);
+    expect(assistants / claudeLines).toBeLessThan(0.011);
   }, 300_000);
 
   afterAll(async () => {
@@ -275,6 +286,50 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
     const idle = (cpu.user + cpu.system) / 1000 / 20;
     console.log(`sources, Copilot folder missing: idle ${idle.toFixed(2)}ms cpu per tick, ${snaps - before} snapshots over 20 idle ticks`);
     expect(idle).toBeLessThan(5);
+    m.dispose();
+  }, 300_000);
+
+  it("cheap rediscovery tick: with 3,000 cold Claude files primed, a 10 s directory check (no walk) < 20 ms wall, < 5 ms CPU", async () => {
+    let clock = Date.now();
+    const claude = new ClaudeSourceReader({ root: claudeRoot, rootSource: "default", readProjects: true });
+    let walks = 0;
+    const discover = claude.discover.bind(claude);
+    claude.discover = async (...a: Parameters<SourceReader["discover"]>) => {
+      walks++;
+      return discover(...a);
+    };
+    const readers: SourceReader[] = [new CopilotSourceReader({ root: join(sroot, "copilot"), rootSource: "default", readProjects: true, readTotals: true }), claude];
+    const m = new UsageMonitor({ root: join(sroot, "copilot"), rootSource: "default", log: new Logger(() => {}), onSnapshot: () => {}, readTotals: true, readProjects: true, historyMonths: 2, now: () => new Date(clock), readers });
+    await m.refresh({ full: true });
+    expect(walks).toBe(1);
+    // One unmeasured check tick (first-run compilation), then the priming read's garbage is
+    // collected and its background GC threads settle, so the samples measure the tick alone.
+    clock += 10_000;
+    await m.refresh();
+    (globalThis as { gc?: () => void }).gc?.();
+    await new Promise((r) => setTimeout(r, 100));
+    const walls: number[] = [];
+    const cpus: number[] = [];
+    // four more ticks 10 s apart (20-50 s): each runs the directory check, none reaches the 60 s walk
+    for (let i = 0; i < 4; i++) {
+      clock += 10_000;
+      const cpu0 = process.cpuUsage();
+      const t = performance.now();
+      await m.refresh();
+      walls.push(performance.now() - t);
+      const c = process.cpuUsage(cpu0);
+      cpus.push((c.user + c.system) / 1000);
+    }
+    const median = (xs: number[]) => {
+      const v = [...xs].sort((a, b) => a - b);
+      return (v[1]! + v[2]!) / 2;
+    };
+    const wall = median(walls);
+    const cpu = median(cpus);
+    console.log(`cheap rediscovery tick: median ${wall.toFixed(1)}ms wall of [${walls.map((x) => x.toFixed(1)).join(", ")}], median ${cpu.toFixed(2)}ms cpu of [${cpus.map((x) => x.toFixed(2)).join(", ")}], walks ${walks - 1} after priming`);
+    expect(walks).toBe(1);
+    expect(wall).toBeLessThan(20);
+    expect(cpu).toBeLessThan(5);
     m.dispose();
   }, 300_000);
 
