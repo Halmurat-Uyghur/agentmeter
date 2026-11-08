@@ -231,7 +231,7 @@ suite("Copilot Usage Monitor", () => {
     assert.strictEqual(today.value, statusFigure(s), `${today.value} vs ${s.statusText}`);
     assert.strictEqual(drawn(s, "Today"), statusFigure(s));
     assert.match(today.spoken, /^Today: [\d.]+ (thousand|million) tokens/);
-    assert.match(s.statusA11y, /^Copilot usage, local today: /);
+    assert.match(s.statusA11y, /^Local usage, today: /);
     const html = s.sidebar.html!;
     assert.ok(html.includes("Open dashboard"));
     assert.ok(html.includes("Top projects, last 7 days") && html.includes("Top models, last 7 days"));
@@ -324,7 +324,7 @@ suite("Copilot Usage Monitor", () => {
       // " est." is said once in the footer, not on every row (design #6)
       assert.strictEqual(row(s, "month")!.value, figure.split(" / ")[0]!, `${row(s, "month")!.value} vs ${s.statusText}`);
       assert.match(row(s, "today")!.value, /^(\$[\d.,]+\*?|—)$/);
-      assert.match(s.statusA11y, /^Copilot usage, local this month, estimated: /);
+      assert.match(s.statusA11y, /^Local usage, this month, estimated: /);
       const html = (await waitFor((x) => (x.sidebar.html ?? "").includes("Show tokens"))).sidebar.html!;
       assert.ok(html.includes('href="command:copilotUsageMonitor.toggleUnit"'));
     } finally {
@@ -415,11 +415,11 @@ suite("Copilot Usage Monitor", () => {
     try {
       await config().update("statusBar", "month", vscode.ConfigurationTarget.Global);
       let s = await waitFor((x) => x.statusText.startsWith(`$(pulse) Local ${month}: `) && x.statusText.endsWith(" tok"));
-      assert.match(s.statusA11y, /^Copilot usage, local this month: /);
+      assert.match(s.statusA11y, /^Local usage, this month: /);
       assert.match(s.tooltip, /\*\*This month\*\*: /);
       await config().update("statusBar", "session", vscode.ConfigurationTarget.Global);
       s = await waitFor((x) => x.statusText.startsWith("$(pulse) Local session: ") && x.statusText.endsWith(" tok"));
-      assert.match(s.statusA11y, /^Copilot usage, local current session: /);
+      assert.match(s.statusA11y, /^Local usage, current session: /);
       await config().update("statusBar", "today", vscode.ConfigurationTarget.Global);
       await waitFor((x) => x.statusText.startsWith("$(pulse) Local today: "));
     } finally {

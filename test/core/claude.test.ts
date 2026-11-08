@@ -357,7 +357,7 @@ describe("discoverClaude", () => {
       ].sort(),
     );
     expect(res.candidates[1]!.live).toBe(false);
-    expect(res.dirMtimeMs).toBe((await stat(join(root, "projects"))).mtimeMs);
+    expect(res.dirMtimeMs).toBe(Math.max((await stat(join(root, "projects"))).mtimeMs, (await stat(join(root, "projects", CLAUDE_SLUG))).mtimeMs));
     expect(res.unreadable).toEqual([]);
     for (const c of res.candidates) {
       expect(c.sessionId).not.toContain(CLAUDE_CANARY);
@@ -560,6 +560,21 @@ describe("ClaudeSourceReader", () => {
     const after = await r.rootDirMtime();
     expect(after).toBe((await stat(slugDir)).mtimeMs);
     expect(after).toBeGreaterThan(before!);
+  });
+
+  it("discover's dirMtimeMs is the same newest mtime as rootDirMtime, so the monitor's baseline and check agree", async () => {
+    await claudeTree(root, [{ sessionId: S1, lines: [claudeAssistantLine()] }]);
+    const slugDir = join(root, "projects", CLAUDE_SLUG);
+    const old = new Date(Date.now() - 3_600_000);
+    const newer = new Date(Date.now() - 60_000);
+    await utimes(join(root, "projects"), old, old);
+    await utimes(slugDir, newer, newer);
+    const r = make();
+    const res = await r.discover(0, 0, Date.now());
+    if (!res.ok) throw new Error("not ok");
+    expect(res.dirMtimeMs).toBe((await stat(slugDir)).mtimeMs);
+    expect(res.dirMtimeMs).toBeGreaterThan((await stat(join(root, "projects"))).mtimeMs);
+    expect(await r.rootDirMtime()).toBe(res.dirMtimeMs);
   });
 
   it("reads records, activity and counters, with the label set from the first usage record", async () => {

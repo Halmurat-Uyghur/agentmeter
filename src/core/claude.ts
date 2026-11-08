@@ -397,6 +397,29 @@ class Walk {
   }
 }
 
+/**
+ * The newest mtime of projects/ and of every slug folder below it, one stat each, with the
+ * listing it came from. projects/ is stat'ed before it is listed, so a folder created in
+ * between bumps the mtime past this value. Throws when projects/ cannot be stat'ed or listed;
+ * a slug folder that cannot be stat'ed counts as 0.
+ */
+async function projectsMtime(base: string): Promise<{ max: number; slugs: fs.Dirent[] }> {
+  let max = (await fs.promises.stat(base)).mtimeMs;
+  const slugs = await fs.promises.readdir(base, { withFileTypes: true });
+  const times = await Promise.all(
+    slugs
+      .filter((e) => e.isDirectory())
+      .map((e) =>
+        fs.promises.stat(join(base, e.name)).then(
+          (st) => st.mtimeMs,
+          () => 0,
+        ),
+      ),
+  );
+  for (const t of times) if (t > max) max = t;
+  return { max, slugs };
+}
+
 /** Lists Claude Code sessions under <root>/projects/ with a file modified at or after `windowStartMs` (D42, D43). */
 export async function discoverClaude(
   root: string,
@@ -408,9 +431,9 @@ export async function discoverClaude(
   let slugs: fs.Dirent[];
   let dirMtimeMs: number;
   try {
-    // stat before listing, so a folder created in between bumps the mtime past this value.
-    dirMtimeMs = (await fs.promises.stat(base)).mtimeMs;
-    slugs = await fs.promises.readdir(base, { withFileTypes: true });
+    // The same figure as rootDirMtime (projects/ and every slug folder), taken before the
+    // walk, so the monitor's baseline and its cheap check agree.
+    ({ max: dirMtimeMs, slugs } = await projectsMtime(base));
   } catch (err) {
     const code = codeOf(err);
     if (code === "ENOENT" || code === "ENOTDIR") return { ok: false, error: "no-dir" };
@@ -573,26 +596,11 @@ export class ClaudeSourceReader implements SourceReader {
    * existing file does not. undefined when projects/ is missing or unreadable.
    */
   async rootDirMtime(): Promise<number | undefined> {
-    let max: number;
-    let slugs: fs.Dirent[];
     try {
-      max = (await fs.promises.stat(this.projects)).mtimeMs;
-      slugs = await fs.promises.readdir(this.projects, { withFileTypes: true });
+      return (await projectsMtime(this.projects)).max;
     } catch {
       return undefined;
     }
-    const times = await Promise.all(
-      slugs
-        .filter((e) => e.isDirectory())
-        .map((e) =>
-          fs.promises.stat(join(this.projects, e.name)).then(
-            (st) => st.mtimeMs,
-            () => 0,
-          ),
-        ),
-    );
-    for (const t of times) if (t > max) max = t;
-    return max;
   }
 
   discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
