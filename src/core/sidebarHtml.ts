@@ -84,7 +84,7 @@ export function renderSidebarHtml(m: SidebarModel, cspSource: string): string {
   }
   parts.push(`<a class="btn" href="${escapeHtml(sidebarHref({ command: "copilotUsageMonitor.showDetails", args: [] }))}" title="Opens the details panel.">Open dashboard</a>`);
   parts.push(
-    `<div class="foot">${escapeHtml(m.footNote)} · <a href="${escapeHtml(sidebarHref(m.unitSwitch.link))}" title="Switches the side bar, status bar and panel unit.">${escapeHtml(m.unitSwitch.text)}</a></div>`,
+    `<div class="foot">${escapeHtml(m.footNote)} · <a href="${escapeHtml(sidebarHref(m.unitSwitch.link))}" title="Switches the side bar, status bar and panel unit.">${escapeHtml(m.unitSwitch.text)}</a> · <a href="${escapeHtml(sidebarHref(m.currencySwitch.link))}" title="${escapeHtml(m.currencySwitch.title)}">${escapeHtml(m.currencySwitch.text)}</a></div>`,
   );
   return `<!DOCTYPE html>
 <html lang="en">

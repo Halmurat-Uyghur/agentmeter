@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Currency in the side bar.** The side bar footer shows **Currency: USD** (or CAD, or whichever you chose) next to the unit switch; click it to open the currency picker. The picker is also in the side bar's `…` menu as **Choose Currency…**. While a non-USD rate is still being fetched, the link names the chosen currency and its tooltip says figures stay in USD until the rate arrives.
+
 ## 0.6.1 - 2026-11-07
 
 ### Fixed
