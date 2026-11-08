@@ -1,20 +1,31 @@
-// Ties discovery, tailing, extraction and the store together and emits a
+// Ties the source readers (D54), the store and health together and emits a
 // Snapshot whenever what it would show changes. Missing data stays undefined,
-// incomplete data sets `health.partial`, and only error codes are logged.
-import * as fs from "node:fs";
-import { dirname, join } from "node:path";
-import { discover, isLive as realIsLive, type Candidate } from "./discover";
-import { isIdLabel, MAX_WORKSPACE_BYTES, parseShutdownLine, parseStartLine, parseUsageLine, parseWorkspaceName } from "./extract";
+// incomplete data sets `health.partial`, and only counts, codes and timings are
+// logged: never a path, never a root.
+import { ClaudeSourceReader } from "./claude";
+import { CodexSourceReader } from "./codex";
+import { CopilotSourceReader } from "./copilot";
+import { isLive as realIsLive } from "./discover";
+import { parseUsageLine } from "./extract";
 import type { Logger } from "./log";
 import { cacheStats, lastPrompt, modelCacheStats, promptStats, sessionDetail, toolOverhead } from "./explain";
 import { computeInsights, promptConventions } from "./insights";
+import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceReader } from "./source";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
-import { LineTailer, type ReadErrorCode, type TailResult } from "./tailer";
-import type { Filter, GroupSummary, Health, MonthView, SessionSummary, Snapshot, UsageRecord } from "./types";
+import type { ReadErrorCode } from "./tailer";
+import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type UsageRecord } from "./types";
+
+export { RECENT_MS };
 
 export interface MonitorOptions {
+  /** Copilot's home; Copilot is always read */
   root: string;
   rootSource: Health["rootSource"];
+  /** the other sources; absent = off (D48, D54) */
+  sources?: {
+    claude?: { root: string; rootSource: Health["rootSource"] };
+    codex?: { root: string; rootSource: Health["rootSource"] };
+  };
   now?: () => Date;
   isLive?: typeof realIsLive;
   /** injectable for tests; defaults to the real extractor */
@@ -23,11 +34,13 @@ export interface MonitorOptions {
   onSnapshot: (s: Snapshot) => void;
   /** months of history to read, this month included (D21); default 1 = this month only */
   historyMonths?: number;
-  /** decode each log's session.start line for a project label (D25); default false */
+  /** decode each log's project folder (D25, D44); default false */
   readProjects?: boolean;
-  /** decode session.shutdown lines and count sessions without per-call records from their
-   * session totals (D29); default false here, the extension passes its setting (default on) */
+  /** decode session totals and count sessions without per-call records from them (D29);
+   * default false here, the extension passes its setting (default on) */
   readTotals?: boolean;
+  /** test hook: replaces the readers built from root/sources */
+  readers?: SourceReader[];
 }
 
 export const MAX_HISTORY_MONTHS = 24;
@@ -41,17 +54,22 @@ export function clampHistory(n: unknown): number {
 }
 
 interface FileState {
+  source: Source;
+  sessionId: string;
   folderId: string;
-  tailer: LineTailer;
+  reader: FileReader;
   /** false until a read without error; that read's lines are history, not "since start" */
   primed: boolean;
+  /** read at least once (with or without error): the first read of the window is done for it */
+  tried: boolean;
+  error?: ReadErrorCode;
   malformed: number;
   unrecognized: number;
   overlong: number;
   overlongOther: number;
   /** session.shutdown lines too long to decode */
   shutdownOversize: number;
-  /** a session.shutdown line of this log gave session totals */
+  /** a totals line of this file gave session totals */
   hasTotals: boolean;
   /** activity / usage lines over the whole file (since the last reset) */
   activity: number;
@@ -59,43 +77,40 @@ interface FileState {
   /** activity / usage lines read after the first read (the format-change window) */
   windowActivity: number;
   windowUsage: number;
-  error?: ReadErrorCode;
-  /** project label from this log's session.start line (D25) */
-  project?: string;
-  /** session title from workspace.yaml, read only when `project` is an ID */
+  /** project key (D44) */
+  label?: string;
+  /** display title (Copilot: workspace.yaml title, else `owner/repo`) */
   title?: string;
-  /** mtime of the workspace.yaml last read for `title` */
-  titleMtimeMs?: number;
+  /** mtime and size seen by the last discovery */
+  lastMtimeMs: number;
+  lastSize: number;
+  /** mtime within RECENT_MS of the last discovery: read every tick (D50) */
+  hot: boolean;
+  /** discovery saw the mtime or size change since the last read */
+  changed: boolean;
 }
 
-/**
- * Reads at most MAX_WORKSPACE_BYTES + 1 bytes of workspace.yaml (never following a
- * symlink where the OS allows) and returns its title; a longer file has no title.
- */
-async function readBoundedTitle(path: string): Promise<string | undefined> {
-  // O_NONBLOCK: a FIFO swapped in after the caller's lstat cannot block the open; it then
-  // fails the isFile check below (v0.7).
-  const fh = await fs.promises.open(
-    path,
-    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
-  );
-  try {
-    if (!(await fh.stat()).isFile()) return undefined;
-    const buf = Buffer.alloc(MAX_WORKSPACE_BYTES + 1);
-    let n = 0;
-    while (n < buf.length) {
-      const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
-      if (bytesRead === 0) break;
-      n += bytesRead;
-    }
-    return n > MAX_WORKSPACE_BYTES ? undefined : parseWorkspaceName(buf.toString("utf8", 0, n));
-  } finally {
-    await fh.close();
-  }
+/** One enabled source: its reader and what its last discovery found. */
+interface ReaderState {
+  reader: SourceReader;
+  discovered: boolean;
+  lastDiscoverAt: number;
+  lastDirMtimeMs: number | undefined;
+  error: "no-dir" | "permission" | undefined;
+  /** sessionId → candidate from the last successful discover */
+  candidates: Map<string, SourceCandidate>;
+  /** paths whose lstat failed (not ENOENT) in the last discover: kept, partial */
+  unreadable: Set<string>;
+  /** candidate paths the reader refused (pathAllowed false): never opened, partial */
+  refused: Set<string>;
+  capped?: number;
+  archived?: number;
 }
 
 const REDISCOVER_MS = 10_000;
 const FORMAT_ACTIVITY = 3;
+/** progress snapshots during the first read, at most this often (D50) */
+const PROGRESS_MS = 500;
 /** "today" has no upper bound (a clock-skewed record still counts today); the month mirrors that. */
 const DAY_SLACK_MS = Number.POSITIVE_INFINITY;
 const CODE = /^[A-Z0-9_]{1,40}$/;
@@ -105,34 +120,27 @@ function errCode(err: unknown): string {
   return typeof code === "string" && CODE.test(code) ? code : "EXCEPTION";
 }
 
+/** A reader-supplied code, if it is a code; never a free string. */
+function safeCode(code: string): string {
+  return CODE.test(code) ? code : "OTHER";
+}
+
 export class UsageMonitor {
-  private readonly root: string;
   private readonly rootSource: Health["rootSource"];
   private readonly now: () => Date;
-  private readonly isLiveFn: typeof realIsLive;
-  private readonly parse: typeof parseUsageLine;
   private readonly log: Logger;
   private readonly onSnapshot: (s: Snapshot) => void;
   private readonly historyMonths: number;
   /** month start of the viewed month; undefined = follow the current month */
   private selectedMonth: number | undefined;
-  private readonly readProjects: boolean;
-  private readonly readTotals: boolean;
   private filter: Filter = {};
   /** session whose calls the Sessions section lists (v0.6); in memory only */
   private selectedSession: string | undefined;
 
   private readonly store = new UsageStore();
-  /** eventsPath → state; kept for the life of the monitor, dropped only on ENOENT */
+  private readonly readers: ReaderState[];
+  /** path → state; dropped when the file leaves the window or on ENOENT */
   private readonly files = new Map<string, FileState>();
-  /** folderId → candidate from the last successful discover */
-  private candidates = new Map<string, Candidate>();
-  /** folderIds whose events.jsonl lstat failed (not ENOENT) in the last discover: kept, partial */
-  private unreadable = new Set<string>();
-  private discoverError: "no-dir" | "permission" | undefined;
-  private discovered = false;
-  private lastDiscoverAt = 0;
-  private lastDirMtimeMs: number | undefined;
   private lastDayStartMs: number | undefined;
   private pinned: string | undefined;
   private lastSignature: string | undefined;
@@ -145,16 +153,35 @@ export class UsageMonitor {
   private wantFull = false;
 
   constructor(o: MonitorOptions) {
-    this.root = o.root;
     this.rootSource = o.rootSource;
     this.now = o.now ?? (() => new Date());
-    this.isLiveFn = o.isLive ?? realIsLive;
-    this.parse = o.parse ?? parseUsageLine;
     this.log = o.log;
     this.onSnapshot = o.onSnapshot;
     this.historyMonths = clampHistory(o.historyMonths ?? 1);
-    this.readProjects = o.readProjects === true;
-    this.readTotals = o.readTotals === true;
+    const readProjects = o.readProjects === true;
+    const readTotals = o.readTotals === true;
+    const readers: SourceReader[] = o.readers ?? [
+      new CopilotSourceReader({
+        root: o.root,
+        rootSource: o.rootSource,
+        readProjects,
+        readTotals,
+        ...(o.isLive && { isLive: o.isLive }),
+        ...(o.parse && { parse: o.parse }),
+      }),
+      ...(o.sources?.claude ? [new ClaudeSourceReader({ ...o.sources.claude, readProjects })] : []),
+      ...(o.sources?.codex ? [new CodexSourceReader({ ...o.sources.codex, readProjects, readTotals })] : []),
+    ];
+    this.readers = readers.map((reader) => ({
+      reader,
+      discovered: false,
+      lastDiscoverAt: 0,
+      lastDirMtimeMs: undefined,
+      error: undefined,
+      candidates: new Map(),
+      unreadable: new Set(),
+      refused: new Set(),
+    }));
   }
 
   /**
@@ -197,11 +224,12 @@ export class UsageMonitor {
     void this.refresh();
   }
 
-  /** Narrows the month view, trend and tables; empty values clear (D26). */
+  /** Narrows the month view, trend and tables; empty values clear (D26). A source must be one of SOURCES (D40). */
   setFilter(filter: Filter): void {
     this.filter = {
       ...(filter.project ? { project: filter.project } : {}),
       ...(filter.tool ? { tool: filter.tool } : {}),
+      ...(isSource(filter.source) ? { source: filter.source } : {}),
     };
     this.dirty = true;
     void this.refresh();
@@ -221,92 +249,152 @@ export class UsageMonitor {
       const dayStartMs = localDayStart(new Date(nowMs));
       let changed = this.dirty || dayStartMs !== this.lastDayStartMs;
       this.dirty = false;
-      if (await this.shouldDiscover(full, nowMs, dayStartMs)) {
-        await this.rediscover(nowMs, dayStartMs);
-        changed = true;
+      for (const rs of this.readers) {
+        if (await this.shouldDiscover(rs, full, nowMs, dayStartMs)) {
+          await this.rediscover(rs, nowMs, dayStartMs);
+          changed = true;
+        }
       }
+      // The first read of the window goes newest file first (D50); the rest keep their order.
+      const due = [...this.files].filter(([, f]) => this.isDue(f));
+      const fresh = due.filter(([, f]) => !f.tried).sort(([, a], [, b]) => b.lastMtimeMs - a.lastMtimeMs);
+      const order = [...fresh, ...due.filter(([, f]) => f.tried)];
+      let lastProgressMs = nowMs;
+      let progressed = false;
       let added = 0;
-      for (const [path, f] of [...this.files]) {
+      for (const [path, f] of order) {
+        // A file dropped earlier in this run (ENOENT) is not read again.
+        if (this.files.get(path) !== f) continue;
         const r = await this.readFile(path, f);
         added += r.added;
         if (r.changed) changed = true;
+        if (fresh.length > 0 && !this.disposed) {
+          const t = this.now().getTime();
+          if (t - lastProgressMs >= PROGRESS_MS && this.reading() !== undefined) {
+            lastProgressMs = t;
+            progressed = true;
+            this.emit(this.snapshot(nowMs, dayStartMs));
+          }
+        }
       }
       if (added > 0) this.log.count("usage", added);
       this.lastDayStartMs = dayStartMs;
-      // Idle polls (nothing read, nothing rediscovered) skip the rebuild.
-      if (changed) this.emit(this.snapshot(nowMs, dayStartMs));
+      // Idle polls (nothing read, nothing rediscovered) skip the rebuild; after progress
+      // snapshots the final one (without `reading`) is always built.
+      if (changed || progressed) this.emit(this.snapshot(nowMs, dayStartMs));
     } catch (err) {
       this.log.error("refresh", errCode(err));
     }
     this.log.timing("refresh", performance.now() - started);
   }
 
-  private async shouldDiscover(
-    full: boolean,
-    nowMs: number,
-    dayStartMs: number,
-  ): Promise<boolean> {
-    if (full || !this.discovered || this.discoverError !== undefined)
-      return true;
-    if (dayStartMs !== this.lastDayStartMs) return true;
-    if (Math.abs(nowMs - this.lastDiscoverAt) >= REDISCOVER_MS) return true;
-    let mtimeMs: number | undefined;
-    try {
-      mtimeMs = (await fs.promises.stat(join(this.root, "session-state")))
-        .mtimeMs;
-    } catch {
-      mtimeMs = undefined;
-    }
-    return mtimeMs !== this.lastDirMtimeMs;
+  /** Copilot files are always read (they are few); others when new, hot, or changed at the last discovery (D50). */
+  private isDue(f: FileState): boolean {
+    return !f.tried || !f.primed || f.source === "copilot" || f.hot || f.changed;
   }
 
-  private async rediscover(nowMs: number, dayStartMs: number): Promise<void> {
+  /** First-read progress, while any file of the window has not been read yet. */
+  private reading(): { done: number; total: number } | undefined {
+    let done = 0;
+    for (const f of this.files.values()) if (f.tried) done++;
+    return done < this.files.size ? { done, total: this.files.size } : undefined;
+  }
+
+  private async shouldDiscover(rs: ReaderState, full: boolean, nowMs: number, dayStartMs: number): Promise<boolean> {
+    if (full || !rs.discovered || rs.error !== undefined) return true;
+    if (dayStartMs !== this.lastDayStartMs) return true;
+    if (Math.abs(nowMs - rs.lastDiscoverAt) >= REDISCOVER_MS) return true;
+    return (await rs.reader.rootDirMtime()) !== rs.lastDirMtimeMs;
+  }
+
+  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<void> {
     const windowStartMs = monthStarts(new Date(nowMs), this.historyMonths)[0]!;
-    const result = await discover(this.root, windowStartMs, this.isLiveFn, dayStartMs);
-    this.discovered = true;
-    this.lastDiscoverAt = nowMs;
+    const reader = rs.reader;
+    const result = await reader.discover(windowStartMs, dayStartMs, nowMs);
+    rs.discovered = true;
+    rs.lastDiscoverAt = nowMs;
     if (!result.ok) {
-      this.lastDirMtimeMs = undefined;
+      rs.lastDirMtimeMs = undefined;
       if (result.error === "OTHER") {
         this.log.error("discover", "OTHER");
         return; // keep the last known candidates and state
       }
-      this.discoverError = result.error;
-      this.candidates = new Map();
-      this.unreadable = new Set();
+      rs.error = result.error;
+      rs.candidates = new Map();
+      rs.unreadable = new Set();
+      rs.refused = new Set();
+      delete rs.capped;
+      delete rs.archived;
+      // Files of a vanished or locked folder are read once more: ENOENT drops them, other errors show.
+      for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
       return;
     }
-    this.discoverError = undefined;
-    this.lastDirMtimeMs = result.dirMtimeMs;
-    const candidates = new Map(result.candidates.map((c) => [c.folderId, c]));
-    // A folder lstat failed on (EMFILE, EIO, EACCES...) may be transient: keep its last
-    // candidate and state, count it unreadable, log each folder once per episode (v0.7).
+    rs.error = undefined;
+    rs.lastDirMtimeMs = result.dirMtimeMs;
+    if (result.capped !== undefined) rs.capped = result.capped;
+    else delete rs.capped;
+    if (result.archived !== undefined) rs.archived = result.archived;
+    else delete rs.archived;
+    // One candidate per session: files of the same session id join it.
+    const candidates = new Map<string, SourceCandidate>();
+    for (const c of result.candidates) {
+      const prev = candidates.get(c.sessionId);
+      if (prev === undefined) candidates.set(c.sessionId, { ...c, files: [...c.files] });
+      else {
+        prev.files.push(...c.files);
+        prev.mtimeMs = Math.max(prev.mtimeMs, c.mtimeMs);
+        prev.live = prev.live || c.live;
+      }
+    }
+    // A file lstat failed on (EMFILE, EIO, EACCES...) may be transient: keep its last
+    // candidate entry and state, count it unreadable, log each file once per episode (v0.7).
     const unreadable = new Set<string>();
     for (const u of result.unreadable) {
-      unreadable.add(u.folderId);
-      const prev = this.candidates.get(u.folderId);
-      if (prev) candidates.set(u.folderId, prev);
-      if (!this.unreadable.has(u.folderId)) this.log.error("discover", u.code);
+      unreadable.add(u.path);
+      if (!rs.unreadable.has(u.path)) this.log.error("discover", safeCode(u.code));
+      const prev = rs.candidates.get(u.folderId);
+      const prevFile = prev?.files.find((x) => x.path === u.path);
+      if (prev === undefined || prevFile === undefined) continue;
+      const now = candidates.get(u.folderId);
+      if (now === undefined) candidates.set(u.folderId, { ...prev, files: [prevFile] });
+      else if (!now.files.some((x) => x.path === u.path)) now.files.push(prevFile);
     }
-    this.unreadable = unreadable;
-    this.candidates = candidates;
-    // Logs that left the window (e.g. last month's, after the 1st) are forgotten
+    rs.unreadable = unreadable;
+    rs.candidates = candidates;
+    // Files that left the window (e.g. last month's, after the 1st) are forgotten
     // with their records and counters.
-    const keep = new Set([
-      ...result.candidates.map((c) => c.eventsPath),
-      ...result.unreadable.map((u) => u.eventsPath),
-    ]);
-    for (const path of [...this.files.keys()]) {
-      if (keep.has(path)) continue;
+    const inWindow = new Map<string, { c: SourceCandidate; mtimeMs: number; size: number }>();
+    for (const c of candidates.values()) for (const f of c.files) inWindow.set(f.path, { c, mtimeMs: f.mtimeMs, size: f.size });
+    const keep = new Set([...inWindow.keys(), ...unreadable]);
+    for (const [path, f] of [...this.files]) {
+      if (f.source !== reader.source || keep.has(path)) continue;
       this.files.delete(path);
       this.store.resetFile(path);
     }
-    for (const c of result.candidates) {
-      if (this.files.has(c.eventsPath)) continue;
-      this.files.set(c.eventsPath, {
+    const refused = new Set<string>();
+    const hotSinceMs = nowMs - RECENT_MS;
+    for (const [path, { c, mtimeMs, size }] of inWindow) {
+      const f = this.files.get(path);
+      if (f !== undefined) {
+        if (mtimeMs !== f.lastMtimeMs || size !== f.lastSize) f.changed = true;
+        f.lastMtimeMs = mtimeMs;
+        f.lastSize = size;
+        f.hot = mtimeMs >= hotSinceMs;
+        continue;
+      }
+      // Only a path the reader itself vouches for is ever opened.
+      if (!reader.pathAllowed(path)) {
+        refused.add(path);
+        if (!rs.refused.has(path)) this.log.error("discover", "PATH_REFUSED");
+        continue;
+      }
+      this.files.set(path, {
+        source: reader.source,
+        sessionId: c.sessionId,
         folderId: c.folderId,
-        tailer: new LineTailer(c.eventsPath, { decodeStart: this.readProjects, decodeShutdown: this.readTotals }),
+        reader: reader.open(path, c),
         primed: false,
+        tried: false,
         malformed: 0,
         unrecognized: 0,
         overlong: 0,
@@ -317,13 +405,19 @@ export class UsageMonitor {
         usage: 0,
         windowActivity: 0,
         windowUsage: 0,
+        lastMtimeMs: mtimeMs,
+        lastSize: size,
+        hot: mtimeMs >= hotSinceMs,
+        changed: false,
       });
     }
+    rs.refused = refused;
   }
 
   /** One read of one file: new records, and whether anything shown may have changed. */
   private async readFile(path: string, f: FileState): Promise<{ added: number; changed: boolean }> {
-    const r: TailResult = await f.tailer.read();
+    const r: FileReadResult = await f.reader.read();
+    f.tried = true;
     if (r.error === "ENOENT") {
       // Its records go too, so a recreated log is not counted on top of them (v0.7).
       this.files.delete(path);
@@ -333,99 +427,174 @@ export class UsageMonitor {
     const changed =
       r.reset ||
       r.error !== f.error ||
-      r.usageLines.length > 0 ||
-      r.shutdownLines.length > 0 ||
+      r.records.length > 0 ||
+      r.totals !== undefined ||
+      r.hasTotals ||
+      r.label !== undefined ||
+      r.title !== undefined ||
+      r.usage > 0 ||
       r.shutdownOversize > 0 ||
       r.activity > 0 ||
       r.suspect > 0 ||
+      r.unrecognized > 0 ||
+      r.malformed > 0 ||
       r.overlong > 0 ||
       r.overlongOther > 0;
-    if (r.error !== undefined && f.error === undefined)
-      this.log.error("read", r.error);
-    f.error = r.error;
+    if (r.error !== undefined && f.error === undefined) this.log.error("read", r.error);
+    if (r.error === undefined) delete f.error;
+    else f.error = r.error;
     // A reset re-delivers the whole file: apply it first, and treat its lines
     // as history (like a first read) so old activity never looks like new.
     if (r.reset) {
       this.store.resetFile(path);
       f.malformed = f.unrecognized = f.overlong = f.overlongOther = f.shutdownOversize = 0;
       f.hasTotals = false;
-      delete f.project;
+      delete f.label;
       delete f.title;
-      delete f.titleMtimeMs;
       f.activity = f.usage = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
     const inWindow = f.primed;
+    if (r.label !== undefined && r.label !== f.label) {
+      f.label = r.label;
+      this.dirty = true;
+    }
+    // A title is reported only when it changes; null clears it.
+    if (r.title !== undefined && (r.title ?? undefined) !== f.title) {
+      if (r.title === null) delete f.title;
+      else f.title = r.title;
+      this.dirty = true;
+    }
     let added = 0;
-    let usage = 0;
-    for (const line of r.startLines) {
-      const label = parseStartLine(line);
-      if (label !== undefined && f.project === undefined) {
-        f.project = label;
-        this.dirty = true;
-      }
-    }
-    // A folder named by an ID says nothing: show the session's title instead.
-    // Checked only when the log moved, so idle polls touch no extra file.
-    if (f.project !== undefined && isIdLabel(f.project) && (r.startLines.length > 0 || r.usageLines.length > 0 || r.activity > 0))
-      await this.readTitle(path, f);
-    for (const line of r.usageLines) {
-      const p = this.parse(line, f.folderId);
-      if (p.kind === "usage") {
-        usage++;
-        if (this.store.add(p.record, path)) added++;
-      } else if (p.kind === "malformed") f.malformed++;
-      else if (p.kind === "unrecognized") f.unrecognized++;
-    }
-    // Each shutdown line carries the session's running totals: the last one wins.
-    for (const line of r.shutdownLines) {
-      const p = parseShutdownLine(line, f.folderId);
-      if (p.kind === "totals") {
-        if (this.store.setSessionTotals(f.folderId, path, p.records)) added += p.records.length;
-        f.hasTotals = true;
-      } else if (p.kind === "malformed") f.malformed++;
-      else if (p.kind === "unrecognized") f.unrecognized++;
-    }
-    f.unrecognized += r.suspect;
+    for (const rec of r.records) if (this.store.add(rec, path)) added++;
+    // The last totals line wins (D29).
+    if (r.totals !== undefined && this.store.setSessionTotals(f.folderId, path, r.totals)) added += r.totals.length;
+    if (r.hasTotals) f.hasTotals = true;
+    f.malformed += r.malformed;
+    f.unrecognized += r.unrecognized + r.suspect;
     f.shutdownOversize += r.shutdownOversize;
     f.overlong += r.overlong;
     f.overlongOther += r.overlongOther;
     f.activity += r.activity;
-    f.usage += usage;
+    f.usage += r.usage;
     if (inWindow) {
       f.windowActivity += r.activity;
-      f.windowUsage += usage;
+      f.windowUsage += r.usage;
     }
-    if (r.error === undefined) f.primed = true;
+    if (r.error === undefined) {
+      f.primed = true;
+      f.changed = false;
+    }
     return { added, changed };
   }
 
-  /**
-   * Reads the `name:` of the session's workspace.yaml when that file changed. A file
-   * that is gone, unreadable, not a regular file (e.g. a symlink) or over
-   * MAX_WORKSPACE_BYTES drops the title, so the folder name shows again.
-   */
-  private async readTitle(eventsPath: string, f: FileState): Promise<void> {
-    const ws = join(dirname(eventsPath), "workspace.yaml");
-    let title: string | undefined;
-    let mtimeMs: number | undefined;
-    try {
-      const st = await fs.promises.lstat(ws);
-      if (st.isFile() && st.size <= MAX_WORKSPACE_BYTES) {
-        if (st.mtimeMs === f.titleMtimeMs) return;
-        title = await readBoundedTitle(ws);
-        mtimeMs = st.mtimeMs;
+  /** Health per enabled source (D49) and the global health over their sums. */
+  private health(isToday: (ms: number) => boolean, live: Map<string, boolean>): Health {
+    const fromTotals = this.store.sessionTotalSessions();
+    // Records dated today, per source and per (source, folder), for the no-data and silent-live rules.
+    const todayBySource = new Set<Source>();
+    const todayFolders = new Map<Source, Set<string>>();
+    this.store.each((r) => {
+      if (!isToday(r.timestampMs)) return;
+      todayBySource.add(r.source);
+      let s = todayFolders.get(r.source);
+      if (!s) todayFolders.set(r.source, (s = new Set()));
+      s.add(r.folderId);
+    });
+    const sources = Object.create(null) as Partial<Record<Source, SourceHealth>>;
+    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0 };
+    const states: SourceHealth["state"][] = [];
+    for (const rs of this.readers) {
+      const src = rs.reader.source;
+      const h: SourceHealth = {
+        state: "ok",
+        rootSource: rs.reader.rootSource,
+        files: 0,
+        sessions: rs.candidates.size,
+        unreadableFiles: rs.unreadable.size + rs.refused.size,
+        unrecognized: 0,
+        malformed: 0,
+        overlong: 0,
+        overlongOther: 0,
+        ...(rs.capped !== undefined && { capped: rs.capped }),
+        ...(rs.archived !== undefined && { archived: rs.archived }),
+      };
+      /** per session: the files' activity and usage summed (a Claude session has several files) */
+      const sessions = new Map<string, { activity: number; usage: number; hasTotals: boolean; windowActivity: number; windowUsage: number }>();
+      for (const [path, f] of this.files) {
+        if (f.source !== src) continue;
+        h.files++;
+        h.malformed += f.malformed;
+        h.unrecognized += f.unrecognized;
+        h.overlong += f.overlong;
+        h.overlongOther += f.overlongOther;
+        g.shutdownOversize += f.shutdownOversize;
+        if (f.usage === 0) g.shutdownOversizeNeeded += f.shutdownOversize;
+        if (f.error !== undefined && !rs.unreadable.has(path)) h.unreadableFiles++;
+        const s = sessions.get(f.folderId) ?? { activity: 0, usage: 0, hasTotals: false, windowActivity: 0, windowUsage: 0 };
+        s.activity += f.activity;
+        s.usage += f.usage;
+        s.hasTotals ||= f.hasTotals;
+        s.windowActivity += f.windowActivity;
+        s.windowUsage += f.windowUsage;
+        sessions.set(f.folderId, s);
       }
-    } catch {
-      // No workspace.yaml (older Copilot) or unreadable: the folder name shows.
+      let silentLive = false;
+      for (const [folderId, s] of sessions) {
+        if ((s.activity === 0 && !s.hasTotals) || s.usage > 0) continue;
+        if (fromTotals.has(folderId)) {
+          g.sessionsFromTotals++;
+          continue;
+        }
+        const others = todayFolders.get(src);
+        const flags =
+          live.get(`${src}|${folderId}`) === true &&
+          s.windowActivity >= FORMAT_ACTIVITY &&
+          s.windowUsage === 0 &&
+          others !== undefined &&
+          [...others].some((id) => id !== folderId);
+        if (flags) silentLive = true;
+        else g.sessionsWithoutUsage++;
+      }
+      h.state = rs.error ?? (h.unrecognized > 0 || silentLive ? "format-changed" : todayBySource.has(src) ? "ok" : "no-data");
+      states.push(h.state);
+      g.malformed += h.malformed;
+      g.unrecognized += h.unrecognized;
+      g.overlong += h.overlong;
+      g.overlongOther += h.overlongOther;
+      g.unreadableFiles += h.unreadableFiles;
+      sources[src] = h;
     }
-    if (mtimeMs === undefined) delete f.titleMtimeMs;
-    else f.titleMtimeMs = mtimeMs;
-    if (title !== f.title) {
-      if (title === undefined) delete f.title;
-      else f.title = title;
-      this.dirty = true;
-    }
+    const missing = (s: SourceHealth["state"]) => s === "no-dir" || s === "permission";
+    const state: HealthState =
+      states.length > 0 && states.every((s) => s === "no-dir")
+        ? "no-dir"
+        : states.length > 0 && states.every(missing) && states.includes("permission")
+          ? "permission"
+          : states.includes("format-changed")
+            ? "format-changed"
+            : todayBySource.size === 0
+              ? "no-data"
+              : "ok";
+    // Sources in UI order (D40).
+    const ordered = Object.create(null) as Partial<Record<Source, SourceHealth>>;
+    for (const s of SOURCES) if (sources[s] !== undefined) ordered[s] = sources[s];
+    return {
+      state,
+      rootSource: this.rootSource,
+      // A log with per-call records hides its session total anyway, so an unread
+      // shutdown line there loses nothing (review 3); Data health still counts it.
+      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded > 0,
+      unrecognized: g.unrecognized,
+      malformed: g.malformed,
+      overlong: g.overlong,
+      overlongOther: g.overlongOther,
+      unreadableFiles: g.unreadableFiles,
+      sessionsWithoutUsage: g.sessionsWithoutUsage,
+      sessionsFromTotals: g.sessionsFromTotals,
+      shutdownOversize: g.shutdownOversize,
+      sources: ordered,
+    };
   }
 
   private snapshot(nowMs: number, dayStartMs: number): Snapshot {
@@ -438,78 +607,40 @@ export class UsageMonitor {
     const prior7 = this.store.totals((r) => r.timestampMs >= prior7Start && r.timestampMs < last7Start);
     const latest = this.store.latest();
 
-    let malformed = 0;
-    let unrecognized = 0;
-    let overlong = 0;
-    let overlongOther = 0;
-    let shutdownOversize = 0;
-    /** oversize shutdown lines in logs without per-call records: only there was the total needed */
-    let shutdownOversizeNeeded = 0;
-    let unreadableFiles = this.unreadable.size;
-    let silentLive = false;
-    let sessionsWithoutUsage = 0;
-    let sessionsFromTotals = 0;
-    // Store-derived, so a total hidden by per-call records never counts as coverage.
-    const fromTotals = this.store.sessionTotalSessions();
-    for (const f of this.files.values()) {
-      malformed += f.malformed;
-      unrecognized += f.unrecognized;
-      overlong += f.overlong;
-      overlongOther += f.overlongOther;
-      shutdownOversize += f.shutdownOversize;
-      if (f.usage === 0) shutdownOversizeNeeded += f.shutdownOversize;
-      if (f.error !== undefined && !this.unreadable.has(f.folderId)) unreadableFiles++;
-      if ((f.activity === 0 && !f.hasTotals) || f.usage > 0) continue;
-      if (fromTotals.has(f.folderId)) {
-        sessionsFromTotals++;
-        continue;
+    // Every candidate of every source, by folder: liveness, newest write, source.
+    const folders = new Map<string, { source: Source; live: boolean; mtimeMs: number }>();
+    const live = new Map<string, boolean>();
+    for (const rs of this.readers) {
+      for (const c of rs.candidates.values()) {
+        const prev = folders.get(c.folderId);
+        folders.set(c.folderId, prev === undefined ? { source: c.source, live: c.live, mtimeMs: c.mtimeMs } : { source: prev.source, live: prev.live || c.live, mtimeMs: Math.max(prev.mtimeMs, c.mtimeMs) });
+        if (c.live) live.set(`${c.source}|${c.folderId}`, true);
       }
-      const live = this.candidates.get(f.folderId)?.live === true;
-      const flags =
-        live &&
-        f.windowActivity >= FORMAT_ACTIVITY &&
-        f.windowUsage === 0 &&
-        this.store.totals(
-          (r) => isToday(r.timestampMs) && r.folderId !== f.folderId,
-        ) !== undefined;
-      if (flags) silentLive = true;
-      else sessionsWithoutUsage++;
     }
+    const sourceOf = new Map<string, Source>();
+    for (const f of this.files.values()) if (!sourceOf.has(f.folderId)) sourceOf.set(f.folderId, f.source);
+    for (const [id, c] of folders) if (!sourceOf.has(id)) sourceOf.set(id, c.source);
 
-    const health: Health = {
-      state:
-        this.discoverError ??
-        (unrecognized > 0 || silentLive
-          ? "format-changed"
-          : today === undefined
-            ? "no-data"
-            : "ok"),
-      rootSource: this.rootSource,
-      // A log with per-call records hides its session total anyway, so an unread
-      // shutdown line there loses nothing (review 3); Data health still counts it.
-      partial: unreadableFiles + malformed + overlong + shutdownOversizeNeeded > 0,
-      unrecognized,
-      malformed,
-      overlong,
-      overlongOther,
-      unreadableFiles,
-      sessionsWithoutUsage,
-      sessionsFromTotals,
-      shutdownOversize,
-    };
+    const health = this.health(isToday, live);
+    const reading = this.reading();
+    if (reading !== undefined) health.reading = reading;
 
     const monthStart = localMonthStart(new Date(nowMs));
     const inMonth = [...latest].filter(([, ms]) => ms >= monthStart).map(([id]) => id);
     // Older logs in the history window are read for totals but are not "this month's" sessions.
-    const recent = [...this.candidates.values()].filter((c) => c.mtimeMs >= monthStart).map((c) => c.folderId);
+    const recent = [...folders].filter(([, c]) => c.mtimeMs >= monthStart).map(([id]) => id);
     const ids = new Set<string>([...recent, ...inMonth]);
     const sessions = [...ids]
       .map((folderId) => {
         const lastMs = latest.get(folderId);
-        const live = this.candidates.get(folderId)?.live === true;
-        return lastMs === undefined
-          ? { folderId, live }
-          : { folderId, lastMs, live };
+        const isLiveNow = folders.get(folderId)?.live === true;
+        const source = sourceOf.get(folderId);
+        return {
+          folderId,
+          ...(lastMs !== undefined && { lastMs }),
+          live: isLiveNow,
+          ...(source !== undefined && { source }),
+        };
       })
       .sort(
         (a, b) =>
@@ -519,23 +650,25 @@ export class UsageMonitor {
 
     const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
-    // Grouping and the project filter are keyed by the project folder label only.
-    // A session title (ID-named folders) is display-only: the title of the most
-    // recently active titled session in that folder.
+    // Grouping and the project filter are keyed by the project folder name only (D44).
+    // A title (workspace.yaml for ID-named folders, Copilot's `owner/repo`) is display-only:
+    // the title of the most recently active titled session in that folder.
     const projects = new Map<string, string>();
     const titles = new Map<string, { title: string; ms: number }>();
     for (const f of this.files.values()) {
-      if (f.project === undefined) continue;
-      projects.set(f.folderId, f.project);
+      if (f.label === undefined) continue;
+      if (!projects.has(f.folderId)) projects.set(f.folderId, f.label);
       if (f.title === undefined) continue;
       const ms = latest.get(f.folderId) ?? Number.NEGATIVE_INFINITY;
-      const t = titles.get(f.project);
-      if (t === undefined || ms > t.ms) titles.set(f.project, { title: f.title, ms });
+      const t = titles.get(f.label);
+      if (t === undefined || ms > t.ms) titles.set(f.label, { title: f.title, ms });
     }
     const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
-    const { project, tool } = this.filter;
-    const byProject = (r: UsageRecord) => project === undefined || projectOf(r) === project;
-    const byTool = (r: UsageRecord) => tool === undefined || (r.tools?.[tool] ?? 0) > 0;
+    const { project, tool, source } = this.filter;
+    const bySource = (r: UsageRecord) => source === undefined || r.source === source;
+    // The source filter applies wherever the project filter does (D40).
+    const byProject = (r: UsageRecord) => (project === undefined || projectOf(r) === project) && bySource(r);
+    const byTool = (r: UsageRecord) => (tool === undefined || (r.tools?.[tool] ?? 0) > 0) && bySource(r);
     const keep = (r: UsageRecord) => byProject(r) && byTool(r);
     const history = byMonth(this.store, starts, keep);
     const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
@@ -572,9 +705,10 @@ export class UsageMonitor {
     // Without a filter they equal the newest history bucket and the current month's
     // project table (which ignores the project filter), so those passes are reused.
     const current = starts.at(-1)!;
-    const thisMonth = project === undefined && tool === undefined ? history.at(-1)?.totals : this.store.totals((r) => r.timestampMs >= current);
+    const unfiltered = project === undefined && tool === undefined && source === undefined;
+    const thisMonth = unfiltered ? history.at(-1)?.totals : this.store.totals((r) => r.timestampMs >= current);
     const thisMonthProjects =
-      month.isCurrent && tool === undefined ? month.projects : projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf).map(withTitle);
+      month.isCurrent && tool === undefined && source === undefined ? month.projects : projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf).map(withTitle);
     // Unfiltered per-project figures for today and the last 7 days, one pass (A1 side bar).
     const recentP = recentProjects(this.store, last7Start, dayStartMs, projectOf);
     const todayProjects = recentP.today.map(withTitle);
@@ -598,13 +732,13 @@ export class UsageMonitor {
         return label === undefined ? t : { ...t, label };
       });
     }
-    const filter = project !== undefined || tool !== undefined ? { ...this.filter } : undefined;
+    const filter = unfiltered ? undefined : { ...this.filter };
 
     return {
       generatedAtMs: nowMs,
       dayStartMs,
       ...(today !== undefined && { today }),
-      ...this.current(latest, dayStartMs),
+      ...this.current(latest, dayStartMs, folders),
       sessions,
       health,
       month,
@@ -666,11 +800,14 @@ export class UsageMonitor {
     keep: (r: UsageRecord) => boolean,
     byProject: (r: UsageRecord) => boolean,
     monthNanoAiu: number,
-  ): Pick<MonthView, "sessions" | "sessionCount" | "totalsSessions" | "insights" | "cache" | "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> {
+  ): Pick<MonthView, "sessions" | "sessionCount" | "sessionsBySource" | "totalsSessions" | "insights" | "cache" | "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> {
     const calls = this.store.records((r) => r.kind === "call");
     // The cache-read share uses the same per-model prompt convention as Insights (N4).
     const conventions = promptConventions(calls);
     const all: SessionSummary[] = sessionSummaries(this.store, fromMs, toMs, Number.POSITIVE_INFINITY, keep, conventions);
+    // Sessions per source over every session of the month, before the SESSION_ROWS cut.
+    const sessionsBySource = Object.create(null) as Partial<Record<Source, number>>;
+    for (const x of all) if (x.source !== undefined) sessionsBySource[x.source] = (sessionsBySource[x.source] ?? 0) + 1;
     const inMonth = (r: UsageRecord) => r.timestampMs >= fromMs && r.timestampMs < toMs;
     // The tools table ignores the tool filter, so its "no tool data" note counts totals by project only.
     const totalsSessions = new Set(this.store.records((r) => r.kind === "sessionTotal" && inMonth(r) && byProject(r)).map((r) => r.sessionId)).size;
@@ -701,23 +838,27 @@ export class UsageMonitor {
       }
     }
     const cache = prompt.reported > 0 || cacheRead.reported > 0 ? { cache: { prompt, cacheRead } } : {};
-    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, totalsSessions, insights, ...cache, ...explain };
+    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, sessionsBySource, totalsSessions, insights, ...cache, ...explain };
   }
 
-  /** Pinned folder; else the live candidate with the newest record; else the newest folder today. */
+  /**
+   * Pinned folder; else a PID-live Copilot session with the newest record, then any
+   * mtime-live session the same way; else the folder with the newest record today (D43).
+   */
   private current(
     latest: Map<string, number>,
     dayStartMs: number,
+    folders: Map<string, { source: Source; live: boolean; mtimeMs: number }>,
   ): Pick<Snapshot, "current"> {
     let folderId = this.pinned;
     const pinned = folderId !== undefined;
-    if (folderId === undefined) {
-      // Live candidates by newest record, then by newest file write.
-      const live = [...this.candidates.values()].filter((c) => c.live);
-      const key = (c: Candidate) => latest.get(c.folderId) ?? -Infinity;
-      live.sort((a, b) => key(b) - key(a) || b.mtimeMs - a.mtimeMs);
-      folderId = live[0]?.folderId;
-    }
+    const pick = (copilot: boolean): string | undefined => {
+      const live = [...folders].filter(([, c]) => c.live && (c.source === "copilot") === copilot);
+      const key = (id: string) => latest.get(id) ?? -Infinity;
+      live.sort(([a, ca], [b, cb]) => key(b) - key(a) || cb.mtimeMs - ca.mtimeMs);
+      return live[0]?.[0];
+    };
+    if (folderId === undefined) folderId = pick(true) ?? pick(false);
     if (folderId === undefined) {
       let bestMs = -Infinity;
       for (const [id, ms] of latest) {
@@ -730,8 +871,10 @@ export class UsageMonitor {
     if (folderId === undefined) return {};
     const id = folderId;
     const totals = this.store.totals((r) => r.sessionId === id);
-    const live = this.candidates.get(id)?.live === true;
+    const live = folders.get(id)?.live === true;
     const last = lastPrompt(this.store.records((r) => r.kind === "call" && r.sessionId === id));
+    let source: Source | undefined = folders.get(id)?.source;
+    if (source === undefined) for (const f of this.files.values()) if (f.folderId === id) source = f.source;
     return {
       current: {
         folderId: id,
@@ -739,6 +882,7 @@ export class UsageMonitor {
         pinned,
         ...(totals !== undefined && { totals }),
         ...(last !== undefined && { lastPrompt: last }),
+        ...(source !== undefined && { source }),
       },
     };
   }
