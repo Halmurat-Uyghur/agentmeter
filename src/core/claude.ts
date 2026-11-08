@@ -30,7 +30,11 @@ import type { FinishReason, Tokens, UsageRecord } from "./types";
 export const CLAUDE_MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** Bytes of an over-long line's head classifyClaudeHead looks at. */
 export const CLAUDE_HEAD_BYTES = 4096;
-/** Files lstat'ed per discovery; the rest are counted as `capped` (D50). */
+/**
+ * Files lstat'ed per discovery; the rest are counted as `capped` (D50). Trade-off: the cap
+ * counts every *.jsonl lstat'ed, in or out of the window, in slug order, so old files can
+ * use it up before newer ones are reached; work stays bounded and `capped` is the signal.
+ */
 export const CLAUDE_MAX_FILES = 10_000;
 /** Deepest file below projects/ (projects/<slug>/<id>/subagents/workflows/wf_x/agent-y.jsonl is 6). */
 export const CLAUDE_MAX_DEPTH = 6;
@@ -281,14 +285,6 @@ function codeOf(err: unknown): string | undefined {
   return err !== null && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : undefined;
 }
 
-async function listDir(dir: string): Promise<fs.Dirent[] | undefined> {
-  try {
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
-    return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  } catch {
-    return undefined;
-  }
-}
 
 class Walk {
   readonly sessions = new Map<string, SourceFile[]>();
@@ -297,6 +293,18 @@ class Walk {
   private seen = 0;
 
   constructor(private readonly windowStartMs: number) {}
+
+  /** Sorted entries of `dir`; a listing error other than ENOENT/ENOTDIR is reported as unreadable under `folderId` (a session id, or "" for a slug folder; never a slug name). */
+  async list(dir: string, folderId: string): Promise<fs.Dirent[] | undefined> {
+    try {
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    } catch (err) {
+      const code = codeOf(err);
+      if (code !== "ENOENT" && code !== "ENOTDIR") this.unreadable.push({ folderId, path: dir, code: code ?? "OTHER" });
+      return undefined;
+    }
+  }
 
   /** lstat's the *.jsonl regular files among `entries` (symlinks are not files here) for session `sid`. */
   async files(dir: string, entries: fs.Dirent[], sid: (name: string) => string | undefined): Promise<void> {
@@ -333,7 +341,7 @@ class Walk {
 
   /** A session folder at `depth` below projects/: its *.jsonl files join `sid`; subfolders are descended while files stay within CLAUDE_MAX_DEPTH. */
   async sessionDir(dir: string, sid: string, depth: number): Promise<void> {
-    const entries = await listDir(dir);
+    const entries = await this.list(dir, sid);
     if (entries === undefined) return;
     await this.files(dir, entries, () => sid);
     if (depth + 1 >= CLAUDE_MAX_DEPTH) return;
@@ -370,7 +378,7 @@ export async function discoverClaude(
   for (const slug of slugs) {
     if (!slug.isDirectory()) continue;
     const slugDir = join(base, slug.name);
-    const entries = await listDir(slugDir);
+    const entries = await walk.list(slugDir, "");
     if (entries === undefined) continue;
     await walk.files(slugDir, entries, (name) => {
       const stem = name.slice(0, -JSONL.length);
@@ -403,23 +411,39 @@ export async function discoverClaude(
 
 class ClaudeFileReader implements FileReader, LineHandler {
   private out: FileReadResult = emptyReadResult();
+  /** per-file state, cleared on a reset: the label pinned from the first usage record */
   private label: string | undefined;
-  private readonly tailer: ByteTailer;
+  private tailer: ByteTailer;
 
   constructor(
-    path: string,
+    private readonly path: string,
     private readonly fileSessionId: string,
     private readonly readProjects: boolean,
   ) {
-    this.tailer = new ByteTailer(path, this, { maxLineBytes: CLAUDE_MAX_LINE_BYTES, headBytes: CLAUDE_HEAD_BYTES });
+    this.tailer = this.newTailer();
+  }
+
+  private newTailer(): ByteTailer {
+    return new ByteTailer(this.path, this, { maxLineBytes: CLAUDE_MAX_LINE_BYTES, headBytes: CLAUDE_HEAD_BYTES });
+  }
+
+  private async readOnce(): Promise<{ reset: boolean; error?: FileReadResult["error"] }> {
+    this.out = emptyReadResult();
+    return this.tailer.read();
   }
 
   async read(): Promise<FileReadResult> {
-    const out = emptyReadResult();
-    this.out = out;
-    const { reset, error } = await this.tailer.read();
-    out.reset = reset;
-    if (error !== undefined) out.error = error;
+    let r = await this.readOnce();
+    if (r.reset) {
+      // The lines just handled came from a rewritten file but were parsed with the old
+      // file's state (the pinned label): drop that pass and start over with a fresh tailer.
+      this.label = undefined;
+      this.tailer = this.newTailer();
+      r = { ...(await this.readOnce()), reset: true };
+    }
+    const out = this.out;
+    out.reset = r.reset;
+    if (r.error !== undefined) out.error = r.error;
     if (this.label !== undefined) out.label = this.label;
     return out;
   }

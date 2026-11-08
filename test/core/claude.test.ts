@@ -1,9 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendFile, chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appendFile, chmod, mkdir, mkdtemp, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as jsonScan from "../../src/core/jsonScan";
 import {
   CLAUDE_HEAD_BYTES,
+  CLAUDE_MAX_DEPTH,
   CLAUDE_MAX_FILES,
   CLAUDE_MAX_LINE_BYTES,
   ClaudeSourceReader,
@@ -49,6 +51,7 @@ describe("constants", () => {
     expect(CLAUDE_MAX_LINE_BYTES).toBe(4 * 1024 * 1024);
     expect(CLAUDE_HEAD_BYTES).toBe(4096);
     expect(CLAUDE_MAX_FILES).toBe(10_000);
+    expect(CLAUDE_MAX_DEPTH).toBe(6);
   });
 });
 
@@ -306,6 +309,10 @@ describe("discoverClaude", () => {
     expect(res.candidates[1]!.live).toBe(false);
     expect(res.dirMtimeMs).toBe((await stat(join(root, "projects"))).mtimeMs);
     expect(res.unreadable).toEqual([]);
+    for (const c of res.candidates) {
+      expect(c.sessionId).not.toContain(CLAUDE_CANARY);
+      expect(c.folderId).not.toContain(CLAUDE_CANARY);
+    }
   });
 
   it("a session whose only fresh file is a subagent is still found", async () => {
@@ -390,6 +397,31 @@ describe("discoverClaude", () => {
     expect(res.candidates[0]!.files).toHaveLength(CLAUDE_MAX_FILES);
     expect(res.capped).toBe(5);
   }, 60_000);
+
+  it("reports a slug or session folder that cannot be listed as unreadable, never naming the slug", async () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) return;
+    await claudeTree(root, [
+      { sessionId: S1, lines: [claudeAssistantLine()], mtime: now - 1000 },
+      { slug: "other-slug", sessionId: S2, subagents: [{ id: "a", lines: [claudeAssistantLine()] }], mtime: now - 1000 },
+    ]);
+    const slugDir = join(root, "projects", CLAUDE_SLUG);
+    const sessionDir = join(root, "projects", "other-slug", S2);
+    await chmod(slugDir, 0o000);
+    await chmod(sessionDir, 0o000);
+    try {
+      const res = await discoverClaude(root, windowStart, dayStart, now);
+      if (!res.ok) throw new Error("not ok");
+      expect(res.candidates).toEqual([]);
+      expect(res.unreadable).toEqual([
+        { folderId: "", path: slugDir, code: "EACCES" },
+        { folderId: S2, path: sessionDir, code: "EACCES" },
+      ]);
+      for (const u of res.unreadable) expect(u.folderId).not.toContain(CLAUDE_CANARY);
+    } finally {
+      await chmod(slugDir, 0o755);
+      await chmod(sessionDir, 0o755);
+    }
+  });
 
   it("reports lstat errors as unreadable", async () => {
     if (process.platform === "win32" || process.getuid?.() === 0) return;
@@ -541,6 +573,56 @@ describe("ClaudeSourceReader", () => {
     expect(res.overlong).toBe(1);
     expect(res.records.map((r) => r.key)).toEqual(["msg_after"]);
   }, 30_000);
+
+  it("re-reads a rewritten file from the start with fresh per-file state", async () => {
+    const [path] = await claudeTree(root, [
+      {
+        sessionId: S1,
+        lines: [
+          claudeAssistantLine({ id: "msg_old1", cwd: `/${CLAUDE_CANARY}/oldrepo` }),
+          claudeAssistantLine({ id: "msg_old2" }),
+          claudeUserLine(),
+          claudeAssistantLine({ usage: null }),
+        ],
+      },
+    ]);
+    const fr = make().open(path!, candidate(path!));
+    const first = await fr.read();
+    expect(first.label).toBe("oldrepo");
+    expect(first.records).toHaveLength(2);
+    await truncate(path!, 0);
+    await writeFile(path!, claudeAssistantLine({ id: "msg_new", cwd: `/${CLAUDE_CANARY}/newrepo` }) + "\n");
+    const second = await fr.read();
+    expect(second.reset).toBe(true);
+    expect(second.label).toBe("newrepo");
+    expect(second.records.map((r) => r.key)).toEqual(["msg_new"]);
+    expect(second.usage).toBe(1);
+    expect(second.activity).toBe(0);
+    expect(second.unrecognized).toBe(0);
+    expect(second.malformed).toBe(0);
+    const third = await fr.read();
+    expect(third.reset).toBe(false);
+    expect(third.records).toEqual([]);
+    expect(third.label).toBe("newrepo");
+  });
+
+  it("counts a line whose parsing throws as malformed and keeps reading", async () => {
+    const [path] = await claudeTree(root, [
+      { sessionId: S1, lines: [claudeAssistantLine({ id: "msg_boom" }), claudeAssistantLine({ id: "msg_ok" })] },
+    ]);
+    const spy = vi.spyOn(jsonScan, "scanJson").mockImplementationOnce(() => {
+      throw new Error("boom");
+    });
+    try {
+      const res = await make().open(path!, candidate(path!)).read();
+      expect(spy).toHaveBeenCalled();
+      expect(res.malformed).toBe(1);
+      expect(res.records.map((r) => r.key)).toEqual(["msg_ok"]);
+      expect(res.error).toBeUndefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   it("reports a missing file as an error", async () => {
     const path = join(root, "projects", "slug", `${S1}.jsonl`);
