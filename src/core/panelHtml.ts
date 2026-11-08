@@ -55,7 +55,7 @@ ${shell(undefined, def, LOADING_NOTE, `<p class="muted">Loading…</p>`, navColl
   }
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);
   const body = `${skipLink(def)}
-${topBar(s, view, def.id === "health")}
+${topBar(s, view)}
 ${stateNote(s.health)}
 ${toolbar(s, view)}
 ${shell(s, def, description, RENDER[def.id](s, view), navCollapsed)}`;

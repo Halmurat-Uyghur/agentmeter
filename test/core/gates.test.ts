@@ -10,7 +10,9 @@ import { PANEL_COMMANDS } from "../../src/core/panelHtml";
 import { SIDEBAR_COMMANDS } from "../../src/core/sidebarModel";
 
 const ROOT = join(__dirname, "..", "..");
-/** The getting-started walkthrough's media (v0.6, 2.4): the only files besides the four core ones in the .vsix. */
+/** The logo: the extension icon, the panel tab icon and the activity-bar icon (drawn by tools/logo). */
+const ICON_MEDIA = ["media/icon.png", "media/icon.svg", "media/activity.svg"];
+/** The getting-started walkthrough's media (v0.6, 2.4): the only other files besides the four core ones and the icons in the .vsix. */
 const WALKTHROUGH_MEDIA = ["media/walkthrough/folder.md", "media/walkthrough/unit.md", "media/walkthrough/target.md", "media/walkthrough/open.md"];
 const RATE_FILE = join(ROOT, "src", "vscode", "exchangeRate.ts");
 
@@ -18,6 +20,7 @@ function files(dir: string, ext: RegExp): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
+    if (name === "node_modules") continue; // tools/logo is its own package (Remotion, dev only)
     if (statSync(p).isDirectory()) out.push(...files(p, ext));
     else if (ext.test(name)) out.push(p);
   }
@@ -266,8 +269,9 @@ describe("gates", () => {
   it("manifest: side bar container, webview view and title actions (D31, A1)", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const c = pkg.contributes;
-    // A codicon, so no icon file ships (the .vsix adds only the walkthrough markdown).
-    expect(c.viewsContainers.activitybar).toEqual([{ id: "copilotUsageMonitor", title: "Copilot Usage (Local)", icon: "$(graph)" }]);
+    // The logo's one-colour SVG (media/activity.svg); the .vsix adds it with the other icons and the walkthrough markdown.
+    expect(c.viewsContainers.activitybar).toEqual([{ id: "copilotUsageMonitor", title: "Copilot Usage (Local)", icon: "media/activity.svg" }]);
+    expect(pkg.icon).toBe("media/icon.png");
     expect(c.views.copilotUsageMonitor.map((v: { id: string; name: string; type?: string }) => [v.id, v.name, v.type])).toEqual([["copilotUsageMonitor.summary", "Summary", "webview"]]);
     // Welcome content and item menus work for trees only; the webview shows its states in-page (A1).
     expect(c.viewsWelcome).toBeUndefined();
@@ -421,15 +425,15 @@ describe("gates", () => {
     }
   });
 
-  it(".vsix holds exactly package.json, README.md, LICENSE, the bundle and the walkthrough's four markdown files", () => {
+  it(".vsix holds exactly package.json, README.md, LICENSE, the bundle, the three icon files and the walkthrough's four markdown files", () => {
     const bin = join(ROOT, "node_modules", ".bin", "vsce");
     expect(existsSync(bin)).toBe(true);
     const out = execFileSync(bin, ["ls", "--no-dependencies"], { cwd: ROOT, encoding: "utf8" });
     const paths = out.split("\n").map((l) => l.trim()).filter((l) => /^[\w.-]+(\/[\w.-]+)*$/.test(l));
-    expect(new Set(paths)).toEqual(new Set(["package.json", "README.md", "LICENSE", "dist/extension.js", ...WALKTHROUGH_MEDIA]));
+    expect(new Set(paths)).toEqual(new Set(["package.json", "README.md", "LICENSE", "dist/extension.js", ...ICON_MEDIA, ...WALKTHROUGH_MEDIA]));
     // .vscodeignore stays an exact allowlist: ignore everything, then name each file (no globs)
     const ignore = readFileSync(join(ROOT, ".vscodeignore"), "utf8").trim().split("\n");
-    expect(ignore).toEqual(["**", "!dist/extension.js", "!package.json", "!README.md", "!LICENSE", ...WALKTHROUGH_MEDIA.map((f) => `!${f}`)]);
+    expect(ignore).toEqual(["**", "!dist/extension.js", "!package.json", "!README.md", "!LICENSE", ...ICON_MEDIA.map((f) => `!${f}`), ...WALKTHROUGH_MEDIA.map((f) => `!${f}`)]);
   }, 30_000);
 
   it("manifest scopes (v0.7): folder, project names and session totals per machine; currency and alert per user", () => {

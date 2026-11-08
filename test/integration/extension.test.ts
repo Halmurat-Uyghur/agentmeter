@@ -209,7 +209,7 @@ suite("Copilot Usage Monitor", () => {
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
     const c = ext.packageJSON.contributes;
     assert.strictEqual(c.viewsContainers.activitybar[0].id, "copilotUsageMonitor");
-    assert.strictEqual(c.viewsContainers.activitybar[0].icon, "$(graph)");
+    assert.strictEqual(c.viewsContainers.activitybar[0].icon, "media/activity.svg");
     assert.strictEqual(c.views.copilotUsageMonitor[0].id, "copilotUsageMonitor.summary");
     assert.strictEqual(c.views.copilotUsageMonitor[0].type, "webview");
     assert.strictEqual(c.viewsWelcome, undefined);

@@ -222,8 +222,9 @@ details.more[open] > summary::before { content: "▾ "; }
 .card .sub { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
 .small { font-size: 11px; }
 .hot { color: var(--hot); }
-.lbl { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
-.lbl b { margin-left: 4px; font-weight: 600; }
+/* p.lbl, not .lbl: the side nav's label spans share the class name and must not pick up this margin, colour and size */
+p.lbl { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+p.lbl b { margin-left: 4px; font-weight: 600; }
 .hero-grid { display: grid; grid-template-columns: minmax(220px, 1.1fr) minmax(0, 1.2fr) auto; gap: 14px 22px; align-items: start; }
 .hero-main { padding-right: 18px; border-right: 1px solid var(--line); min-width: 0; }
 .hero .big { font-size: 40px; line-height: 1.1; letter-spacing: -.02em; }

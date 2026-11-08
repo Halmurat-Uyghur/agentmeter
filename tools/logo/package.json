@@ -1,0 +1,22 @@
+{
+  "name": "copilot-usage-monitor-logo",
+  "private": true,
+  "description": "Remotion project that draws the extension logo and exports media/*.svg and media/icon.png. Dev tooling only; never packaged (see .vscodeignore).",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio --no-open",
+    "export": "tsx scripts/export.tsx"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.541",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.541"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

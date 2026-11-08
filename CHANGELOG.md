@@ -33,6 +33,16 @@ Claude Code and the Codex CLI join the Copilot CLI as usage sources, read from t
 
 - No 0.7.0 behaviour needed a fix in this release; the fixes made while building the new readers are part of the features above.
 
+## 0.7.1 - 2026-11-08
+
+### Added
+
+- **A logo.** A usage gauge over three rising bars (`media/icon.svg`, `media/icon.png`, `media/activity.svg`), drawn in code with Remotion (`tools/logo`, development only; `npm run export` there rewrites the three files). It is the extension's icon, the icon on the details panel's editor tab (before, the tab had none) and the activity bar icon, in place of the generic graph glyph. The icons add about 80 KB to the .vsix; nothing else changes and no network or settings are involved.
+
+### Fixed
+
+- **The section nav no longer jumps when you open Data health.** Data health used to swap the one-line "Local logs on this computer only" note above the month bar for the full provenance text, so on that one section the month bar, the section nav and the content sat lower, and they moved back up on the next click. The chrome above the month bar is now the same on every section; Data health shows the full text openly at the top of its own content instead.
+
 ## 0.7.0 - 2026-11-07
 
 A review release: ten independent reviews of the whole code base (parsing, discovery, aggregation, formatting, insights, the panel, the VS Code layer, security, docs and an end-to-end run in VS Code 1.90), each finding reproduced before it was fixed, and every fix shipped with its regression test. No new data is read; nothing is stored.

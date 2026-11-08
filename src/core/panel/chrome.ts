@@ -32,17 +32,23 @@ function rootLabel(h: Health): string {
   return h.rootSource === "setting" ? "Folder: setting" : h.rootSource === "env" ? "Folder: COPILOT_HOME" : "Folder: default";
 }
 
-/** The figures' provenance: one muted line plus a native fold with the full text on every
- * section (design #4); Data health shows the full text openly. */
-function aboutNote(view: ViewOptions, full: boolean, mixed = false): string {
+/** The full provenance text (design #4): the local-only banner, the streaming note and,
+ * in cost view, the estimate notes (with the Copilot-only note when sources mix). Inside the
+ * fold on every section; Data health lays it out openly in its own content (renderHealth). */
+export function aboutText(view: ViewOptions, mixed = false): string {
   const costNote = view.unit === "cost" ? costNotes(view, mixed).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
-  const text = `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
-  if (full) return `<section class="note" aria-label="About these figures">${text}</section>`;
-  const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
-  return `<section class="about" aria-label="About these figures"><span class="muted">${escapeHtml(line)}</span><details class="more"><summary>About these figures</summary><div class="aboutbody">${text}</div></details></section>`;
+  return `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
 }
 
-export function topBar(s: Snapshot | undefined, view: ViewOptions, fullNote = false): string {
+/** One muted line plus a native fold with the full text. The same markup on every section:
+ * the chrome above the month bar must not change height with the section, or the month
+ * bar, the section nav and the content move when the reader clicks to another section. */
+function aboutNote(view: ViewOptions, mixed = false): string {
+  const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
+  return `<section class="about" aria-label="About these figures"><span class="muted">${escapeHtml(line)}</span><details class="more"><summary>About these figures</summary><div class="aboutbody">${aboutText(view, mixed)}</div></details></section>`;
+}
+
+export function topBar(s: Snapshot | undefined, view: ViewOptions): string {
   const chips: string[] = [];
   if (s) {
     if (s.current) {
@@ -62,7 +68,7 @@ export function topBar(s: Snapshot | undefined, view: ViewOptions, fullNote = fa
   <div><h1 class="wordmark">${logo()}<span class="wm">Copilot Usage</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
 </header>
-${aboutNote(view, fullNote, mixedSources(s?.month?.totals?.sources))}`;
+${aboutNote(view, mixedSources(s?.month?.totals?.sources))}`;
 }
 
 /** Not role="alert": the page re-renders after every model call and would re-announce (O3). */

@@ -13,6 +13,7 @@
     "status bar"
   ],
   "publisher": "local",
+  "icon": "media/icon.png",
   "version": "0.8.0",
   "private": true,
   "license": "MIT",
@@ -67,7 +68,7 @@
         {
           "id": "copilotUsageMonitor",
           "title": "Copilot Usage (Local)",
-          "icon": "$(graph)"
+          "icon": "media/activity.svg"
         }
       ]
     },
@@ -78,7 +79,7 @@
           "id": "copilotUsageMonitor.summary",
           "name": "Summary",
           "contextualTitle": "Copilot Usage (Local)",
-          "icon": "$(graph)",
+          "icon": "media/activity.svg",
           "visibility": "visible"
         }
       ]

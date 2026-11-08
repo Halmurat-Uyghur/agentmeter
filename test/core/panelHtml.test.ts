@@ -316,7 +316,7 @@ describe("renderPanelHtml", () => {
       for (const view of [undefined, { unit: "cost" as const, range: { min: 1, max: 2 } }]) {
         for (const section of SECTIONS) {
           const html = renderPanelHtml(s, "x", view, section);
-          const t = text(html).replace(LOCAL_BANNER, "");
+          const t = text(html).split(LOCAL_BANNER).join("");
           expect(t, section).not.toMatch(COPY_RE);
           expect(html).not.toMatch(/<script/i);
           expect(html).not.toMatch(/\son\w+\s*=/i);
