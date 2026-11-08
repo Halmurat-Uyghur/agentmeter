@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  COST_SOURCES_NOTE,
+  costNotes,
+  INSIGHTS_SOURCES_NOTE,
   LOCAL_BANNER,
   NOT_COVERED,
   currentRangeState,
@@ -17,12 +20,15 @@ import {
   tooltipMarkdown,
   weekChange,
   weekCoverage,
+  formatChangedSentence,
+  LOADING_NOTE,
 } from "../../src/core/format";
 import type {
   Counts,
   Health,
   Metric,
   Snapshot,
+  SourceHealth,
   Totals,
 } from "../../src/core/types";
 
@@ -202,14 +208,14 @@ describe("statusText", () => {
       statusText(
         snap({ today: undefined, health: health({ state: "no-dir" }) }),
       ),
-    ).toBe("$(circle-slash) Copilot logs not found");
+    ).toBe("$(circle-slash) Local: no usage logs found");
   });
   it("permission", () => {
     expect(
       statusText(
         snap({ today: undefined, health: health({ state: "permission" }) }),
       ),
-    ).toBe("$(lock) Copilot logs unreadable");
+    ).toBe("$(lock) Local: usage logs unreadable");
   });
 });
 
@@ -495,7 +501,7 @@ describe("copy check", () => {
 
   it("LOCAL_BANNER is the plan sentence verbatim", () => {
     expect(LOCAL_BANNER).toBe(
-      "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.",
+      "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.",
     );
   });
 });
@@ -542,7 +548,7 @@ describe("v0.4: the status bar reads the unfiltered current month (D31, D33)", (
 
   it("statusAccessibilityLabel: the status figure in words, in every state", () => {
     expect(statusAccessibilityLabel(undefined)).toBe("Copilot usage: loading");
-    expect(statusAccessibilityLabel(snap({ health: health({ state: "no-dir" }) }))).toMatch(/not found/);
+    expect(statusAccessibilityLabel(snap({ health: health({ state: "no-dir" }) }))).toBe("No usage logs found. Opens details.");
     expect(statusAccessibilityLabel(snap({ health: health({ partial: true }) }))).toBe(
       "Copilot usage, local today: 1.5 million (may be incomplete) tokens. Opens details.",
     );
@@ -743,5 +749,107 @@ describe("review fixes: money, spoken, rangeState and changeAmount in a display 
     expect(money(0.0004, one)).toBe("<CA$0.001");
     expect(money(0, one)).toBe("CA$0.00");
     expect(spoken(money(0.0004, one))).toBe("less than 0.001 CAD");
+  });
+});
+
+describe("sources (D46, D49)", () => {
+  const sc = (o: Partial<Counts>): Counts => ({ ...counts(m(1000, 1, 0), m(500, 1, 0), 1), ...o });
+  const two = (): Totals => ({
+    ...totals(m(3000, 3, 0), m(1500, 3, 0)),
+    sources: { copilot: 1, "claude-code": 2 },
+    bySource: { copilot: sc({ input: m(1000, 1, 0) }), "claude-code": sc({ input: m(2_000_000, 2, 0), output: m(0, 2, 0) }) },
+  });
+  it("the note strings", () => {
+    expect(COST_SOURCES_NOTE).toBe("USD (est.) covers Copilot only: Claude Code and Codex log no cost; their figures are tokens.");
+    expect(INSIGHTS_SOURCES_NOTE).toBe("Insights use Copilot's logged AI credits; Claude Code and Codex calls are not examined.");
+  });
+  it("costNotes adds the sources note only when a non-Copilot source is in scope", () => {
+    expect(costNotes({ unit: "cost" })).not.toContain(COST_SOURCES_NOTE);
+    expect(costNotes({ unit: "cost" }, false)).not.toContain(COST_SOURCES_NOTE);
+    expect(costNotes({ unit: "cost" }, true)).toContain(COST_SOURCES_NOTE);
+  });
+  it("no-dir wording, text and spoken", () => {
+    const s = snap({ today: undefined, health: health({ state: "no-dir" }) });
+    expect(statusText(s)).toBe("$(circle-slash) Local: no usage logs found");
+    expect(statusAccessibilityLabel(s)).toBe("No usage logs found. Opens details.");
+  });
+  it("permission wording, text, spoken and tooltip naming the enabled sources' settings", () => {
+    const sh = { rootSource: "default" as const, files: 0, sessions: 0, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 };
+    const s = snap({ today: undefined, health: health({ state: "permission", sources: { copilot: { ...sh, state: "permission" }, "claude-code": { ...sh, state: "off" }, codex: { ...sh, state: "no-dir" } } }) });
+    expect(statusText(s)).toBe("$(lock) Local: usage logs unreadable");
+    expect(statusAccessibilityLabel(s)).toBe("Usage logs unreadable. Opens details.");
+    const md = tooltipMarkdown(s);
+    expect(md).toContain("The usage log folder of an enabled source could not be read on this computer.");
+    expect(md).toContain("`copilotUsageMonitor.copilotHome` or `copilotUsageMonitor.codexHome`");
+    expect(md).not.toContain("claudeHome");
+    const all = tooltipMarkdown(snap({ today: undefined, health: health({ state: "permission" }) }));
+    expect(all).toContain("`copilotUsageMonitor.copilotHome`, `copilotUsageMonitor.claudeHome` or `copilotUsageMonitor.codexHome`");
+  });
+  it("tooltip lists each source today only when two sources have records today", () => {
+    const md = tooltipMarkdown(snap({ today: two() }));
+    expect(md).toContain("**By source today**");
+    expect(md).toContain("- Copilot: 1\\.5K tok");
+    expect(md).toContain("- Claude Code: 2\\.0M tok");
+    expect(md.indexOf("- Copilot")).toBeLessThan(md.indexOf("- Claude Code"));
+    const one = { ...two(), sources: { "claude-code": 2 }, bySource: { "claude-code": two().bySource!["claude-code"]! } };
+    expect(tooltipMarkdown(snap({ today: one }))).not.toContain("By source today");
+    expect(tooltipMarkdown(snap())).not.toContain("By source today");
+  });
+  it("tooltip: cost notes and the target say Copilot only when this month is mixed", () => {
+    const view = { unit: "cost" as const, range: { min: 20, max: 60 } };
+    const mixed = tooltipMarkdown(snap({ thisMonth: two() }), view);
+    expect(mixed).toContain(escapeMarkdown(COST_SOURCES_NOTE));
+    expect(mixed).toContain("\\(Copilot only\\)");
+    const plain = tooltipMarkdown(snap({ thisMonth: totals(IN, OUT) }), view);
+    expect(plain).not.toContain(escapeMarkdown(COST_SOURCES_NOTE));
+    expect(plain).not.toContain("Copilot only");
+  });
+  it("tooltip says idle, not ended, for a Claude Code current session", () => {
+    const md = tooltipMarkdown(snap({ current: { folderId: "x", live: false, pinned: false, source: "claude-code" } }));
+    expect(md).toContain("Current session (idle)");
+    const cp = tooltipMarkdown(snap({ current: { folderId: "x", live: false, pinned: false, source: "copilot" } }));
+    expect(cp).toContain("Current session (ended)");
+  });
+});
+
+// Fix wave F3a: neutral wording once more than one source is read.
+describe("v0.8: multi-source wording (F3a)", () => {
+  const sh = (state: SourceHealth["state"] = "ok"): SourceHealth => ({ state, rootSource: "default", files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 });
+  const multi = (o: Partial<Health> = {}) => health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh("off") }, ...o });
+
+  it("format-changed names the sources whose state is format-changed", () => {
+    const one = formatChangedSentence(health({ state: "format-changed", sources: { copilot: sh(), "claude-code": sh("format-changed") } }));
+    expect(one).toBe("Claude Code may have changed its log format");
+    const two = formatChangedSentence(health({ state: "format-changed", sources: { copilot: sh("format-changed"), "claude-code": sh(), codex: sh("format-changed") } }));
+    expect(two).toBe("Copilot and Codex may have changed their log formats");
+    expect(formatChangedSentence(health({ state: "format-changed" }))).toBe("Copilot may have changed its log format");
+    const md = tooltipMarkdown(snap({ health: health({ state: "format-changed", unrecognized: 2, sources: { copilot: sh(), "claude-code": sh("format-changed") } }) }));
+    expect(md).toContain("Claude Code may have changed its log format, so figures may be incomplete.");
+    expect(md).not.toContain("Copilot may have changed");
+    expect(tooltipMarkdown(snap({ health: health({ state: "format-changed", unrecognized: 2 }) }))).toContain("Copilot may have changed its log format, so figures may be incomplete.");
+  });
+
+  it("the spoken status label says Local usage when another source is enabled; Copilot-only keeps 0.7", () => {
+    expect(statusAccessibilityLabel(snap({ health: multi() }))).toBe("Local usage, today: 1.5 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(snap({ health: multi() }), { unit: "tokens", statusBar: "month" })).toMatch(/^Local usage, this month: /);
+    expect(statusAccessibilityLabel(snap({ health: multi() }), { unit: "tokens", statusBar: "session" })).toMatch(/^Local usage, current session: /);
+    expect(statusAccessibilityLabel(snap({ health: health({ sources: { copilot: sh() } }) }))).toBe("Copilot usage, local today: 1.5 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(snap({ health: health({ sources: { copilot: sh(), codex: sh("off") } }) }))).toMatch(/^Copilot usage, local today: /);
+  });
+
+  it("NOT_COVERED[0] is scoped to Copilot's clients", () => {
+    expect(NOT_COVERED[0]).toMatch(/^Of Copilot's clients, only those that write session-state\/\*\/events\.jsonl/);
+  });
+
+  it("loading and streaming notes are neutral", () => {
+    expect(STREAMING_NOTE).toBe("Updates when a model call finishes, not token by token.");
+    expect(LOADING_NOTE).toBe("Reading session logs…");
+    expect(tooltipMarkdown(undefined)).toContain("Reading session logs…");
+    expect(tooltipMarkdown(undefined)).not.toContain("Copilot session logs");
+  });
+
+  it("the new strings follow the copy rule", () => {
+    const re = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
+    for (const x of [NOT_COVERED[0]!, STREAMING_NOTE, LOADING_NOTE, statusAccessibilityLabel(snap({ health: multi() }))]) expect(x).not.toMatch(re);
   });
 });

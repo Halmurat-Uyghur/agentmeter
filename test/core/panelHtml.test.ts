@@ -104,7 +104,7 @@ describe("month helpers", () => {
   it("byLocalDay has one entry per elapsed day, undefined for empty days", () => {
     const store = new UsageStore();
     const rec = (key: string, ts: number): UsageRecord => ({
-      key, keySource: "usageId", kind: "call", sessionId: "s", folderId: "s", timestampMs: ts, tokens: { input: 10, output: 5 },
+      key, keySource: "usageId", kind: "call", source: "copilot", sessionId: "s", folderId: "s", timestampMs: ts, tokens: { input: 10, output: 5 },
     });
     store.add(rec("a", new Date(2026, 10, 2, 9).getTime()), "f");
     store.add(rec("b", new Date(2026, 10, 2, 23, 59).getTime()), "f");

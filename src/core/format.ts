@@ -4,13 +4,97 @@
 
 import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
-import type { Currency, Counts, Health, LastPrompt, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
+import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
-  "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
+  "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.";
 
-export const STREAMING_NOTE =
-  "Updates when Copilot finishes each model call, not token by token.";
+/** Added to the cost notes wherever a non-Copilot record is in scope (D46). */
+export const COST_SOURCES_NOTE = "USD (est.) covers Copilot only: Claude Code and Codex log no cost; their figures are tokens.";
+
+/** Insights footer line when a non-Copilot record is in scope (D49). */
+export const INSIGHTS_SOURCES_NOTE = "Insights use Copilot's logged AI credits; Claude Code and Codex calls are not examined.";
+
+/** True when records of a source other than Copilot are counted in `sources` (D46, D49). */
+export function mixedSources(sources: Partial<Record<Source, number>> | undefined): boolean {
+  return !!sources && SOURCES.some((x) => x !== "copilot" && (sources[x] ?? 0) > 0);
+}
+
+/** The settings that name each source's folder and turn it on (D48). */
+export const SOURCE_HOME_SETTING: Record<Source, string> = {
+  copilot: "copilotUsageMonitor.copilotHome",
+  "claude-code": "copilotUsageMonitor.claudeHome",
+  codex: "copilotUsageMonitor.codexHome",
+};
+export const SOURCE_TOGGLE_SETTING: Record<Exclude<Source, "copilot">, string> = {
+  "claude-code": "copilotUsageMonitor.claudeCode",
+  codex: "copilotUsageMonitor.codex",
+};
+
+/** Sources whose reading is on, in SOURCES order; undefined when the snapshot has no per-source health. */
+export function enabledSources(h: Health): Source[] | undefined {
+  const per = h.sources;
+  if (!per) return undefined;
+  return SOURCES.filter((x) => per[x] !== undefined && per[x]!.state !== "off");
+}
+
+/** Enabled sources whose folder was found (state neither off nor no-dir), in SOURCES order;
+ * [] without per-source health. */
+export function foundSources(h: Health): Source[] {
+  return (enabledSources(h) ?? []).filter((x) => h.sources![x]!.state !== "no-dir");
+}
+
+function orList(xs: string[], word = "or"): string {
+  return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} ${word} ${xs.at(-1)}`;
+}
+
+/** "copilotUsageMonitor.copilotHome, …claudeHome or …codexHome": the folder settings of the
+ * enabled sources. Without per-source health: Copilot's alone, or every source's when `all`. */
+export function homeSettings(h: Health, all = false): string {
+  const list = enabledSources(h) ?? (all ? [...SOURCES] : ["copilot" as const]);
+  const names = list.map((x) => SOURCE_HOME_SETTING[x]);
+  if (names.length === 0) names.push(SOURCE_HOME_SETTING.copilot);
+  return orList(names);
+}
+
+/** "Copilot CLI, Claude Code and Codex": the enabled sources by name (every source without per-source health). */
+export function enabledSourceNames(h: Health): string {
+  const list = enabledSources(h) ?? [...SOURCES];
+  return orList((list.length ? list : ["copilot" as const]).map((x) => (x === "copilot" ? "Copilot CLI" : SOURCE_LABEL[x])), "and");
+}
+
+/** The permission state's first sentence, for every enabled source (D49). */
+export const PERMISSION_NOTE = "The usage log folder of an enabled source could not be read on this computer.";
+
+/** True when a source other than Copilot is enabled (per-source health present). */
+export function multiSource(h: Health): boolean {
+  return (enabledSources(h) ?? []).some((x) => x !== "copilot");
+}
+
+/** "Reading history (n of N files)…" while the first read of the window runs (D50). */
+export function readingLine(h: Health): string | undefined {
+  const r = h.reading;
+  return r ? `Reading history (${r.done} of ${r.total} files)…` : undefined;
+}
+
+/** "idle" for a session whose liveness comes from file times (Claude Code, Codex), else "ended" (D43). */
+export function notLiveWord(source: Source | undefined): string {
+  return source !== undefined && source !== "copilot" ? "idle" : "ended";
+}
+
+export const STREAMING_NOTE = "Updates when a model call finishes, not token by token.";
+
+/** Loading text everywhere (no snapshot yet, so no source is known). */
+export const LOADING_NOTE = "Reading session logs…";
+
+/** "Claude Code may have changed its log format": the sources whose state is format-changed
+ * (per-source health), else Copilot as in 0.7. */
+export function formatChangedSentence(h: Health): string {
+  const per = h.sources;
+  const names = per ? SOURCES.filter((x) => per[x]?.state === "format-changed").map((x) => SOURCE_LABEL[x]) : [];
+  if (names.length <= 1) return `${names[0] ?? SOURCE_LABEL.copilot} may have changed its log format`;
+  return `${orList(names, "and")} may have changed their log formats`;
+}
 
 export const COST_NOTE =
   "Cost is an estimate: Copilot's own logged AI credits × $0.01, GitHub's published rate. It matches GitHub's per-model token prices, but it is not an invoice.";
@@ -32,7 +116,7 @@ export const CHAT_NOT_COVERED =
 export const CHAT_NOT_COVERED_SHORT = "Copilot Chat in VS Code not counted";
 
 export const NOT_COVERED: string[] = [
-  "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
+  "Of Copilot's clients, only those that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted; inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
   "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated amount), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
   '"Today" starts at local midnight on this computer; GitHub\'s own day may follow UTC.',
 ];
@@ -86,9 +170,11 @@ export function estWord(): string {
   return `estimated ${currencyCode()}`;
 }
 
-/** The cost note plus, when converting, the rate used (or why it is not converted yet). */
-export function costNotes(view: ViewOptions): string[] {
+/** The cost note plus, when converting, the rate used (or why it is not converted yet).
+ * `mixed`: a non-Copilot record is in scope, so the note says USD covers Copilot only (D46). */
+export function costNotes(view: ViewOptions, mixed = false): string[] {
   const out = [COST_NOTE];
+  if (mixed) out.push(COST_SOURCES_NOTE);
   const c = view.currency;
   if (c) out.push(`Shown in ${c.code} at 1 USD = ${c.rate} ${c.code}, the European Central Bank reference rate of ${c.date} (via frankfurter.dev). Targets are in ${c.code}.`);
   else if (view.currencyPending) out.push(`No ${view.currencyPending} exchange rate yet, so cost is shown in USD and targets are not compared until it arrives.`);
@@ -245,8 +331,8 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "$(sync~spin) Copilot usage: loading";
   if (s.health.state === "no-dir")
-    return "$(circle-slash) Copilot logs not found";
-  if (s.health.state === "permission") return "$(lock) Copilot logs unreadable";
+    return "$(circle-slash) Local: no usage logs found";
+  if (s.health.state === "permission") return "$(lock) Local: usage logs unreadable";
   const p = statusParts(s, view);
   return `$(${p.icon}) Local ${p.place}: ${p.figure}${p.suffix}`;
 }
@@ -302,13 +388,13 @@ export function spoken(text: string): string {
 /** The status bar item's spoken label (D33); same figures as statusText, in words. */
 export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "Copilot usage: loading";
-  if (s.health.state === "no-dir") return "Copilot logs not found. Opens details.";
-  if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
+  if (s.health.state === "no-dir") return "No usage logs found. Opens details.";
+  if (s.health.state === "permission") return "Usage logs unreadable. Opens details.";
   const p = statusParts(s, view);
   const mode = view.statusBar ?? "today";
   const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
   const place = view.unit === "cost" ? `${period}, estimated` : period;
-  const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
+  const parts = [multiSource(s.health) ? `Local usage, ${place}: ${spoken(p.figure)}` : `Copilot usage, local ${place}: ${spoken(p.figure)}`];
   // The target is monthly: name the month when the figure is today or the session (review fix 5).
   if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
@@ -339,15 +425,15 @@ function healthLines(h: Health): string[] {
   const out: string[] = [];
   if (h.state === "no-dir") {
     out.push(
-      "No Copilot session logs were found. Set `copilotUsageMonitor.copilotHome` if Copilot keeps them elsewhere.",
+      multiSource(h)
+        ? `No usage logs were found. Set ${homeSettings(h).replace(/copilotUsageMonitor\.\w+/g, (x) => `\`${x}\``)} if a tool keeps its logs elsewhere.`
+        : "No Copilot session logs were found. Set `copilotUsageMonitor.copilotHome` if Copilot keeps them elsewhere.",
     );
   } else if (h.state === "permission") {
-    out.push(
-      "The Copilot session log folder could not be read on this computer.",
-    );
+    out.push(`${PERMISSION_NOTE} Check the folder's permissions, or set ${homeSettings(h, true).replace(/copilotUsageMonitor\.\w+/g, (x) => `\`${x}\``)}.`);
   } else if (h.state === "format-changed") {
     out.push(
-      `Data health: ${h.unrecognized} line(s) in a format this version doesn't recognize. Copilot may have changed its log format, so figures may be incomplete.`,
+      `Data health: ${h.unrecognized} line(s) in a format this version doesn't recognize. ${formatChangedSentence(h)}, so figures may be incomplete.`,
     );
   } else if (h.state === "no-data") {
     out.push("No per-call records dated today yet.");
@@ -391,13 +477,22 @@ export function lastPromptLine(lp: LastPrompt | undefined, view: ViewOptions = D
 export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   const parts: string[] = [LOCAL_BANNER, STREAMING_NOTE];
   if (!s) {
-    parts.push("Reading Copilot session logs…");
+    parts.push(LOADING_NOTE);
     return parts.join("\n\n");
   }
 
   if (s.today) {
     const incl = s.today.sessionTotals > 0 ? ` (incl. ${s.today.sessionTotals} session total${s.today.sessionTotals === 1 ? "" : "s"})` : "";
     parts.push([`**Local today**${incl}`, ...countsLines(s.today)].join("  \n"));
+    const t = s.today;
+    const present = SOURCES.filter((x) => (t.sources?.[x] ?? 0) > 0);
+    if (present.length >= 2) {
+      const lines = present.map((x) => {
+        const c = t.bySource?.[x];
+        return `- ${SOURCE_LABEL[x]}: ${c ? tok(addMetrics(c.input, c.output)) : DASH}`;
+      });
+      parts.push(["**By source today**", ...lines].join("\n"));
+    }
   } else if (s.health.state !== "no-dir" && s.health.state !== "permission") {
     parts.push(`**Local today**: ${DASH}`);
   }
@@ -405,7 +500,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   const cur = s.current;
   if (cur) {
     const tags = [
-      cur.live ? undefined : "ended",
+      cur.live ? undefined : notLiveWord(cur.source),
       cur.pinned ? "pinned" : undefined,
     ].filter(Boolean);
     const label =
@@ -441,11 +536,12 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   if (view.unit === "cost" || view.range) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
+    const mixed = mixedSources(thisMonth?.sources);
     if (view.range) {
       const state = currentRangeState(s, view);
-      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}: ${RANGE_LABEL[state]}`);
+      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
     }
-    parts.push(lines.join("  \n"), ...costNotes(view).map(escapeMarkdown));
+    parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 
   parts.push(...healthLines(s.health));

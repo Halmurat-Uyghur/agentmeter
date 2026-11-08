@@ -32,6 +32,7 @@ function rec(key: string, ts: number, o: Partial<UsageRecord> = {}): UsageRecord
     key,
     keySource: "usageId",
     kind: "call",
+    source: "copilot",
     sessionId: "s1",
     folderId: "s1",
     timestampMs: ts,

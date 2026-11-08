@@ -175,8 +175,9 @@ describe("monitor: session title lifecycle", () => {
     await writeFile(ws(C), "name: acme/web\n");
     const m = make();
     await m.refresh({ full: true });
-    expect(keys().sort()).toEqual([ID1, "acme/web"].sort());
-    m.setFilter({ project: "acme/web" });
+    // D44: the repo's key is its folder name; "acme/web" is only its display label.
+    expect(keys().sort()).toEqual([ID1, "web"].sort());
+    m.setFilter({ project: "web" });
     await m.refresh();
     expect(snaps.at(-1)!.month!.totals?.records).toBe(1);
     expect(snaps.at(-1)!.month!.sessions.map((x) => x.sessionId)).toEqual([E]);

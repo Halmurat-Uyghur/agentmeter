@@ -1,13 +1,17 @@
 // Extension-host smoke tests (Mocha, run by `npm run test:integration`).
-// COPILOT_HOME points at a synthetic fixture root (see .vscode-test.mjs).
+// COPILOT_HOME, CLAUDE_CONFIG_DIR and CODEX_HOME point at synthetic fixture roots (see .vscode-test.mjs).
 import * as assert from "node:assert";
 import { appendFile, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
+import { CLAUDE_SESSION, claudeAssistantLine, claudeTree } from "../fixtures/claude";
+import { CODEX_SESSION, codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex";
 
 const ROOT = join(tmpdir(), "copilot-usage-monitor-fixture");
+const CLAUDE_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-claude");
+const CODEX_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-codex");
 const LIVE = "0000aaaa-0000-4000-8000-000000000001";
 
 interface SidebarRow {
@@ -39,7 +43,11 @@ interface TestState {
     rows: SidebarRow[];
     groups: string[];
   };
-  snapshot?: { filter?: { project?: string; tool?: string } };
+  snapshot?: {
+    filter?: { project?: string; tool?: string; source?: string };
+    today?: { bySource?: Record<string, unknown> };
+    health?: { sources?: Record<string, { state: string }> };
+  };
 }
 
 const SIDEBAR_COMMANDS = ["copilotUsageMonitor.showDetails", "copilotUsageMonitor.showSection", "copilotUsageMonitor.setFilter", "copilotUsageMonitor.toggleUnit", "copilotUsageMonitor.selectCurrency"];
@@ -89,6 +97,25 @@ suite("Copilot Usage Monitor", () => {
     }
     sessions.push({ id: LIVE, lines: jsonl([usageEvent({ usageId: "live-0", sourceSessionId: LIVE })]), lockPid: process.pid });
     await sessionTree(ROOT, sessions);
+    // One Claude Code session and one Codex session today, large enough to move the status bar figure.
+    await rm(CLAUDE_ROOT, { recursive: true, force: true });
+    await rm(CODEX_ROOT, { recursive: true, force: true });
+    const ts = (ago: number) => new Date(now - ago).toISOString();
+    await claudeTree(CLAUDE_ROOT, [
+      {
+        sessionId: CLAUDE_SESSION,
+        lines: [
+          claudeAssistantLine({ id: "msg_int_1", requestId: "req_int_1", timestamp: ts(120_000), input: 7_000_000 }),
+          claudeAssistantLine({ id: "msg_int_2", requestId: "req_int_2", timestamp: ts(60_000), input: 7_000_000 }),
+        ],
+      },
+    ]);
+    const d = new Date(now);
+    const date = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    const usage = { input_tokens: 50_000_000, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1000, reasoning_output_tokens: 0 };
+    await codexTree(CODEX_ROOT, [
+      { date, sessionId: CODEX_SESSION, lines: [codexMeta({ timestamp: ts(120_000) }), codexTurn({ timestamp: ts(90_000) }), codexRecord({ timestamp: ts(60_000), usage })] },
+    ]);
     const ext = vscode.extensions.getExtension("local.copilot-usage-monitor");
     assert.ok(ext, "extension present");
     await ext.activate();
@@ -97,7 +124,7 @@ suite("Copilot Usage Monitor", () => {
 
   test("activates and shows status text", async () => {
     const s = await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:") && x.statusText.endsWith("tok"), 3000);
-    assert.match(s.tooltip, /Locally observed from Copilot session logs/);
+    assert.match(s.tooltip, /Locally observed from Copilot, Claude Code and Codex session logs/);
   });
 
   test("updates within 2 s of a complete usage line", async () => {
@@ -198,13 +225,13 @@ suite("Copilot Usage Monitor", () => {
     assert.strictEqual(s.sidebar.unitWord, "tokens");
     // no workspace folder is open in the test host, so there is no "This workspace" group
     assert.deepStrictEqual(s.sidebar.folders, []);
-    assert.deepStrictEqual(s.sidebar.groups, ["all", "projects", "models"]);
+    assert.deepStrictEqual(s.sidebar.groups, ["all", "sources", "projects", "models"]);
     assert.deepStrictEqual(s.sidebar.rows.filter((i) => !i.id.includes("/")).map((i) => i.label), ["Today", "Last 7 days", "This month"]);
     const today = row(s, "today")!;
     assert.strictEqual(today.value, statusFigure(s), `${today.value} vs ${s.statusText}`);
     assert.strictEqual(drawn(s, "Today"), statusFigure(s));
     assert.match(today.spoken, /^Today: [\d.]+ (thousand|million) tokens/);
-    assert.match(s.statusA11y, /^Copilot usage, local today: /);
+    assert.match(s.statusA11y, /^Local usage, today: /);
     const html = s.sidebar.html!;
     assert.ok(html.includes("Open dashboard"));
     assert.ok(html.includes("Top projects, last 7 days") && html.includes("Top models, last 7 days"));
@@ -297,7 +324,7 @@ suite("Copilot Usage Monitor", () => {
       // " est." is said once in the footer, not on every row (design #6)
       assert.strictEqual(row(s, "month")!.value, figure.split(" / ")[0]!, `${row(s, "month")!.value} vs ${s.statusText}`);
       assert.match(row(s, "today")!.value, /^(\$[\d.,]+\*?|—)$/);
-      assert.match(s.statusA11y, /^Copilot usage, local this month, estimated: /);
+      assert.match(s.statusA11y, /^Local usage, this month, estimated: /);
       const html = (await waitFor((x) => (x.sidebar.html ?? "").includes("Show tokens"))).sidebar.html!;
       assert.ok(html.includes('href="command:copilotUsageMonitor.toggleUnit"'));
     } finally {
@@ -308,9 +335,12 @@ suite("Copilot Usage Monitor", () => {
   });
 
   test("no-dir tooltip names the setting, and a setting change re-roots", async () => {
+    // Copilot alone: with Claude Code and Codex on and found, the state would not be no-dir (D49).
+    await config().update("claudeCode", false, vscode.ConfigurationTarget.Global);
+    await config().update("codex", false, vscode.ConfigurationTarget.Global);
     await config().update("copilotHome", join(ROOT, "missing"), vscode.ConfigurationTarget.Global);
     try {
-      const s = await waitFor((x) => x.statusText === "$(circle-slash) Copilot logs not found");
+      const s = await waitFor((x) => x.statusText === "$(circle-slash) Local: no usage logs found");
       assert.match(s.tooltip, /copilotUsageMonitor\.copilotHome/);
       // the side bar shows the in-page state: no rows, the setting named
       await showSidebar();
@@ -320,8 +350,10 @@ suite("Copilot Usage Monitor", () => {
       assert.ok(!side.sidebar.html!.includes("All projects"));
     } finally {
       await config().update("copilotHome", undefined, vscode.ConfigurationTarget.Global);
+      await config().update("claudeCode", undefined, vscode.ConfigurationTarget.Global);
+      await config().update("codex", undefined, vscode.ConfigurationTarget.Global);
     }
-    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:") && x.sidebar.state === "ready");
+    await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:") && x.sidebar.state === "ready" && x.snapshot?.today?.bySource?.codex !== undefined);
   });
 
   test("USD view and a target range change the status bar; the panel links are allowlisted", async () => {
@@ -383,11 +415,11 @@ suite("Copilot Usage Monitor", () => {
     try {
       await config().update("statusBar", "month", vscode.ConfigurationTarget.Global);
       let s = await waitFor((x) => x.statusText.startsWith(`$(pulse) Local ${month}: `) && x.statusText.endsWith(" tok"));
-      assert.match(s.statusA11y, /^Copilot usage, local this month: /);
+      assert.match(s.statusA11y, /^Local usage, this month: /);
       assert.match(s.tooltip, /\*\*This month\*\*: /);
       await config().update("statusBar", "session", vscode.ConfigurationTarget.Global);
       s = await waitFor((x) => x.statusText.startsWith("$(pulse) Local session: ") && x.statusText.endsWith(" tok"));
-      assert.match(s.statusA11y, /^Copilot usage, local current session: /);
+      assert.match(s.statusA11y, /^Local usage, current session: /);
       await config().update("statusBar", "today", vscode.ConfigurationTarget.Global);
       await waitFor((x) => x.statusText.startsWith("$(pulse) Local today: "));
     } finally {
@@ -434,6 +466,53 @@ suite("Copilot Usage Monitor", () => {
       await vscode.commands.executeCommand("notifications.clearAll");
     }
     await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:"));
+  });
+
+  test("sources: today counts Copilot, Claude Code and Codex; the side bar lists them", async () => {
+    const s = await waitFor((x) => ["copilot", "claude-code", "codex"].every((k) => x.snapshot?.today?.bySource?.[k] !== undefined));
+    assert.deepStrictEqual(Object.keys(s.snapshot!.today!.bySource!).sort(), ["claude-code", "codex", "copilot"]);
+    assert.strictEqual(s.snapshot!.health?.sources?.["claude-code"]?.state, "ok");
+    assert.strictEqual(s.snapshot!.health?.sources?.codex?.state, "ok");
+    // status bar text unchanged in shape (D49)
+    assert.match(s.statusText, /^\$\([a-z-]+\) Local today: .+ tok$/);
+    await showSidebar();
+    const side = await waitFor((x) => x.sidebar.groups.includes("sources"));
+    const rows = side.sidebar.rows.filter((r) => r.id.startsWith("sources/"));
+    assert.deepStrictEqual(rows.map((r) => r.label), ["Copilot", "Claude Code", "Codex"]);
+    for (const r of rows) {
+      assert.notStrictEqual(r.value, "—", `${r.label} has records`);
+      assert.strictEqual(r.link?.command, "copilotUsageMonitor.setFilter");
+      assert.strictEqual(r.link?.args[0], "source");
+      assert.strictEqual(r.link?.args[2], "overview");
+    }
+    assert.ok(!(side.sidebar.html ?? "").includes(CLAUDE_ROOT) && !(side.sidebar.html ?? "").includes(CODEX_ROOT), "no root path rendered");
+    assert.ok(!s.tooltip.includes(CLAUDE_ROOT) && !s.tooltip.includes(CODEX_ROOT), "no root path in the tooltip");
+  });
+
+  test("sources: setFilter source narrows to Codex and an empty value clears; unknown sources are ignored", async () => {
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "source", "codex");
+    await waitFor((x) => x.snapshot?.filter?.source === "codex");
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "source", "nope");
+    await sleep(600);
+    assert.strictEqual((await state()).snapshot?.filter?.source, "codex");
+    await vscode.commands.executeCommand("copilotUsageMonitor.setFilter", "source", "");
+    await waitFor((x) => x.snapshot?.filter === undefined);
+  });
+
+  test("sources: turning Codex off drops its records and its share of the status figure; on restores them", async () => {
+    const on = await waitFor((x) => x.snapshot?.today?.bySource?.codex !== undefined && x.statusText.startsWith("$(pulse) Local today:"));
+    const withCodex = statusFigure(on);
+    try {
+      await config().update("codex", false, vscode.ConfigurationTarget.Global);
+      const off = await waitFor((x) => x.snapshot?.today?.bySource !== undefined && x.snapshot.today.bySource.codex === undefined && x.statusText.startsWith("$(pulse) Local today:"), 3000);
+      assert.ok(off.snapshot!.today!.bySource!["claude-code"] !== undefined, "Claude Code stays");
+      assert.notStrictEqual(statusFigure(off), withCodex, "the status figure included Codex");
+      await config().update("codex", true, vscode.ConfigurationTarget.Global);
+      await waitFor((x) => x.snapshot?.today?.bySource?.codex !== undefined, 3000);
+    } finally {
+      await config().update("codex", undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.snapshot?.today?.bySource?.codex !== undefined && x.statusText.startsWith("$(pulse) Local today:"));
   });
 
   test("the folder setting is machine-scoped", () => {

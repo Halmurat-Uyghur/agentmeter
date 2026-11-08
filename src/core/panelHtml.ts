@@ -5,7 +5,7 @@
 // and the selected section. Navigation uses command: links limited to an
 // allowlist by the webview (D20); the panel itself never runs code.
 // This file is the façade: the renderers live in ./panel/.
-import { DEFAULT_VIEW } from "./format";
+import { DEFAULT_VIEW, LOADING_NOTE } from "./format";
 import { page, shell, skipLink, stateNote, toolbar, topBar } from "./panel/chrome";
 import { renderDaily } from "./panel/daily";
 import { renderHealth } from "./panel/health";
@@ -24,6 +24,8 @@ export { PANEL_COMMANDS, sectionHref } from "./panel/links";
 export { DEFAULT_SECTION, isSectionId, SECTION_DEFS, SECTIONS, sectionPickItems, type SectionId } from "./panel/sections";
 export { escapeHtml, monthKey, TABLE_LIMIT } from "./panel/shared";
 export { toolGroup } from "./panel/tools";
+export { renderSourcesCard, sourceChips, sourcesHealthBox } from "./panel/sources";
+export { filterHref } from "./panel/links";
 
 const RENDER: Record<SectionId, (s: Snapshot, view: ViewOptions) => string> = {
   overview: renderOverview,
@@ -48,7 +50,7 @@ export function renderPanelHtml(
   if (!s) {
     const body = `${skipLink(def)}
 ${topBar(undefined, view)}
-${shell(undefined, def, "Reading Copilot session logs…", `<p class="muted">Loading…</p>`, navCollapsed)}`;
+${shell(undefined, def, LOADING_NOTE, `<p class="muted">Loading…</p>`, navCollapsed)}`;
     return page(body, cspSource, def.label);
   }
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);

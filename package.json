@@ -1,9 +1,11 @@
 {
   "name": "copilot-usage-monitor",
   "displayName": "Copilot Usage Monitor (Local)",
-  "description": "Shows your own Copilot usage, in tokens or estimated USD, as observed in local Copilot session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with GitHub or Microsoft.",
+  "description": "Shows your own Copilot, Claude Code and Codex CLI usage, in tokens (and Copilot's estimated USD), as observed in their local session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.",
   "keywords": [
     "copilot",
+    "claude",
+    "codex",
     "usage",
     "tokens",
     "local",
@@ -12,7 +14,7 @@
   ],
   "publisher": "local",
   "icon": "media/icon.png",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -32,11 +34,13 @@
     "test": "vitest run",
     "pretest:integration": "npm run build && tsc -p tsconfig.test.json",
     "test:integration": "vscode-test",
-    "test:perf": "PERF=1 vitest run test/core/perf.test.ts",
+    "test:perf": "PERF=1 NODE_OPTIONS=--expose-gc vitest run test/core/perf.test.ts",
     "package": "vsce package --no-dependencies",
     "vscode:prepublish": "npm run build",
     "probe": "node tools/schema-probe.mjs",
-    "probe:chat": "node tools/chat-schema-probe.mjs"
+    "probe:chat": "node tools/chat-schema-probe.mjs",
+    "probe:claude": "node tools/claude-schema-probe.mjs",
+    "probe:codex": "node tools/codex-schema-probe.mjs"
   },
   "dependencies": {},
   "devDependencies": {
@@ -120,7 +124,7 @@
       },
       {
         "command": "copilotUsageMonitor.filter",
-        "title": "Filter by Project or Tool…",
+        "title": "Filter by Project, Tool or Source…",
         "category": "Copilot Usage",
         "icon": "$(filter)"
       },
@@ -156,12 +160,12 @@
       {
         "id": "gettingStarted",
         "title": "Get started with Copilot Usage Monitor (Local)",
-        "description": "Check that your Copilot logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
+        "description": "Check that your usage logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
         "steps": [
           {
             "id": "folder",
-            "title": "Check that your Copilot logs are found",
-            "description": "The status bar shows a figure when Copilot CLI session logs are found, or \"Copilot logs not found\" when they are not. If Copilot keeps them elsewhere, set the folder.\n[Set the Copilot folder](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D)",
+            "title": "Check that your usage logs are found",
+            "description": "The status bar shows a figure when session logs are found in the Copilot folder (~/.copilot), the Claude Code folder (~/.claude) or the Codex folder (~/.codex). If a tool keeps them elsewhere, set copilotHome, claudeHome or codexHome.\n[Set the Copilot folder](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D)",
             "media": {
               "markdown": "media/walkthrough/folder.md"
             }
@@ -202,12 +206,36 @@
           "scope": "machine",
           "description": "Folder that contains Copilot's session-state. Empty: use COPILOT_HOME, else ~/.copilot."
         },
+        "copilotUsageMonitor.claudeCode": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Also read Claude Code's local session logs: the projects folder under claudeHome, else under CLAUDE_CONFIG_DIR, else under ~/.claude. Only token counts, model ids, tool names, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
+        },
+        "copilotUsageMonitor.claudeHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains Claude Code's projects folder. Empty: use CLAUDE_CONFIG_DIR, else ~/.claude."
+        },
+        "copilotUsageMonitor.codex": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Also read the Codex CLI's local session logs: the sessions folder under codexHome, else under CODEX_HOME, else under ~/.codex. Only token counts, model ids, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
+        },
+        "copilotUsageMonitor.codexHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains the Codex CLI's sessions folder. Empty: use CODEX_HOME, else ~/.codex."
+        },
         "copilotUsageMonitor.historyMonths": {
           "type": "integer",
           "default": 12,
           "minimum": 1,
           "maximum": 24,
-          "description": "How many months of Copilot session logs to read for the month picker and trend chart, this month included. Older logs are read once at start-up; nothing is stored."
+          "description": "How many months of session logs to read for the month picker and trend chart, this month included. Older logs are read once at start-up; nothing is stored."
         },
         "copilotUsageMonitor.display": {
           "type": "string",
@@ -297,13 +325,13 @@
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. A folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading both."
+          "description": "Group sessions by project folder name: from each Copilot session's start line (its GitHub repository is shown as a label), a Claude Code log's cwd and a Codex log's session_meta cwd. A Copilot folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading all of them."
         },
         "copilotUsageMonitor.sessionTotals": {
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Count sessions from Copilot before 1.0.99, which have no per-call records, from the per-model total Copilot writes when a session ends. Only the token counts, call count and logged AI credits are kept; file paths and other fields on that line are dropped while reading. Turn off to skip those lines without reading them."
+          "description": "Count sessions from Copilot before 1.0.99, which have no per-call records, from the per-model total Copilot writes when a session ends. Only the token counts, call count and logged AI credits are kept; file paths and other fields on that line are dropped while reading. With it on, a Codex log that has no per-call records counts once from its last token_count total. Turn off to skip those lines without reading them."
         }
       }
     },

@@ -2,6 +2,16 @@
 // numbers and ids from a `session.usage_record` event, or one model's running
 // total from a `session.shutdown` event (D29); nothing else is kept.
 
+/** The tool whose local log a record came from (D40). UI order is SOURCES. */
+export type Source = "copilot" | "claude-code" | "codex";
+export const SOURCES: readonly Source[] = ["copilot", "claude-code", "codex"];
+/** Display names; a source's label comes only from this table, never from a log. */
+export const SOURCE_LABEL: Record<Source, string> = { copilot: "Copilot", "claude-code": "Claude Code", codex: "Codex" };
+
+export function isSource(x: unknown): x is Source {
+  return typeof x === "string" && (SOURCES as readonly string[]).includes(x);
+}
+
 export interface Tokens {
   input?: number;
   output?: number;
@@ -35,7 +45,9 @@ export interface TypeCost {
 
 export interface UsageRecord {
   key: string;
-  keySource: "usageId" | "eventId" | "shutdown";
+  keySource: "usageId" | "eventId" | "shutdown" | "claudeMessageId" | "claudeRequestId" | "codexResponseId" | "codexTotal";
+  /** the tool whose log held the record (D40) */
+  source: Source;
   /** "call": one session.usage_record; "sessionTotal": one model's total from session.shutdown (D29) */
   kind: "call" | "sessionTotal";
   /** accounting.sourceSessionId ?? folderId (always folderId for a session total) */
@@ -119,14 +131,37 @@ export interface Counts {
   nanoAiu: Metric;
   /** nanoAiu of call records only, for per-call figures (a session total is not a call) */
   callNanoAiu: Metric;
+  /** records per source (D40); nanoAiu and callNanoAiu count Copilot records only (D46) */
+  sources?: Partial<Record<Source, number>>;
 }
 
 /** byModel keys are the model id, or "(unknown model)" when none was reported. */
 export interface Totals extends Counts {
   byModel: Record<string, Counts>;
+  /** per source, filled like byModel (D40) */
+  bySource?: Partial<Record<Source, Counts>>;
 }
 
 export type HealthState = "ok" | "no-data" | "no-dir" | "permission" | "format-changed";
+
+/** One source's reading state (D50); "off" when its setting disables it. */
+export type SourceState = "ok" | "no-data" | "no-dir" | "permission" | "off" | "format-changed";
+
+export interface SourceHealth {
+  state: SourceState;
+  rootSource: "setting" | "env" | "default";
+  files: number;
+  sessions: number;
+  unreadableFiles: number;
+  unrecognized: number;
+  malformed: number;
+  overlong: number;
+  overlongOther: number;
+  /** files over the discovery cap, not read */
+  capped?: number;
+  /** archived files seen (Codex) */
+  archived?: number;
+}
 
 export interface Health {
   state: HealthState;
@@ -148,6 +183,10 @@ export interface Health {
   /** session.shutdown lines over MAX_SHUTDOWN_BYTES, not decoded; feeds `partial` only for a log
    * without per-call records (otherwise the total would be hidden anyway) */
   shutdownOversize: number;
+  /** per source (D50) */
+  sources?: Partial<Record<Source, SourceHealth>>;
+  /** first-read progress: files read so far of those discovered */
+  reading?: { done: number; total: number };
 }
 
 export interface Snapshot {
@@ -155,8 +194,8 @@ export interface Snapshot {
   dayStartMs: number;
   /** undefined iff no record is dated today */
   today?: Totals;
-  current?: { folderId: string; live: boolean; pinned: boolean; totals?: Totals; lastPrompt?: LastPrompt };
-  sessions: { folderId: string; lastMs?: number; live: boolean }[];
+  current?: { folderId: string; live: boolean; pinned: boolean; totals?: Totals; lastPrompt?: LastPrompt; source?: Source };
+  sessions: { folderId: string; lastMs?: number; live: boolean; source?: Source }[];
   health: Health;
   /** the viewed month (D10; D20): this month by default, or a selected past month */
   month?: MonthView;
@@ -208,6 +247,7 @@ export interface Activity {
 export interface Filter {
   project?: string;
   tool?: string;
+  source?: Source;
 }
 
 /** One project's records in the viewed month. */
@@ -224,17 +264,22 @@ export interface GroupSummary {
   sessionTotals?: number;
   tokens: Metric;
   nanoAiu: Metric;
+  /** records per source (D40) */
+  sources?: Partial<Record<Source, number>>;
 }
 
 /** One tool in the viewed month: how often the model invoked it, and the model
  * calls that did. A call that used two tools counts toward both (D26). */
 export interface ToolSummary {
   name: string;
+  /** built in to a source that used it (D52) */
   builtIn: boolean;
   uses: number;
   calls: number;
   tokens: Metric;
   nanoAiu: Metric;
+  /** records per source (D40) */
+  sources?: Partial<Record<Source, number>>;
 }
 
 /** One calendar month of the history window; totals undefined = no record. */
@@ -248,6 +293,8 @@ export interface SessionSummary {
   sessionId: string;
   /** folder of the session's first record; display labels are looked up by it */
   folderId?: string;
+  /** the first record's source (D40) */
+  source?: Source;
   /** display only: the session's title, else its project label (never a key) */
   label?: string;
   firstMs: number;
@@ -399,6 +446,8 @@ export interface MonthView {
   sessions: SessionSummary[];
   /** sessions in the viewed month (filters applied), before the SESSION_ROWS cut */
   sessionCount?: number;
+  /** sessions in the viewed month per source, counted before the SESSION_ROWS cut; filters applied like sessionCount */
+  sessionsBySource?: Partial<Record<Source, number>>;
   /** sessions counted from session totals in the viewed month; project filter applies, tool filter does not */
   totalsSessions?: number;
   /** I2 and I3 over the viewed month (D32) */

@@ -155,6 +155,7 @@ describe("discover", () => {
       folderId: A,
       eventsPath: join(root, "session-state", A, "events.jsonl"),
       mtimeMs: TODAY.getTime(),
+      size: Buffer.byteLength(LINES),
       live: false,
     });
     if (!r.ok) throw new Error("unreachable");

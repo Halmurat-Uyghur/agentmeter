@@ -52,9 +52,10 @@ export function longContextThreshold(model: string): number | undefined {
 export type PromptConvention = "included" | "separate";
 
 /**
- * Whether a model's `input` already includes cached tokens, inferred per model:
- * "separate" once any call has cacheRead + cacheWrite > input (impossible if
- * input included them), else "included". A wrong "included" only makes I3 fire less.
+ * Whether a model's `input` already includes cached tokens, inferred per model from
+ * Copilot calls only: "separate" once any call has cacheRead + cacheWrite > input
+ * (impossible if input included them), else "included". A wrong "included" only makes
+ * I3 fire less. Other sources' input always includes cached tokens (D47).
  */
 export function promptConventions(records: UsageRecord[]): Map<string, PromptConvention> {
   return scanCalls(records).conventions;
@@ -62,7 +63,7 @@ export function promptConventions(records: UsageRecord[]): Map<string, PromptCon
 
 function promptTokens(r: UsageRecord, convention: PromptConvention | undefined): number {
   const t = r.tokens;
-  return convention === "separate" ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : (t.input ?? 0);
+  return r.source === "copilot" && convention === "separate" ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : (t.input ?? 0);
 }
 
 /**
@@ -76,7 +77,7 @@ function scanCalls(records: UsageRecord[]): { conventions: Map<string, PromptCon
     a.sequence !== undefined && b.sequence !== undefined ? a.sequence < b.sequence : a.timestampMs < b.timestampMs;
   for (const r of records) {
     if (r.kind !== "call") continue;
-    if (r.model !== undefined) {
+    if (r.model !== undefined && r.source === "copilot") {
       const t = r.tokens;
       const cached = (t.cacheRead ?? 0) + (t.cacheWrite ?? 0);
       if (t.input !== undefined && cached > t.input) conventions.set(r.model, "separate");
@@ -117,7 +118,9 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
 function longContext(monthRecords: UsageRecord[], conventions: Map<string, PromptConvention>): Insight | undefined {
   const byModel = new Map<string, { threshold: number; calls: number; sessions: Set<string>; nano: number; priced: number; tokens: number; max: number }>();
   for (const r of monthRecords) {
-    if (r.kind !== "call" || r.model === undefined || r.tokens.input === undefined) continue;
+    // Copilot calls only: other sources log no cost (D46), so their calls would inflate the
+    // counts and the largest prompt without being part of the AIU the card states.
+    if (r.source !== "copilot" || r.kind !== "call" || r.model === undefined || r.tokens.input === undefined) continue;
     const threshold = longContextThreshold(r.model);
     if (threshold === undefined) continue;
     const prompt = promptTokens(r, conventions.get(r.model));
@@ -150,7 +153,9 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
   const { conventions, firsts } = scan;
   const byModel = new Map<string, { calls: number; sessions: Set<string>; cacheRead: number; prompt: number; nano: number; priced: number; tokens: number }>();
   for (const r of monthRecords) {
-    if (r.kind !== "call" || r.model === undefined || firsts.has(r.key)) continue;
+    // Copilot calls only (D46): an unpriced Claude Code or Codex call of the same model id
+    // would lower the share without adding to the AIU, firing the card on calls it cannot price.
+    if (r.source !== "copilot" || r.kind !== "call" || r.model === undefined || firsts.has(r.key)) continue;
     if (r.tokens.input === undefined || r.tokens.cacheRead === undefined) continue;
     const prompt = promptTokens(r, conventions.get(r.model));
     if (prompt < CACHE_MIN_PROMPT) continue;
