@@ -1,6 +1,7 @@
 // Data health (D32): what was read, what was skipped and what is not counted.
 import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE } from "../format";
-import type { Snapshot } from "../types";
+import type { Snapshot, ViewOptions } from "../types";
+import { aboutText } from "./chrome";
 import { escapeHtml } from "./shared";
 
 export function healthBox(s: Snapshot): string {
@@ -23,6 +24,8 @@ ${h.shutdownOversize > 0 ? fact("Session-end lines too long to read", h.shutdown
 </div>${h.sessionsFromTotals > 0 ? `<div class="fine">${escapeHtml(SESSION_TOTAL_NOTE)}</div>` : ""}<h3 class="sub">Not covered</h3><ul class="plain">${NOT_COVERED.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul></section>`;
 }
 
-export function renderHealth(s: Snapshot): string {
-  return healthBox(s);
+/** The provenance text openly (design #4) ahead of the coverage gap and the counts. It
+ * lives here, not in the shared chrome, so the chrome stays the same height on every section. */
+export function renderHealth(s: Snapshot, view: ViewOptions): string {
+  return `<section class="note" aria-label="About these figures">${aboutText(view)}</section>${healthBox(s)}`;
 }

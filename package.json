@@ -12,7 +12,7 @@
   ],
   "publisher": "local",
   "icon": "media/icon.png",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "license": "MIT",
   "engines": {
