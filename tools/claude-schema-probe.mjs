@@ -4,7 +4,10 @@
 // Prints key paths, value types, counts, lengths and digit-masked shapes. Never prints a
 // field value, a model id, a tool name, a file name, a project or session folder name, or the
 // root path (a fixed list of known structural folder names, such as subagents or memory, is
-// printed). Line types and key names are printed only for files the extension reads. It:
+// printed). Identifier-shaped key names and lowercase line and content type values may be
+// printed, as shape only, and only for files the extension reads (a slug-level
+// <session id>.jsonl, or a .jsonl below a slug-level <session id>/ folder, session id as
+// the extension's isSessionId: /^[0-9a-f-]{8,64}$/i). It:
 //   - lists only <root>/projects/ (depth ≤ 6, symlinks not followed, memory/ and tool-results/
 //     not entered) and opens only regular *.jsonl files found there; nothing else under the
 //     Claude Code folder is listed or opened;
@@ -21,12 +24,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// As isSessionId in src/core/extract.ts: what the extension accepts as a session file stem or folder.
+const SESSION_ID = /^[0-9a-f-]{8,64}$/i;
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
 const TYPE_NAME = /^[a-z][a-z_-]{0,39}$/;
 const CONTENT_TYPE = /^[a-z][a-z_]{0,39}$/;
 const KEY_CHARS = /^[A-Za-z0-9_-]+$/;
 const STOP_REASONS = new Set(["end_turn", "tool_use", "max_tokens", "refusal", "stop_sequence", "pause_turn"]);
-// Folder names printed as themselves; anything else is <session dir> (UUID) or <other dir>.
+// Folder names printed as themselves; anything else is <session dir> (a session id) or <other dir>.
 const KNOWN_DIRS = new Set(["subagents", "workflows", "memory", "tool-results", "vercel-plugin", "remote-agents", "scripts"]);
 const SKIP_DIRS = new Set(["memory", "tool-results"]);
 const MAX_DEPTH = 6;
@@ -119,7 +124,7 @@ try {
 }
 
 const layout = { slugs: 0, otherTop: 0, dirs: new Map(), symlinks: 0, unreadableDirs: 0, files: [], otherFiles: 0, mainFiles: 0, nestedFiles: 0, mainNotUuid: 0, depthMax: 0 };
-/** file: { path, depth, parentSession?: string (UUID dir), inPlugin: boolean } */
+/** file: { path, depth, parentSession?: string (slug-level session-id dir), inPlugin: boolean } */
 function visit(dir, depth, ctx) {
   let entries;
   try {
@@ -135,11 +140,12 @@ function visit(dir, depth, ctx) {
     }
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      const label = UUID.test(e.name) ? "<session dir>" : KNOWN_DIRS.has(e.name) ? e.name : e.name.startsWith("wf_") ? "wf_<id>" : "<other dir>";
+      const label = SESSION_ID.test(e.name) ? "<session dir>" : KNOWN_DIRS.has(e.name) ? e.name : e.name.startsWith("wf_") ? "wf_<id>" : "<other dir>";
       bump(layout.dirs, `depth ${depth + 1}: ${label}`);
       if (SKIP_DIRS.has(e.name) || depth + 1 >= MAX_DEPTH) continue;
       visit(p, depth + 1, {
-        session: ctx.session ?? (UUID.test(e.name) ? e.name : undefined),
+        // Only a slug-level folder (depth 2) named like a session id is a session folder for the extension.
+        session: ctx.session ?? (depth + 1 === 2 && SESSION_ID.test(e.name) ? e.name : undefined),
         plugin: ctx.plugin || e.name === "vercel-plugin",
       });
     } else if (e.isFile() && e.name.endsWith(".jsonl")) {
@@ -147,10 +153,11 @@ function visit(dir, depth, ctx) {
       layout.depthMax = Math.max(layout.depthMax, fileDepth);
       if (fileDepth === 2) {
         layout.mainFiles++;
-        if (!UUID.test(e.name.slice(0, -6))) layout.mainNotUuid++;
+        if (!SESSION_ID.test(e.name.slice(0, -6))) layout.mainNotUuid++;
       } else layout.nestedFiles++;
-      // Read by the extension: a slug-level <uuid>.jsonl, or a .jsonl below a <uuid>/ session folder.
-      const read = (fileDepth === 2 && UUID.test(e.name.slice(0, -6))) || (ctx.session !== undefined && !ctx.plugin);
+      // Read by the extension (its pathAllowed): a slug-level <session id>.jsonl, or a .jsonl
+      // below a slug-level <session id>/ folder.
+      const read = (fileDepth === 2 && SESSION_ID.test(e.name.slice(0, -6))) || (ctx.session !== undefined && !ctx.plugin);
       layout.files.push({ path: p, depth: fileDepth, session: ctx.session, plugin: ctx.plugin, read });
     } else layout.otherFiles++;
   }
@@ -339,7 +346,7 @@ emit("# Claude Code log schema probe (shape only)");
 emit();
 emit("## Layout (projects folder)");
 emit(`- project (slug) folders: ${layout.slugs}; other top-level entries: ${layout.otherTop}; symlinks skipped: ${layout.symlinks}; unreadable folders: ${layout.unreadableDirs}`);
-emit(`- .jsonl files: ${layout.files.length} (main, depth 2: ${layout.mainFiles}, of which stem not a UUID: ${layout.mainNotUuid}; nested: ${layout.nestedFiles}; deepest: ${layout.depthMax}); other files: ${layout.otherFiles}`);
+emit(`- .jsonl files: ${layout.files.length} (main, depth 2: ${layout.mainFiles}, of which stem not a session id: ${layout.mainNotUuid}; nested: ${layout.nestedFiles}; deepest: ${layout.depthMax}); other files: ${layout.otherFiles}`);
 emit("- folders by depth and kind:");
 for (const [k, n] of [...layout.dirs].sort()) emit(`  - ${k}: ${n}`);
 emit(`- bytes modified in the last 7, 30 and 90 days (GB): ${gb(recent.d7)}, ${gb(recent.d30)} and ${gb(recent.d90)}; files modified in the last 5 minutes: ${recent.min5}`);

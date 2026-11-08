@@ -5,13 +5,14 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tooltipMarkdown, statusText } from "../../src/core/format";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
 import { renderPanelHtml, SECTIONS } from "../../src/core/panelHtml";
 import { buildSidebarModel } from "../../src/core/sidebarModel";
 import { renderSidebarHtml } from "../../src/core/sidebarHtml";
+import { MAX_SLICE_BYTES } from "../../src/core/jsonScan";
 import { NO_PROJECT } from "../../src/core/store";
 import type { Snapshot, ViewOptions } from "../../src/core/types";
 import { CANARY, jsonl, otherEvent, sessionTree, shutdownEvent, usageEvent } from "../fixtures/build";
@@ -149,6 +150,59 @@ describe("canary end-to-end over all three sources (D53)", () => {
       expect(line.includes("/") || line.includes("\\"), line).toBe(false);
       expect(segments.filter((x) => line.includes(x)), line).toEqual([]);
       expect(leaks(line), line).toEqual([]);
+    }
+  });
+
+  it("JSON.parse sees only bounded slices, and no canary but a cwd path, while the Claude Code and Codex trees are read (D41, D53)", async () => {
+    // Every JSON.parse input is classified inside the spy (nothing is kept): by the first
+    // src/core frame of its stack. Copilot's extract.ts decodes its bounded usage lines
+    // whole by design (SCHEMA.md); every other caller in src/ must pass a slice of at most
+    // MAX_SLICE_BYTES. With projectNames off no slice holds a canary; with it on, the only
+    // canary-bearing slice is a `cwd` path, which the reader reduces to its last folder
+    // name and drops. Calls with no src/core frame are the test runner's own.
+    const parse = JSON.parse;
+    const core = `${sep}src${sep}core${sep}`;
+    const LABELS = ["myrepo", "codex-proj"];
+    for (const readProjects of [false, true]) {
+      const seen = { slices: 0, copilot: 0, tooLong: 0, canary: 0, cwd: 0, callers: new Set<string>() };
+      const spy = vi.spyOn(JSON, "parse").mockImplementation((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) => {
+        const frame = (new Error().stack ?? "").split("\n").find((l) => l.includes(core));
+        if (frame !== undefined) {
+          const file = /([A-Za-z]+\.ts)/.exec(frame.slice(frame.indexOf(core)))?.[1] ?? "?";
+          if (file === "extract.ts") seen.copilot++;
+          else {
+            seen.slices++;
+            seen.callers.add(file);
+            if (typeof text !== "string" || text.length > MAX_SLICE_BYTES) seen.tooLong++;
+            else if (CANARIES.some((c) => text.includes(c))) {
+              // a JSON string holding an absolute path whose last segment is a project folder name
+              if (/^"\/[^"]*"$/.test(text) && LABELS.some((l) => text.endsWith(`/${l}"`))) seen.cwd++;
+              else seen.canary++;
+            }
+          }
+        }
+        return parse(text, reviver);
+      });
+      try {
+        snaps = [];
+        make(readProjects);
+        await monitor!.refresh({ full: true });
+      } finally {
+        spy.mockRestore();
+        monitor?.dispose();
+        monitor = undefined;
+      }
+      expect(JSON.parse).toBe(parse);
+      const s = last();
+      expect(s.today?.bySource?.["claude-code"]?.records ?? 0, `readProjects ${readProjects}`).toBeGreaterThan(0);
+      expect(s.today?.bySource?.codex?.records ?? 0, `readProjects ${readProjects}`).toBeGreaterThan(0);
+      expect(seen.slices).toBeGreaterThan(0);
+      expect(seen.copilot).toBeGreaterThan(0);
+      expect([...seen.callers]).toEqual(["jsonScan.ts"]);
+      expect(seen.tooLong, `readProjects ${readProjects}`).toBe(0);
+      expect(seen.canary, `readProjects ${readProjects}`).toBe(0);
+      if (readProjects) expect(seen.cwd).toBeGreaterThan(0);
+      else expect(seen.cwd).toBe(0);
     }
   });
 

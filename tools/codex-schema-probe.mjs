@@ -2,7 +2,8 @@
 // Dev-only, shape-only probe of Codex CLI session logs (spec D53; rules as in schema-probe.mjs).
 //
 // Prints key paths, value types, counts, lengths and digit-masked shapes. Never prints a
-// field value, a model id, a folder or file name, or the root path. It:
+// field value, a model id, a folder or file name, or the root path. Identifier-shaped key
+// names and lowercase line and payload type values may be printed, as shape only. It:
 //   - lists only <root>/sessions/YYYY/MM/DD and opens only regular rollout-*.jsonl files there;
 //   - lists <root>/archived_sessions/ by name only, counting extensions; never opens a file there;
 //   - lists and opens nothing else under the Codex folder (auth.json, config.toml, history.jsonl,

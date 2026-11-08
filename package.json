@@ -123,7 +123,7 @@
       },
       {
         "command": "copilotUsageMonitor.filter",
-        "title": "Filter by Project or Tool…",
+        "title": "Filter by Project, Tool or Source…",
         "category": "Copilot Usage",
         "icon": "$(filter)"
       },
@@ -209,7 +209,7 @@
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "description": "Also read Claude Code's local session logs: the projects folder under claudeHome, else under CLAUDE_CONFIG_DIR, else under ~/.claude. Only token counts, model ids, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
+          "description": "Also read Claude Code's local session logs: the projects folder under claudeHome, else under CLAUDE_CONFIG_DIR, else under ~/.claude. Only token counts, model ids, tool names, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
         },
         "copilotUsageMonitor.claudeHome": {
           "type": "string",

@@ -8,10 +8,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { LOCAL_BANNER } from "../../src/core/format";
 import { PANEL_COMMANDS } from "../../src/core/panelHtml";
 import { SIDEBAR_COMMANDS } from "../../src/core/sidebarModel";
-import { CLAUDE_MAX_FILES, CLAUDE_MAX_LINE_BYTES } from "../../src/core/claude";
-import { CODEX_MAX_TURNS } from "../../src/core/codex";
-import { MAX_SLICE_BYTES } from "../../src/core/jsonScan";
-import { RECENT_MS } from "../../src/core/source";
 
 const ROOT = join(__dirname, "..", "..");
 /** The getting-started walkthrough's media (v0.6, 2.4): the only files besides the four core ones in the .vsix. */
@@ -53,6 +49,144 @@ function offences(source: string, allowWebviewView = false): string[] {
   if (allowWebviewView && source.split(WEBVIEW_VIEW).length === 2) found.splice(found.indexOf(WEBVIEW_VIEW), 1);
   if (DYNAMIC_REQUIRE.test(source)) found.push("dynamic require");
   return found;
+}
+
+/**
+ * Source text with every line and block comment removed; string, template and regex
+ * literals are kept as they are. A small lexer, good enough for this repo's own
+ * TypeScript: a `/` starts a regex literal when the previous significant character
+ * cannot end an expression.
+ */
+function stripComments(src: string): string {
+  let out = "";
+  let i = 0;
+  let prev = ""; // last significant character emitted, for the regex-or-divide decision
+  const stack: number[] = []; // brace depth at each open `${` of a template literal
+  let braces = 0;
+  /** Copy a template literal body from i (just after "`" or "}"), up to its end or the next "${". */
+  const template = () => {
+    while (i < src.length) {
+      const c = src[i]!;
+      if (c === "\\") {
+        out += src.slice(i, i + 2);
+        i += 2;
+      } else if (c === "`") {
+        out += c;
+        i++;
+        prev = "`";
+        return;
+      } else if (c === "$" && src[i + 1] === "{") {
+        out += "${";
+        i += 2;
+        stack.push(braces);
+        braces++;
+        prev = "{";
+        return;
+      } else {
+        out += c;
+        i++;
+      }
+    }
+  };
+  while (i < src.length) {
+    const c = src[i]!;
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && n === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end < 0 ? src.length : end + 2;
+      out += " ";
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const start = i++;
+      while (i < src.length && src[i] !== c && src[i] !== "\n") i += src[i] === "\\" ? 2 : 1;
+      i++;
+      out += src.slice(start, i);
+      prev = c;
+      continue;
+    }
+    if (c === "`") {
+      out += c;
+      i++;
+      template();
+      continue;
+    }
+    if (c === "}" && stack.length > 0 && stack[stack.length - 1] === braces - 1) {
+      stack.pop();
+      braces--;
+      out += c;
+      i++;
+      template();
+      continue;
+    }
+    if (c === "/" && (prev === "" || "(,=:[!&|?{};+-*%<>~^".includes(prev) || /\b(return|typeof|case|in|of)$/.test(out.trimEnd()))) {
+      const start = i++;
+      let inClass = false;
+      while (i < src.length && src[i] !== "\n") {
+        if (src[i] === "\\") i++;
+        else if (src[i] === "[") inClass = true;
+        else if (src[i] === "]") inClass = false;
+        else if (src[i] === "/" && !inClass) break;
+        i++;
+      }
+      i++;
+      while (i < src.length && /[a-z]/.test(src[i]!)) i++;
+      out += src.slice(start, i);
+      prev = "/";
+      continue;
+    }
+    if (c === "{") braces++;
+    else if (c === "}") braces--;
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out;
+}
+
+const coreSrc = (f: string) => readFileSync(join(ROOT, "src", "core", f), "utf8");
+
+/** The value of `const NAME = <int expression>;` (digits, `_`, `*`, `+`) in the given sources, or undefined. */
+function declaredInt(name: string, sources: string[]): number | undefined {
+  for (const s of sources) {
+    const m = new RegExp(`\\bconst ${name}\\s*(?::\\s*number\\s*)?=\\s*([0-9_ *+]+);`).exec(s);
+    if (!m) continue;
+    const expr = m[1]!.replace(/_/g, "").trim();
+    return expr.split("+").reduce((sum, term) => sum + term.split("*").reduce((p, f) => p * Number(f.trim()), 1), 0);
+  }
+  return undefined;
+}
+
+/** Each call `name(` in source with its top-level arguments as trimmed text. */
+function callArgs(source: string, name: string): string[][] {
+  const calls: string[][] = [];
+  const re = new RegExp(`(?<![\\w.$])${name}\\(`, "g");
+  for (const m of source.matchAll(re)) {
+    let i = m.index! + m[0].length;
+    let depth = 0;
+    let cur = "";
+    const args: string[] = [];
+    for (; i < source.length; i++) {
+      const c = source[i]!;
+      if (c === "(" || c === "[" || c === "{") depth++;
+      else if (c === ")" || c === "]" || c === "}") {
+        if (depth === 0) break;
+        depth--;
+      } else if (c === "," && depth === 0) {
+        args.push(cur.trim());
+        cur = "";
+        continue;
+      }
+      cur += c;
+    }
+    if (cur.trim() !== "") args.push(cur.trim());
+    calls.push(args);
+  }
+  return calls;
 }
 
 // D22: estimated USD is allowed (labelled "est."); account-statement words stay banned.
@@ -395,25 +529,83 @@ describe("gates", () => {
     expect(body.indexOf("JSON.parse(")).toBeGreaterThan(bound);
   });
 
+  it("the comment stripper keeps code and literals and drops only comments (self-test)", () => {
+    const src = [
+      'const a = "// not a comment"; // gone-1',
+      "const b = 'it''s'; /* gone-2 */ const c = `x ${\"y\" /* gone-3 */} // kept-t`;",
+      "const r = /\\/\\/ kept-r/g; const d = 4 / 2; // gone-4",
+      "/** gone-5",
+      " * auth.json */",
+      "const e = { f: `${`${1}`}` }; // gone-6",
+    ].join("\n");
+    const out = stripComments(src);
+    for (const k of ["gone-1", "gone-2", "gone-3", "gone-4", "gone-5", "gone-6", "auth.json"]) expect(out, k).not.toContain(k);
+    for (const k of ['"// not a comment"', "// kept-t", "/\\/\\/ kept-r/g", "4 / 2", "const e = { f: `${`${1}`}` };"]) expect(out, k).toContain(k);
+  });
+
+  it("the Claude Code and Codex readers never decode a line whole: no JSON., toString(, TextDecoder or text-decode argument (D41, D53)", () => {
+    for (const f of ["claude.ts", "codex.ts"]) {
+      const src = stripComments(coreSrc(f));
+      expect(src.length, f).toBeGreaterThan(1000);
+      expect(src.match(/\bJSON\s*[.[]/g), f).toBeNull();
+      expect(src.includes("toString("), f).toBe(false);
+      expect(src.includes("TextDecoder"), f).toBe(false);
+      expect(src.match(/["'`](latin1|utf8|utf-8)["'`]/gi), f).toBeNull();
+    }
+    // self-test: the patterns do match
+    expect(stripComments("const x = JSON.parse(s); y = JSON [\"parse\"]").match(/\bJSON\s*[.[]/g)).toHaveLength(2);
+    expect('buf.toString("utf8")'.match(/["'`](latin1|utf8|utf-8)["'`]/gi)).toHaveLength(1);
+  });
+
+  it("every parseSlice( and stringAt( bound in the two readers is absent or a named MAX_* of at most MAX_SLICE_BYTES (D41, D53)", () => {
+    const sources = ["claude.ts", "codex.ts", "jsonScan.ts"].map((f) => stripComments(coreSrc(f)));
+    const slice = declaredInt("MAX_SLICE_BYTES", sources);
+    expect(slice).toBe(4096);
+    // parseSlice(buf, range, maxBytes) and stringAt(buf, res, path, maxBytes): the bound's position
+    const BOUND: Record<string, number> = { parseSlice: 2, stringAt: 3 };
+    for (const f of ["claude.ts", "codex.ts"]) {
+      const src = stripComments(coreSrc(f));
+      let calls = 0;
+      for (const [name, at] of Object.entries(BOUND)) {
+        for (const args of callArgs(src, name)) {
+          calls++;
+          expect(args.length, `${f} ${name}(${args.join(", ")})`).toBeLessThanOrEqual(at + 1);
+          const bound = args[at];
+          if (bound === undefined) continue;
+          expect(bound, `${f} ${name}(${args.join(", ")})`).toMatch(/^MAX_[A-Z_]+$/);
+          const v = declaredInt(bound, sources);
+          expect(v, `${f}: ${bound} is declared as an integer constant`).toBeTypeOf("number");
+          expect(v!, `${f}: ${bound}`).toBeLessThanOrEqual(slice!);
+          expect(v!, `${f}: ${bound}`).toBeGreaterThan(0);
+        }
+      }
+      expect(calls, f).toBeGreaterThan(0);
+    }
+    // self-test
+    expect(callArgs("x = parseSlice(buf, f(a, b), MAX_X); stringAt(b, r, \"p\")", "parseSlice")).toEqual([["buf", "f(a, b)", "MAX_X"]]);
+    expect(declaredInt("MAX_X", ["const MAX_X = 4 * 1_024;"])).toBe(4096);
+  });
+
   it("never-read file names appear in src/ only in comments or a NEVER_READ deny-list (D53)", () => {
-    const NAMES = ["auth.json", "history.jsonl", "rate_limits", "settings.json"];
+    const NAMES = ["auth.json", ".credentials.json", "config.toml", "history.jsonl", "rate_limits", "settings.json"];
+    // a deny-list constant whose name says so: `const NEVER_READ = [...]` or `new Set([...])`, any prefix or suffix
+    const DENY = /\b(?:export\s+)?const\s+[A-Z_]*NEVER_READ[A-Z_]*\b[^=]*=\s*(?:new\s+Set(?:<[^>]*>)?\(\s*)?\[[^\]]*\]/g;
     const hits: string[] = [];
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
-      const lines = readFileSync(f, "utf8").split("\n");
-      let inDeny = false;
-      for (const [i, line] of lines.entries()) {
-        if (/\bNEVER_READ\b.*=\s*\[/.test(line)) inDeny = true;
-        const t = line.trim();
-        const comment = t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
-        for (const n of NAMES) if (line.includes(n) && !comment && !inDeny) hits.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${t}`);
-        if (inDeny && t.includes("]")) inDeny = false;
+      const code = stripComments(readFileSync(f, "utf8")).replace(DENY, "");
+      for (const [i, line] of code.split("\n").entries()) {
+        for (const n of NAMES) if (line.includes(n)) hits.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${line.trim()}`);
       }
     }
     expect(hits).toEqual([]);
+    // self-test: a deny-list is exempt, the same name elsewhere is not
+    const t = stripComments('// auth.json\nexport const CODEX_NEVER_READ = new Set(["auth.json", "config.toml"]);\nopen("auth.json");').replace(DENY, "");
+    expect(t.split("auth.json")).toHaveLength(2);
+    expect(t).not.toContain("config.toml");
   });
 
   it("the monitor asks the reader's pathAllowed( before it opens a file (D53)", () => {
-    const src = readFileSync(join(ROOT, "src", "core", "monitor.ts"), "utf8");
+    const src = stripComments(coreSrc("monitor.ts"));
     // the only open in the monitor is a reader's, and it is the one guarded by pathAllowed
     expect(src.split(".open(").length - 1).toBe(1);
     expect(src.split("reader.open(").length - 1).toBe(1);
@@ -427,11 +619,32 @@ describe("gates", () => {
     expect(src.indexOf("continue;", guard)).toBeLessThan(open);
   });
 
-  it("source caps and the hot window are the specified constants (D50)", () => {
-    expect(RECENT_MS).toBe(300_000);
-    expect(CLAUDE_MAX_LINE_BYTES).toBe(4 * 1024 * 1024);
-    expect(CLAUDE_MAX_FILES).toBe(10_000);
-    expect(CODEX_MAX_TURNS).toBe(1024);
-    expect(MAX_SLICE_BYTES).toBe(4096);
+  it("source caps, the hot window and the cold rediscovery cadence are the specified constants (D42, D45, D50, D52)", () => {
+    const expected: [string, RegExp][] = [
+      ["claude.ts", /^export const CLAUDE_MAX_LINE_BYTES = 4 \* 1024 \* 1024;/m],
+      ["claude.ts", /^export const CLAUDE_HEAD_BYTES = 4096;/m],
+      ["claude.ts", /^export const CLAUDE_MAX_FILES = 10_000;/m],
+      ["claude.ts", /^export const CLAUDE_MAX_DEPTH = 6;/m],
+      ["claude.ts", /^(?:export )?const MAX_TOOLS = 64;/m],
+      ["codex.ts", /^export const CODEX_MAX_LINE_BYTES = 4 \* 1024 \* 1024;/m],
+      ["codex.ts", /^export const CODEX_MAX_TURNS = 1024;/m],
+      ["jsonScan.ts", /^export const MAX_SCAN_DEPTH = 8;/m],
+      ["jsonScan.ts", /^export const MAX_SLICE_BYTES = 4096;/m],
+      ["source.ts", /^export const RECENT_MS = 300_000;/m],
+      ["monitor.ts", /^(?:export )?const COLD_REDISCOVER_MS = 60_000;/m],
+    ];
+    const missing = expected.filter(([f, re]) => !re.test(stripComments(coreSrc(f)))).map(([f, re]) => `${f}: ${re.source}`);
+    expect(missing).toEqual([]);
+  });
+
+  it("settings text (D48): the source switches name their folder, variable and what is kept; historyMonths is source-neutral", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const props = pkg.contributes.configuration.properties;
+    const claude: string = props["copilotUsageMonitor.claudeCode"].description;
+    const codex: string = props["copilotUsageMonitor.codex"].description;
+    for (const t of ["~/.claude", "CLAUDE_CONFIG_DIR", "tool names", "never decoded"]) expect(claude, t).toContain(t);
+    for (const t of ["~/.codex", "CODEX_HOME", "never decoded"]) expect(codex, t).toContain(t);
+    expect(codex).not.toContain("tool names");
+    expect(props["copilotUsageMonitor.historyMonths"].description).not.toContain("Copilot");
   });
 });
