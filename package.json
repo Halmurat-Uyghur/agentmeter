@@ -33,7 +33,7 @@
     "test": "vitest run",
     "pretest:integration": "npm run build && tsc -p tsconfig.test.json",
     "test:integration": "vscode-test",
-    "test:perf": "PERF=1 vitest run test/core/perf.test.ts",
+    "test:perf": "PERF=1 NODE_OPTIONS=--expose-gc vitest run test/core/perf.test.ts",
     "package": "vsce package --no-dependencies",
     "vscode:prepublish": "npm run build",
     "probe": "node tools/schema-probe.mjs",

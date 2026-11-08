@@ -1,5 +1,5 @@
 // Performance budget (plan Task 9 / AC8). Runs only under PERF=1:
-//   npm run test:perf   (add NODE_OPTIONS=--expose-gc for the heap check)
+//   npm run test:perf   (the script sets NODE_OPTIONS=--expose-gc, so the heap checks run with gc)
 import { statSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
