@@ -37,6 +37,13 @@ describe("folderLabel (D44)", () => {
     expect(folderLabel("/a/line\nbreak")).toBeUndefined();
   });
 
+  it("rejects prototype keys", () => {
+    expect(folderLabel("/a/__proto__")).toBeUndefined();
+    expect(folderLabel("/a/constructor")).toBeUndefined();
+    expect(folderLabel("C:\\w\\prototype")).toBeUndefined();
+    expect(folderLabel("/a/constructors")).toBe("constructors");
+  });
+
   it("never returns a path", () => {
     for (const p of ["/a/b/repo/.claude/worktrees/x", "C:\\w\\repo\\.worktrees\\y", "/x/y/z", "a/b", "/repo/.claude/worktrees/"]) {
       const l = folderLabel(p);

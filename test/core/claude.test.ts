@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendFile, chmod, mkdir, mkdtemp, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, rm, stat, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as jsonScan from "../../src/core/jsonScan";
@@ -23,6 +23,8 @@ import {
   CLAUDE_TS,
   claudeAssistant,
   claudeAssistantLine,
+  CLAUDE_META_KINDS,
+  claudeMetaLine,
   claudeOtherLine,
   claudeTree,
   claudeUserLine,
@@ -85,7 +87,7 @@ describe("parseClaudeLine", () => {
       source: "claude-code",
       kind: "call",
       sessionId: "0b7c2a1e-5d3f-4e8a-9b6c-1f2e3d4c5b6a",
-      folderId: "0b7c2a1e-5d3f-4e8a-9b6c-1f2e3d4c5b6a",
+      folderId: FILE_ID,
       timestampMs: Date.parse(CLAUDE_TS),
       model: "claude-opus-4-1",
       tokens: { input: 1203, cacheRead: 1000, cacheWrite: 200, output: 50, reasoning: 20 },
@@ -126,9 +128,35 @@ describe("parseClaudeLine", () => {
     });
   });
 
-  it("refuses a usage slice over 4096 bytes", () => {
+  it("refuses a usage scalar slice over 4096 bytes; a large usage object is fine (never decoded)", () => {
+    const big = claudeAssistantLine({ usage: { input_tokens: 1, output_tokens: 1 } }).replace('"input_tokens":1', `"input_tokens":${"1".repeat(5000)}`);
+    expect(parse(big)).toEqual({ kind: "unrecognized", reason: "slice-too-large" });
     const usage = { input_tokens: 1, output_tokens: 1, pad: "x".repeat(5000) };
-    expect(parse(claudeAssistantLine({ usage }))).toEqual({ kind: "unrecognized", reason: "slice-too-large" });
+    expect(usageOf(claudeAssistantLine({ usage })).record.tokens).toEqual({ input: 1, output: 1 });
+  });
+
+  it("reads usage counts as scalar paths: a duplicate count is malformed, a non-number count is not decoded", () => {
+    const dup = claudeAssistantLine({ usage: { input_tokens: 1, output_tokens: 1 } }).replace('"output_tokens":1', '"output_tokens":1,"output_tokens":2');
+    expect(parse(dup)).toEqual({ kind: "malformed" });
+    expect(parse(claudeAssistantLine({ usage: { input_tokens: { n: 1 }, output_tokens: [2] } }))).toEqual({
+      kind: "unrecognized",
+      reason: "no-known-token-field",
+    });
+    const p = usageOf(claudeAssistantLine({ usage: { input_tokens: 4, output_tokens: 2, output_tokens_details: { thinking_tokens: "9" } } }));
+    expect(p.record.tokens).toEqual({ input: 4, output: 2 });
+  });
+
+  it("never decodes a usage string field (service_tier and the rest stay raw bytes)", () => {
+    const spy = vi.spyOn(JSON, "parse");
+    try {
+      const lines = [claudeAssistantLine({ tools: ["Bash"], thinking: 5 }), claudeAssistantLine({ usage: { input_tokens: CLAUDE_CANARY, output_tokens: 1 } })];
+      // Without a label the cwd (which also holds the canary) is not requested either.
+      for (const l of lines) parse(l, false);
+      expect(spy).toHaveBeenCalled();
+      for (const [text] of spy.mock.calls) expect(String(text)).not.toContain(CLAUDE_CANARY);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("keys by message.id, else requestId, else no-key", () => {
@@ -212,6 +240,13 @@ describe("parseClaudeLine", () => {
     expect(usageOf(claudeAssistantLine({ cwd: 42 })).label).toBeUndefined();
   });
 
+  it("keeps the file's id as folderId and the line's session id as sessionId (a resumed file)", () => {
+    const OLDER = "99999999-8888-4777-8666-555555555555";
+    const r = usageOf(claudeAssistantLine({ sessionId: OLDER })).record;
+    expect(r.sessionId).toBe(OLDER);
+    expect(r.folderId).toBe(FILE_ID);
+  });
+
   it("falls back to the file's session id", () => {
     expect(usageOf(claudeAssistantLine({ sessionId: null })).record.sessionId).toBe(FILE_ID);
     expect(usageOf(claudeAssistantLine({ sessionId: "not a session" })).record.sessionId).toBe(FILE_ID);
@@ -237,9 +272,24 @@ describe("parseClaudeLine", () => {
       claudeAssistantLine({ tools: ["Bash"], thinking: 5 }),
       claudeAssistantLine({ cwd: `/${CLAUDE_CANARY}/repo/.claude/worktrees/${CLAUDE_CANARY}` }),
       claudeUserLine(),
+      claudeUserLine({ toolUseResult: CLAUDE_CANARY }),
+      claudeUserLine({ contentString: true }),
       claudeOtherLine("attachment"),
+      ...CLAUDE_META_KINDS.map(claudeMetaLine),
     ];
     for (const l of lines) expect(JSON.stringify(parse(l))).not.toContain(CLAUDE_CANARY);
+  });
+
+  it("the fixture carries the canary in every new content field", () => {
+    const a = claudeAssistant() as { agentId: unknown; message: { stop_sequence: unknown; usage: Record<string, unknown> } };
+    expect(a.agentId).toBe(CLAUDE_CANARY);
+    expect(a.message.stop_sequence).toBe(CLAUDE_CANARY);
+    expect(a.message.usage.service_tier).toBe(CLAUDE_CANARY);
+    expect(JSON.stringify(a.message.usage.cache_creation)).toContain(CLAUDE_CANARY);
+    expect(JSON.stringify(a.message.usage.server_tool_use)).toContain(CLAUDE_CANARY);
+    expect(claudeMetaLine("telemetry")).not.toContain('"type"');
+    for (const k of CLAUDE_META_KINDS) expect(cls(claudeMetaLine(k))).toBe("skip");
+    expect(cls(claudeUserLine({ contentString: true }))).toBe("user");
   });
 });
 
@@ -486,6 +536,32 @@ describe("ClaudeSourceReader", () => {
     expect(r.pathAllowed("relative/projects/slug/a.jsonl")).toBe(false);
   });
 
+  it("pathAllowed needs a session-id stem at slug level or a session-id folder under the slug", () => {
+    const r = make();
+    expect(r.pathAllowed(join(root, "projects", "slug", "plugin-dir", "x.jsonl"))).toBe(false);
+    expect(r.pathAllowed(join(root, "projects", "slug", "notes.jsonl"))).toBe(false);
+    expect(r.pathAllowed(join(root, "projects", "slug", "plugins", "cache", "y.jsonl"))).toBe(false);
+    expect(r.pathAllowed(join(root, "projects", "slug", S1, "subagents", "agent-a.jsonl"))).toBe(true);
+    expect(r.pathAllowed(join(root, "projects", "slug", S1, "agent-a.jsonl"))).toBe(true);
+  });
+
+  it("rootDirMtime is the newest of projects/ and every slug folder: a new file changes it, an append does not", async () => {
+    const [path] = await claudeTree(root, [{ sessionId: S1, lines: [claudeAssistantLine()] }]);
+    const slugDir = join(root, "projects", CLAUDE_SLUG);
+    const old = new Date(Date.now() - 3_600_000);
+    await utimes(slugDir, old, old);
+    await utimes(join(root, "projects"), old, old);
+    const r = make();
+    const before = await r.rootDirMtime();
+    expect(before).toBe((await stat(slugDir)).mtimeMs);
+    await appendFile(path!, claudeAssistantLine({ id: "msg_more" }) + "\n");
+    expect(await r.rootDirMtime()).toBe(before);
+    await writeFile(join(slugDir, `${S2}.jsonl`), claudeAssistantLine() + "\n");
+    const after = await r.rootDirMtime();
+    expect(after).toBe((await stat(slugDir)).mtimeMs);
+    expect(after).toBeGreaterThan(before!);
+  });
+
   it("reads records, activity and counters, with the label set from the first usage record", async () => {
     const [path] = await claudeTree(root, [
       {
@@ -520,6 +596,41 @@ describe("ClaudeSourceReader", () => {
     expect(again.records.map((r) => r.key)).toEqual(["msg_c"]);
     // The label is reported once, in the read that first finds it (source.ts contract).
     expect(again.label).toBeUndefined();
+  });
+
+  it("a resumed file's lines keep their older session id; folderId is the file's id", async () => {
+    const OLDER = "99999999-8888-4777-8666-555555555555";
+    const [path] = await claudeTree(root, [{ sessionId: S1, lines: [claudeAssistantLine({ sessionId: OLDER })] }]);
+    const res = await make().open(path!, candidate(path!)).read();
+    expect(res.records.map((r) => [r.sessionId, r.folderId])).toEqual([[OLDER, S1]]);
+  });
+
+  it("counts assistant-class gated lines as candidates; user lines and other lines are not", async () => {
+    const [path] = await claudeTree(root, [
+      {
+        sessionId: S1,
+        lines: [
+          claudeUserLine(),
+          claudeUserLine({ toolUseResult: { type: "assistant", message: { usage: { input_tokens: 1 } } } }),
+          claudeOtherLine("attachment"),
+          ...CLAUDE_META_KINDS.map(claudeMetaLine),
+          claudeAssistantLine({ id: "msg_a" }),
+          claudeAssistantLine({ model: "<synthetic>", usage: { input_tokens: 0, output_tokens: 0 } }),
+          claudeAssistantLine({ usage: null }),
+          claudeAssistantLine().slice(0, -10),
+        ],
+      },
+    ]);
+    const fr = make().open(path!, candidate(path!));
+    const res = await fr.read();
+    expect(res.candidates).toBe(4);
+    expect(res.usage).toBe(1);
+    expect(res.activity).toBe(2);
+    expect((await fr.read()).candidates).toBe(0);
+    await appendFile(path!, claudeUserLine() + "\n");
+    const next = await fr.read();
+    expect(next.candidates).toBe(0);
+    expect(next.activity).toBe(1);
   });
 
   it("uses the candidate's session id when a line has none", async () => {

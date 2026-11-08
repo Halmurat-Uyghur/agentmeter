@@ -478,6 +478,36 @@ describe("ByteTailer", () => {
     };
   }
 
+  it("two tailers interleaved over the shared chunk buffer still deliver correct lines", async () => {
+    const fileB = join(dir, "b.jsonl");
+    const a = recorder();
+    const b = recorder();
+    const ta = new ByteTailer(file, a.handler, { chunkBytes: 8 });
+    const tb = new ByteTailer(fileB, b.handler, { chunkBytes: 8 });
+    // A reads, keeping a carry from the shared chunk; B then overwrites that chunk.
+    await writeFile(file, "alpha-one\nalpha-tw");
+    await writeFile(fileB, "bravo-one-long-line\nbravo-two\nbr");
+    await ta.read();
+    await tb.read();
+    await appendFile(file, "o\nalpha-three\n");
+    await appendFile(fileB, "avo-three\n");
+    await ta.read();
+    await tb.read();
+    expect(a.seen.lines).toEqual(["alpha-one", "alpha-two", "alpha-three"]);
+    expect(b.seen.lines).toEqual(["bravo-one-long-line", "bravo-two", "bravo-three"]);
+    // Concurrent reads: the second gets its own buffer while the first holds the shared one.
+    const c = recorder();
+    const d = recorder();
+    const fileC = join(dir, "c.jsonl");
+    const fileD = join(dir, "d.jsonl");
+    const many = (p: string): string => Array.from({ length: 200 }, (_, i) => `${p}-${i}`).join("\n") + "\n";
+    await writeFile(fileC, many("c"));
+    await writeFile(fileD, many("d"));
+    await Promise.all([new ByteTailer(fileC, c.handler, { chunkBytes: 5 }).read(), new ByteTailer(fileD, d.handler, { chunkBytes: 5 }).read()]);
+    expect(c.seen.lines).toEqual(many("c").trimEnd().split("\n"));
+    expect(d.seen.lines).toEqual(many("d").trimEnd().split("\n"));
+  });
+
   it("a line split mid-way across two reads is delivered once, whole", async () => {
     const { seen, handler } = recorder();
     const t = new ByteTailer(file, handler);

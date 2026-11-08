@@ -4,15 +4,18 @@
 // scanner (D41) for an allowlist of absolute paths only, and only those slices
 // are decoded, through parseSlice/stringAt. Prompts, replies, instructions,
 // git and sandbox details, the allowance-like event fields and the per-turn and
-// per-thread usage copies are never requested, so they are never decoded.
+// per-thread usage copies are never requested, so they are never decoded. Usage
+// counts are requested one scalar path each; the usage objects are never decoded.
 // archived_sessions/ is counted by name and never opened; nothing else under
 // the Codex home is listed.
 // Session totals (token_count, D45) carry the file's session id (the line has
 // no session_id) and the latest model seen in the file, when one is known.
+// Records carry folderId = the file's session id and sessionId = payload.session_id
+// when it is one (like Copilot's folder vs source session id).
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSessionId } from "./extract";
-import { parseSlice, MAX_SLICE_BYTES, scanJson, stringAt, type ScanPath, type ScanResult } from "./jsonScan";
+import { parseSlice, MAX_SLICE_BYTES, scanJson, stringAt, type ScanPath, type ScanResult, type SliceRange } from "./jsonScan";
 import { folderLabel } from "./label";
 import {
   emptyReadResult,
@@ -31,6 +34,8 @@ import type { Tokens, UsageRecord } from "./types";
 export const CODEX_MAX_LINE_BYTES = 4 * 1024 * 1024;
 /** turn id → model entries kept per file; past this the oldest entry is dropped. */
 export const CODEX_MAX_TURNS = 1024;
+/** Bytes of an over-long line's head classifyCodexHead looks at. */
+export const CODEX_HEAD_BYTES = 4096;
 
 export type CodexLineClass = "record" | "turn" | "meta" | "event" | "skip";
 
@@ -75,6 +80,20 @@ const TURN_NEEDLE = needle(TURN_TYPE);
 const META_NEEDLE = needle(META_TYPE);
 const EVENT_NEEDLE = needle(EVENT_TYPE);
 
+/** Usage field → Tokens field; copied as logged (D45, D47): cache writes are not added into input. */
+const TOKEN_FIELDS: readonly [string, keyof Tokens][] = [
+  ["input_tokens", "input"],
+  ["cached_input_tokens", "cacheRead"],
+  ["cache_write_input_tokens", "cacheWrite"],
+  ["output_tokens", "output"],
+  ["reasoning_output_tokens", "reasoning"],
+];
+
+const USAGE_BASE: ScanPath = ["payload", "usage"];
+const TOTAL_BASE: ScanPath = ["payload", "info", "total_token_usage"];
+/** The five scalar paths under `base`: the usage object itself is never requested. */
+const scalarPaths = (base: ScanPath): ScanPath[] => TOKEN_FIELDS.map(([from]) => [...base, from]);
+
 /** The only paths ever requested, per line class. */
 const RECORD_PATHS: readonly ScanPath[] = [
   ["type"],
@@ -82,12 +101,12 @@ const RECORD_PATHS: readonly ScanPath[] = [
   ["payload", "session_id"],
   ["payload", "turn_id"],
   ["payload", "response_id"],
-  ["payload", "usage"],
+  ...scalarPaths(USAGE_BASE),
 ];
 const TURN_PATHS: readonly ScanPath[] = [["type"], ["payload", "turn_id"], ["payload", "model"]];
 const META_PATHS: readonly ScanPath[] = [["type"]];
 const META_LABEL_PATHS: readonly ScanPath[] = [["type"], ["payload", "cwd"]];
-const EVENT_TOTAL_PATHS: readonly ScanPath[] = [["type"], ["timestamp"], ["payload", "type"], ["payload", "info", "total_token_usage"]];
+const EVENT_TOTAL_PATHS: readonly ScanPath[] = [["type"], ["timestamp"], ["payload", "type"], ...scalarPaths(TOTAL_BASE)];
 
 /** Same shape as extract.ts (review A3): seconds and a zone are required. */
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
@@ -105,15 +124,6 @@ function timestampOf(v: unknown): number {
   return typeof v === "string" && TIMESTAMP.test(v) ? Date.parse(v) : NaN;
 }
 
-/** Usage field → Tokens field; copied as logged (D45, D47): cache writes are not added into input. */
-const TOKEN_FIELDS: readonly [string, keyof Tokens][] = [
-  ["input_tokens", "input"],
-  ["cached_input_tokens", "cacheRead"],
-  ["cache_write_input_tokens", "cacheWrite"],
-  ["output_tokens", "output"],
-  ["reasoning_output_tokens", "reasoning"],
-];
-
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
 /**
@@ -129,6 +139,18 @@ export function classifyCodexLine(buf: Buffer, start: number, end: number): Code
   if (line.indexOf(META_NEEDLE) !== -1) return "meta";
   if (line.indexOf(EVENT_NEEDLE) !== -1) return "event";
   return "skip";
+}
+
+/** "record" | "other" from the first CODEX_HEAD_BYTES of an over-long line only (never the whole line). Raw bytes only. */
+export function classifyCodexHead(buf: Buffer, start: number, end: number): "record" | "other" {
+  return classifyCodexLine(buf, start, Math.min(end, start + CODEX_HEAD_BYTES)) === "record" ? "record" : "other";
+}
+
+const TOKEN_COUNT_NEEDLE = needle(TOKEN_COUNT);
+
+/** An event-class line whose raw bytes name token_count: a candidate for a session total. */
+function isTokenCountLine(buf: Buffer, start: number, end: number): boolean {
+  return buf.subarray(start, end).indexOf(TOKEN_COUNT_NEEDLE) !== -1;
 }
 
 /** The depth-1 type confirmed by the scanner is another gated class: parse the line as that. */
@@ -150,25 +172,38 @@ function hasDuplicate(res: ScanResult): boolean {
   return false;
 }
 
-/** Tokens from a usage slice; "too-large" when the slice exceeds MAX_SLICE_BYTES, undefined when nothing valid. */
-function tokensAt(buf: Buffer, res: ScanResult, key: string): Tokens | "too-large" | undefined {
-  const r = res.ranges.get(key)?.[0];
-  if (r === undefined) return undefined;
-  if (r.end - r.start > MAX_SLICE_BYTES) return "too-large";
-  const v = parseSlice(buf, r);
-  if (v === null || typeof v !== "object" || Array.isArray(v)) return undefined;
-  const obj = v as Record<string, unknown>;
+const MINUS = 0x2d;
+const DIGIT_0 = 0x30;
+const DIGIT_9 = 0x39;
+/** A token count: a safe integer has at most 16 digits. */
+const MAX_COUNT_BYTES = 32;
+
+/** One count slice: only a slice that starts like a number is decoded, so a string there never becomes a JS value. */
+function countOf(buf: Buffer, r: SliceRange): number | undefined {
+  const c = buf[r.start];
+  if (c === undefined || !(c === MINUS || (c >= DIGIT_0 && c <= DIGIT_9))) return undefined;
+  const v = parseSlice(buf, r, MAX_COUNT_BYTES);
+  return isCount(v) ? v : undefined;
+}
+
+/** Tokens from the five scalar paths under `base`: "too-large" when a slice exceeds MAX_SLICE_BYTES, undefined when none is valid. */
+function tokensAt(buf: Buffer, res: ScanResult, base: ScanPath): Tokens | "too-large" | undefined {
+  const prefix = base.join(".");
   const tokens: Tokens = {};
   let any = false;
   for (const [from, to] of TOKEN_FIELDS) {
-    const n = Object.prototype.hasOwnProperty.call(obj, from) ? obj[from] : undefined;
-    if (isCount(n)) {
-      tokens[to] = n;
-      any = true;
-    }
+    const r = res.ranges.get(`${prefix}.${from}`)?.[0];
+    if (r === undefined) continue;
+    if (r.end - r.start > MAX_SLICE_BYTES) return "too-large";
+    const n = countOf(buf, r);
+    if (n === undefined) continue;
+    tokens[to] = n;
+    any = true;
   }
   return any ? tokens : undefined;
 }
+
+const allZero = (t: Tokens): boolean => Object.values(t).every((v) => v === 0);
 
 /** Scans buf[start, end) for `paths`; undefined when the line is truncated, has a duplicate key, or its depth-1 type is not `type`. */
 function scanTyped(buf: Buffer, start: number, end: number, paths: readonly ScanPath[], type: string): ScanResult | "malformed" | "other" | Redirect {
@@ -189,9 +224,11 @@ function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileSt
   if (!safeKey(key, RESPONSE_ID)) return { kind: "unrecognized", reason: "no-key" };
   const timestampMs = timestampOf(stringAt(buf, res, "timestamp"));
   if (Number.isNaN(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
-  const tokens = tokensAt(buf, res, "payload.usage");
+  const tokens = tokensAt(buf, res, USAGE_BASE);
   if (tokens === "too-large") return { kind: "unrecognized", reason: "slice-too-large" };
   if (tokens === undefined) return { kind: "unrecognized", reason: "no-known-token-field" };
+  // Zero usage (every present count 0): not a call.
+  if (allZero(tokens)) return { kind: "ignored" };
   const sid = stringAt(buf, res, "payload.session_id");
   const sessionId = isSessionId(sid) ? sid : o.fileSessionId;
   const turn = stringAt(buf, res, "payload.turn_id");
@@ -202,7 +239,7 @@ function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileSt
     source: "codex",
     kind: "call",
     sessionId,
-    folderId: sessionId,
+    folderId: o.fileSessionId,
     timestampMs,
     tokens,
   };
@@ -255,7 +292,7 @@ function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileSta
   if (stringAt(buf, res, "payload.type") !== TOKEN_COUNT) return { kind: "ignored" };
   const timestampMs = timestampOf(stringAt(buf, res, "timestamp"));
   if (Number.isNaN(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
-  const tokens = tokensAt(buf, res, "payload.info.total_token_usage");
+  const tokens = tokensAt(buf, res, TOTAL_BASE);
   if (tokens === "too-large") return { kind: "unrecognized", reason: "slice-too-large" };
   if (tokens === undefined) return { kind: "unrecognized", reason: "no-known-token-field" };
   const sessionId = o.fileSessionId;
@@ -322,19 +359,38 @@ function errCode(e: unknown): string {
   return typeof code === "string" ? code : "OTHER";
 }
 
-function sessionIdOf(name: string): string {
+/** The trailing session-id-shaped UUID of a rollout file name; undefined when it has none (the file is skipped). */
+function sessionIdOf(name: string): string | undefined {
   const m = TRAILING_UUID.exec(name);
-  if (m !== null && isSessionId(m[1])) return m[1];
-  return name.slice(0, -".jsonl".length);
+  return m !== null && isSessionId(m[1]) ? m[1] : undefined;
 }
 
-async function subdirs(dir: string, re: RegExp): Promise<string[]> {
+/** Sorted names of the subfolders of `dir` matching `re`; a listing error other than ENOENT/ENOTDIR is reported as unreadable under `folderId` (the YYYY or YYYY/MM segment). */
+async function subdirs(dir: string, re: RegExp, folderId?: string, unreadable?: SourceUnreadable[]): Promise<string[]> {
   try {
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory() && re.test(e.name)).map((e) => e.name).sort();
-  } catch {
+  } catch (e) {
+    const code = errCode(e);
+    if (unreadable !== undefined && folderId !== undefined && code !== "ENOENT" && code !== "ENOTDIR") {
+      unreadable.push({ folderId, path: dir, code });
+    }
     return [];
   }
+}
+
+/** The two newest day folders under sessions/ by name (newest first); listing errors are skipped. */
+async function newestDayDirs(sessions: string): Promise<string[]> {
+  const out: string[] = [];
+  for (const y of (await subdirs(sessions, YEAR)).reverse()) {
+    for (const m of (await subdirs(path.join(sessions, y), TWO_DIGITS)).reverse()) {
+      for (const d of (await subdirs(path.join(sessions, y, m), TWO_DIGITS)).reverse()) {
+        out.push(path.join(sessions, y, m, d));
+        if (out.length === 2) return out;
+      }
+    }
+  }
+  return out;
 }
 
 /** Entries in archived_sessions/, by name only; 0 when absent. Never opens a file. */
@@ -378,10 +434,10 @@ export async function discoverCodex(root: string, windowStartMs: number, dayStar
   for (const y of years) {
     const yn = Number(y) * 10_000;
     if (yn + 1231 < first) continue;
-    for (const m of await subdirs(path.join(sessions, y), TWO_DIGITS)) {
+    for (const m of await subdirs(path.join(sessions, y), TWO_DIGITS, y, unreadable)) {
       const mn = yn + Number(m) * 100;
       if (mn + 31 < first) continue;
-      for (const d of await subdirs(path.join(sessions, y, m), TWO_DIGITS)) {
+      for (const d of await subdirs(path.join(sessions, y, m), TWO_DIGITS, `${y}/${m}`, unreadable)) {
         if (mn + Number(d) < first) continue;
         const dir = path.join(sessions, y, m, d);
         let names: string[];
@@ -394,8 +450,9 @@ export async function discoverCodex(root: string, windowStartMs: number, dayStar
           continue;
         }
         for (const name of names) {
-          const p = path.join(dir, name);
           const sessionId = sessionIdOf(name);
+          if (sessionId === undefined) continue;
+          const p = path.join(dir, name);
           let st: fs.Stats;
           try {
             st = await fs.promises.lstat(p);
@@ -429,6 +486,8 @@ class CodexFileReader implements FileReader {
   private state: CodexFileState = { models: new Map(), sawTurn: false };
   private sawMeta = false;
   private sawRecord = false;
+  /** set when sawRecord first flips true: the next read() clears the file's session total */
+  private clearTotals = false;
   private out: FileReadResult = emptyReadResult();
   private lastTotal: UsageRecord | undefined;
   /** the label last reported: it is reported once, when first known (and again after a reset) */
@@ -448,13 +507,17 @@ class CodexFileReader implements FileReader {
       line: (buf, start, end) => this.line(buf, start, end),
       overlong: (buf, start, end) => this.overlong(buf, start, end),
     };
-    return new ByteTailer(this.filePath, handler, { maxLineBytes: CODEX_MAX_LINE_BYTES, headBytes: MAX_SLICE_BYTES });
+    return new ByteTailer(this.filePath, handler, { maxLineBytes: CODEX_MAX_LINE_BYTES, headBytes: CODEX_HEAD_BYTES });
   }
 
   private line(buf: Buffer, start: number, end: number): void {
     try {
       const cls = classifyCodexLine(buf, start, end);
       if (cls === "skip") return;
+      // Record-class lines and token_count events could have yielded usage (D42 sessions without usage).
+      if (cls === "record" || (cls === "event" && isTokenCountLine(buf, start, end))) {
+        this.out.candidates = (this.out.candidates ?? 0) + 1;
+      }
       // Once the file has a record its totals are never emitted, so token_count lines need no decoding.
       const p = parseCodexLine(buf, start, end, cls, this.state, {
         fileSessionId: this.fileSessionId,
@@ -464,7 +527,12 @@ class CodexFileReader implements FileReader {
       const out = this.out;
       switch (p.kind) {
         case "usage":
-          this.sawRecord = true;
+          if (!this.sawRecord) {
+            this.sawRecord = true;
+            // The file's total is replaced by its records from now on: drop any stored total,
+            // whatever session id the records carry (the store keys it by this file).
+            if (this.readTotals) this.clearTotals = true;
+          }
           this.lastTotal = undefined;
           out.records.push(p.record);
           out.usage++;
@@ -495,10 +563,10 @@ class CodexFileReader implements FileReader {
     }
   }
 
-  /** An over-long line is never read; its head shows whether it may have been a record. */
+  /** An over-long line is never read; its first CODEX_HEAD_BYTES show whether it may have been a record. */
   private overlong(buf: Buffer, start: number, end: number): void {
     try {
-      if (classifyCodexLine(buf, start, end) === "record") this.out.overlong++;
+      if (classifyCodexHead(buf, start, end) === "record") this.out.overlong++;
       else this.out.overlongOther++;
     } catch {
       this.out.overlong++;
@@ -509,11 +577,12 @@ class CodexFileReader implements FileReader {
     this.state = { models: new Map(), sawTurn: false };
     this.sawMeta = false;
     this.sawRecord = false;
+    this.clearTotals = false;
     this.shown = undefined;
   }
 
   private async readOnce(): Promise<{ reset: boolean; error?: FileReadResult["error"] }> {
-    this.out = emptyReadResult();
+    this.out = { ...emptyReadResult(), candidates: 0 };
     this.lastTotal = undefined;
     return this.tailer.read();
   }
@@ -537,7 +606,11 @@ class CodexFileReader implements FileReader {
     if (this.lastTotal !== undefined && !this.sawRecord) {
       out.totals = [this.lastTotal];
       out.hasTotals = true;
+    } else if (this.clearTotals) {
+      out.totals = [];
+      out.hasTotals = true;
     }
+    this.clearTotals = false;
     this.lastTotal = undefined;
     return out;
   }
@@ -557,12 +630,27 @@ export class CodexSourceReader implements SourceReader {
     this.readTotals = o.readTotals;
   }
 
+  /**
+   * The cheap change check (D50): the newest mtime of sessions/ and of its two newest day
+   * folders (by name). A new rollout file bumps its day folder; an append does not.
+   * undefined when sessions/ is missing or unreadable.
+   */
   async rootDirMtime(): Promise<number | undefined> {
+    const sessions = path.join(this.root, SESSIONS);
+    let max: number;
     try {
-      return (await fs.promises.stat(path.join(this.root, SESSIONS))).mtimeMs;
+      max = (await fs.promises.stat(sessions)).mtimeMs;
     } catch {
       return undefined;
     }
+    for (const dir of await newestDayDirs(sessions)) {
+      try {
+        max = Math.max(max, (await fs.promises.stat(dir)).mtimeMs);
+      } catch {
+        // gone since the listing: the next check sees the change
+      }
+    }
+    return max;
   }
 
   discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {

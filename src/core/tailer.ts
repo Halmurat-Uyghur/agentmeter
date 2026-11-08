@@ -93,6 +93,25 @@ const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
  */
 const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
 
+/**
+ * One scratch chunk buffer shared by every ByteTailer, allocated lazily at the largest
+ * chunkBytes asked for. A read borrows it for its whole duration; a read that starts while
+ * another holds it (reads are sequential in the monitor, but be safe) gets a fresh buffer.
+ * Nothing may keep a view of it past the call it was handed in: the tailer copies its carry
+ * and tail (Buffer.from / Buffer.concat), and the line handlers copy what they keep (Copilot
+ * decodes lines to strings; the Claude Code and Codex readers decode slices into fresh values
+ * and classify over-long heads in place).
+ */
+let scratch: Buffer | undefined;
+let scratchBusy = false;
+
+function borrowScratch(size: number): { buf: Buffer; shared: boolean } {
+  if (scratchBusy) return { buf: Buffer.allocUnsafe(size), shared: false };
+  if (scratch === undefined || scratch.length < size) scratch = Buffer.allocUnsafe(size);
+  scratchBusy = true;
+  return { buf: scratch, shared: true };
+}
+
 function errorCode(e: unknown): ReadErrorCode {
   const code = (e as { code?: unknown } | null)?.code;
   return code === "ENOENT" ||
@@ -131,6 +150,7 @@ export class ByteTailer {
   async read(): Promise<ByteTailResult> {
     const result: ByteTailResult = { reset: false };
     let handle: fs.promises.FileHandle | undefined;
+    let chunkBuf: { buf: Buffer; shared: boolean } | undefined;
     try {
       handle = await fs.promises.open(this.path, OPEN_FLAGS);
       const st = await handle.stat();
@@ -156,9 +176,10 @@ export class ByteTailer {
       this.cursor = cur;
       if (cur.offset === 0 && !(await this.skipBom(handle, cur, size))) return result;
 
-      while (cur.offset < size) {
+      if (cur.offset < size) chunkBuf = borrowScratch(this.chunkBytes);
+      while (cur.offset < size && chunkBuf !== undefined) {
         const want = Math.min(this.chunkBytes, size - cur.offset);
-        const chunk = Buffer.allocUnsafe(want);
+        const chunk = chunkBuf.buf;
         const { bytesRead } = await handle.read(chunk, 0, want, cur.offset);
         if (bytesRead === 0) break; // shrank under us; the next read() resets
         const data = chunk.subarray(0, bytesRead);
@@ -172,6 +193,7 @@ export class ByteTailer {
     } catch (e) {
       result.error = errorCode(e);
     } finally {
+      if (chunkBuf?.shared === true) scratchBusy = false;
       await handle?.close().catch(() => undefined);
     }
     return result;

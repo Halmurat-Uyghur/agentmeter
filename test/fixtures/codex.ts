@@ -1,6 +1,8 @@
 // Synthetic Codex rollout fixtures (D45, D53). Nothing here comes from real
 // Codex logs: every content-bearing string is CODEX_CANARY (instructions, every
-// cwd segment but the last, git.*, sandbox paths, rate_limits.*, content text)
+// cwd segment but the last, git.*, sandbox paths, rate_limits.*, model_provider,
+// content text, compacted summaries, inter-agent metadata, user messages and
+// reasoning events)
 // so tests can prove it never reaches a record. Numbers the reader must never
 // keep (last_token_usage, turn/thread usage, rate limits) use the NEVER_* values.
 import { mkdir, utimes, writeFile } from "node:fs/promises";
@@ -57,7 +59,7 @@ export function codexMeta(o: { cwd?: string; timestamp?: string; ordinal?: numbe
     cwd: o.cwd ?? canaryCwd(),
     originator: CODEX_CANARY,
     cli_version: CODEX_CANARY,
-    model_provider: "openai",
+    model_provider: CODEX_CANARY,
     instructions: `${CODEX_CANARY} instructions`,
     git: { commit_hash: CODEX_CANARY, branch: CODEX_CANARY, repository_url: `https://${CODEX_CANARY}.example/repo` },
     sandbox_policy: { mode: "workspace-write", writable_roots: [`/${CODEX_CANARY}/tmp`] },
@@ -126,11 +128,40 @@ export function codexOther(type: string, payloadType: string, o: { timestamp?: s
   });
 }
 
+/** A compacted line: the summary that replaces history (canary text). */
+export function codexCompacted(o: { timestamp?: string; ordinal?: number } = {}): string {
+  return line(o.timestamp ?? CODEX_TS, o.ordinal ?? 5, "compacted", {
+    message: CODEX_CANARY,
+    replacement_history: [{ type: "message", role: "user", content: [{ type: "input_text", text: CODEX_CANARY }] }],
+  });
+}
+
+/** An inter_agent_communication_metadata line (canary ids and text). */
+export function codexInterAgent(o: { timestamp?: string; ordinal?: number } = {}): string {
+  return line(o.timestamp ?? CODEX_TS, o.ordinal ?? 6, "inter_agent_communication_metadata", {
+    from_agent: CODEX_CANARY,
+    to_agent: CODEX_CANARY,
+    message: CODEX_CANARY,
+    usage: { input_tokens: NEVER_NUMBER, output_tokens: NEVER_NUMBER },
+  });
+}
+
+/** An event_msg user_message line (the user's prompt). */
+export function codexUserMessage(o: { timestamp?: string; ordinal?: number } = {}): string {
+  return line(o.timestamp ?? CODEX_TS, o.ordinal ?? 7, "event_msg", { type: "user_message", message: CODEX_CANARY, images: [CODEX_CANARY] });
+}
+
+/** An event_msg agent_reasoning line (reasoning text). */
+export function codexAgentReasoning(o: { timestamp?: string; ordinal?: number } = {}): string {
+  return line(o.timestamp ?? CODEX_TS, o.ordinal ?? 8, "event_msg", { type: "agent_reasoning", text: CODEX_CANARY });
+}
+
 export interface CodexFileFixture {
   /** "YYYY/MM/DD" */
   date: string;
   sessionId: string;
   lines: string[];
+  /** a Date, or ms since epoch */
   mtime?: Date | number;
   /** file name override (default rollout-<date>T10-00-00-<sessionId>.jsonl) */
   name?: string;
@@ -145,7 +176,11 @@ export async function codexTree(root: string, files: CodexFileFixture[], archive
     const name = f.name ?? `rollout-${f.date.replaceAll("/", "-")}T10-00-00-${f.sessionId}.jsonl`;
     const p = join(dir, name);
     await writeFile(p, f.lines.map((l) => `${l}\n`).join(""));
-    if (f.mtime !== undefined) await utimes(p, f.mtime, f.mtime);
+    if (f.mtime !== undefined) {
+      // utimes takes seconds for a number (like claudeTree).
+      const t = typeof f.mtime === "number" ? f.mtime / 1000 : f.mtime;
+      await utimes(p, t, t);
+    }
     paths.push(p);
   }
   if (archived !== undefined) {

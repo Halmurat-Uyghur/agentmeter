@@ -3,7 +3,9 @@
 // never decoded whole. classifyClaudeLine gates on raw bytes; parseClaudeLine
 // asks the path scanner (D41) for the D42 allowlist only and decodes just
 // those small slices through parseSlice/stringAt, copying numbers and short
-// ids into a fresh record. The cwd slice is reduced to a folder label (D44)
+// ids into a fresh record. Usage counts are requested one scalar path each:
+// the usage object itself is located but never decoded, so service_tier,
+// cache_creation and server_tool_use never become strings. The cwd slice is reduced to a folder label (D44)
 // and dropped; tool_use inputs, text, thinking and every other field are
 // never turned into a string. Discovery lists directories and lstat's files:
 // it never opens a file and never follows a symlink.
@@ -83,7 +85,13 @@ const P_CWD = "cwd";
 const P_ID = "message.id";
 const P_MODEL = "message.model";
 const P_STOP = "message.stop_reason";
+/** Located only: the first byte of its range tells an object from anything else; never decoded. */
 const P_USAGE = "message.usage";
+const P_INPUT = "message.usage.input_tokens";
+const P_CACHE_READ = "message.usage.cache_read_input_tokens";
+const P_CACHE_WRITE = "message.usage.cache_creation_input_tokens";
+const P_OUTPUT = "message.usage.output_tokens";
+const P_THINKING = "message.usage.output_tokens_details.thinking_tokens";
 const P_CONTENT_TYPE = "message.content[].type";
 const P_CONTENT_NAME = "message.content[].name";
 const BASE_PATHS: readonly ScanPath[] = [
@@ -95,12 +103,32 @@ const BASE_PATHS: readonly ScanPath[] = [
   ["message", "model"],
   ["message", "stop_reason"],
   ["message", "usage"],
+  ["message", "usage", "input_tokens"],
+  ["message", "usage", "cache_read_input_tokens"],
+  ["message", "usage", "cache_creation_input_tokens"],
+  ["message", "usage", "output_tokens"],
+  ["message", "usage", "output_tokens_details", "thinking_tokens"],
   ["message", "content", "[]", "type"],
   ["message", "content", "[]", "name"],
 ];
 const LABEL_PATHS: readonly ScanPath[] = [...BASE_PATHS, ["cwd"]];
 /** Paths that hold one value; more than one range there means duplicate keys. */
-const SINGLE_PATHS = [P_TYPE, P_REQUEST_ID, P_TIMESTAMP, P_SESSION_ID, P_CWD, P_ID, P_MODEL, P_STOP, P_USAGE];
+const SINGLE_PATHS = [
+  P_TYPE,
+  P_REQUEST_ID,
+  P_TIMESTAMP,
+  P_SESSION_ID,
+  P_CWD,
+  P_ID,
+  P_MODEL,
+  P_STOP,
+  P_USAGE,
+  P_INPUT,
+  P_CACHE_READ,
+  P_CACHE_WRITE,
+  P_OUTPUT,
+  P_THINKING,
+];
 
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 const MODEL_ID = /^[A-Za-z0-9._:\/-]{1,100}$/;
@@ -108,7 +136,7 @@ const MODEL_ID = /^[A-Za-z0-9._:\/-]{1,100}$/;
 const TOOL_NAME = /^[A-Za-z0-9._:\/@-]{1,80}$/;
 /** message.id and requestId: 28 chars observed. */
 const CLAUDE_KEY = /^[A-Za-z0-9_-]{1,128}$/;
-const MAX_TOOLS = 64;
+export const MAX_TOOLS = 64;
 /** Keys that resolve through the prototype chain; never used as a map key (D28). */
 const PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 /** Byte bounds for decoded slices: a string slice includes its two quotes. */
@@ -117,11 +145,17 @@ const MAX_MODEL_BYTES = 102;
 const MAX_TOOL_BYTES = 82;
 const MAX_TIMESTAMP_BYTES = 64;
 const MAX_SESSION_BYTES = 66;
+/** A token count: a safe integer has at most 16 digits. */
+const MAX_COUNT_BYTES = 32;
 
 const ASSISTANT_VALUE = Buffer.from(`"assistant"`);
 const TOOL_USE_VALUE = Buffer.from(`"tool_use"`);
 const NULL_VALUE = Buffer.from("null");
 const QUOTE = 0x22;
+const OPEN_OBJ = 0x7b;
+const MINUS = 0x2d;
+const DIGIT_0 = 0x30;
+const DIGIT_9 = 0x39;
 /** stop_reason compared as raw bytes; the log's string is never kept. */
 const STOP_REASONS: readonly [Buffer, FinishReason][] = [
   [Buffer.from(`"end_turn"`), "stop"],
@@ -138,8 +172,17 @@ function count(v: unknown): number | undefined {
   return typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+/**
+ * One usage scalar: "absent" when the path did not match; "too-large" over MAX_SLICE_BYTES;
+ * undefined when present but not a count. Only a slice that starts like a number is decoded,
+ * so a string value (or an object) there is never turned into a JS value.
+ */
+function countAt(buf: Buffer, r: SliceRange | undefined): number | "absent" | "too-large" | undefined {
+  if (r === undefined) return "absent";
+  if (r.end - r.start > MAX_SLICE_BYTES) return "too-large";
+  const c = buf[r.start];
+  if (c === undefined || !(c === MINUS || (c >= DIGIT_0 && c <= DIGIT_9))) return undefined;
+  return count(parseSlice(buf, r, MAX_COUNT_BYTES));
 }
 
 function sliceEquals(buf: Buffer, r: SliceRange, value: Buffer): boolean {
@@ -185,7 +228,12 @@ function toolsOf(buf: Buffer, res: ScanResult): Record<string, number> | undefin
   return distinct > 0 ? tools : undefined;
 }
 
-/** Scans the line for exactly the D42 paths and copies the allowlist; `fileSessionId` is the UUID from the file name or parent directory; with `wantLabel` the cwd slice is reduced by folderLabel and dropped. */
+/**
+ * Scans the line for exactly the D42 paths and copies the allowlist; `fileSessionId` is the
+ * discovery id (file stem or parent session folder): it is the record's folderId, and its
+ * sessionId when the line has no session id; with `wantLabel` the cwd slice is reduced by
+ * folderLabel and dropped.
+ */
 export function parseClaudeLine(
   buf: Buffer,
   start: number,
@@ -200,18 +248,17 @@ export function parseClaudeLine(
   const type = only(res, P_TYPE);
   if (type === undefined || !sliceEquals(buf, type, ASSISTANT_VALUE)) return { kind: "ignored" };
 
+  // The usage object is never decoded: its first byte shows whether it is an object.
   const usageRange = only(res, P_USAGE);
-  if (usageRange === undefined) return { kind: "unrecognized", reason: "no-usage-object" };
-  if (usageRange.end - usageRange.start > MAX_SLICE_BYTES) return { kind: "unrecognized", reason: "slice-too-large" };
-  const usage = parseSlice(buf, usageRange);
-  if (usage === undefined) return { kind: "malformed" };
-  if (!isObject(usage)) return { kind: "unrecognized", reason: "no-usage-object" };
+  if (usageRange === undefined || buf[usageRange.start] !== OPEN_OBJ) return { kind: "unrecognized", reason: "no-usage-object" };
 
-  const raw = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens, usage.output_tokens];
-  const [input, cacheRead, cacheWrite, output] = raw.map(count);
+  const raw = [P_INPUT, P_CACHE_READ, P_CACHE_WRITE, P_OUTPUT, P_THINKING].map((p) => countAt(buf, only(res, p)));
+  if (raw.includes("too-large")) return { kind: "unrecognized", reason: "slice-too-large" };
+  const num = (v: number | "absent" | "too-large" | undefined): number | undefined => (typeof v === "number" ? v : undefined);
+  const [input, cacheRead, cacheWrite, output, reasoning] = raw.map(num);
   const valid = [input, cacheRead, cacheWrite, output].filter((v): v is number => v !== undefined);
   if (valid.length === 0) {
-    return raw.some((v) => v !== undefined)
+    return raw.slice(0, 4).some((v) => v !== "absent")
       ? { kind: "unrecognized", reason: "no-known-token-field" }
       : { kind: "ignored" };
   }
@@ -242,8 +289,6 @@ export function parseClaudeLine(
   if (cacheRead !== undefined) tokens.cacheRead = cacheRead;
   if (cacheWrite !== undefined) tokens.cacheWrite = cacheWrite;
   if (output !== undefined) tokens.output = output;
-  const details = usage.output_tokens_details;
-  const reasoning = isObject(details) ? count(details.thinking_tokens) : undefined;
   if (reasoning !== undefined) tokens.reasoning = reasoning;
 
   const sid = stringAt(buf, res, P_SESSION_ID, MAX_SESSION_BYTES);
@@ -254,7 +299,8 @@ export function parseClaudeLine(
     source: "claude-code",
     kind: "call",
     sessionId,
-    folderId: sessionId,
+    // A resumed file may carry an older session id: the file still belongs to its discovery id.
+    folderId: o.fileSessionId,
     timestampMs,
     tokens,
   };
@@ -430,7 +476,7 @@ class ClaudeFileReader implements FileReader, LineHandler {
   }
 
   private async readOnce(): Promise<{ reset: boolean; error?: FileReadResult["error"] }> {
-    this.out = emptyReadResult();
+    this.out = { ...emptyReadResult(), candidates: 0 };
     return this.tailer.read();
   }
 
@@ -480,6 +526,10 @@ class ClaudeFileReader implements FileReader, LineHandler {
       return;
     }
     if (c !== "assistant") return;
+    // A gated assistant-class line could have yielded a record (D42 sessions without usage);
+    // a user line that only quotes one is activity, counted below, not a candidate.
+    const userQuote = hasUserHead(buf, start, end);
+    if (!userQuote) out.candidates = (out.candidates ?? 0) + 1;
     // The label is pinned from the first usage record (D44); cwd is not matched after that.
     const wantLabel = this.readProjects && this.label === undefined;
     const p = parseClaudeLine(buf, start, end, { fileSessionId: this.fileSessionId, wantLabel });
@@ -491,7 +541,7 @@ class ClaudeFileReader implements FileReader, LineHandler {
         break;
       case "ignored":
         // A user line whose tool result quotes an assistant line is still activity.
-        if (hasUserHead(buf, start, end)) out.activity++;
+        if (userQuote) out.activity++;
         break;
       case "unrecognized":
         out.unrecognized++;
@@ -517,19 +567,44 @@ export class ClaudeSourceReader implements SourceReader {
     this.projects = join(o.root, "projects");
   }
 
+  /**
+   * The cheap change check (D50): the newest mtime of projects/ and of every slug folder,
+   * one stat each. A new session file or folder bumps its slug's mtime; an append to an
+   * existing file does not. undefined when projects/ is missing or unreadable.
+   */
   async rootDirMtime(): Promise<number | undefined> {
+    let max: number;
+    let slugs: fs.Dirent[];
     try {
-      return (await fs.promises.stat(this.projects)).mtimeMs;
+      max = (await fs.promises.stat(this.projects)).mtimeMs;
+      slugs = await fs.promises.readdir(this.projects, { withFileTypes: true });
     } catch {
       return undefined;
     }
+    const times = await Promise.all(
+      slugs
+        .filter((e) => e.isDirectory())
+        .map((e) =>
+          fs.promises.stat(join(this.projects, e.name)).then(
+            (st) => st.mtimeMs,
+            () => 0,
+          ),
+        ),
+    );
+    for (const t of times) if (t > max) max = t;
+    return max;
   }
 
   discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
     return discoverClaude(this.root, windowStartMs, dayStartMs, nowMs);
   }
 
-  /** A pure path check: a *.jsonl below projects/<slug>/, within CLAUDE_MAX_DEPTH, outside never-read folders. Regular-file-ness is checked when the tailer opens it. */
+  /**
+   * A pure path check: projects/<slug>/<session id>.jsonl, or a *.jsonl below
+   * projects/<slug>/<session id>/ within CLAUDE_MAX_DEPTH, outside never-read folders (so a
+   * plugin or other folder under the slug is refused). Regular-file-ness is checked when the
+   * tailer opens it.
+   */
   pathAllowed(path: string): boolean {
     if (!isAbsolute(path) || !isAbsolute(this.projects)) return false;
     const rel = relative(this.projects, path);
@@ -538,6 +613,8 @@ export class ClaudeSourceReader implements SourceReader {
     if (parts.length < 2 || parts.length > CLAUDE_MAX_DEPTH) return false;
     const name = parts[parts.length - 1]!;
     if (!name.endsWith(JSONL) || name.length === JSONL.length) return false;
+    const sessionPart = parts.length === 2 ? name.slice(0, -JSONL.length) : parts[1]!;
+    if (!isSessionId(sessionPart)) return false;
     return parts.every((p) => p !== "" && p !== "." && p !== ".." && !SKIP_DIRS.has(p));
   }
 

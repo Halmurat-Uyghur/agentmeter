@@ -1,10 +1,12 @@
 import * as fs from "node:fs";
-import { appendFile, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  classifyCodexHead,
   classifyCodexLine,
+  CODEX_HEAD_BYTES,
   CODEX_MAX_LINE_BYTES,
   CODEX_MAX_TURNS,
   CodexSourceReader,
@@ -24,7 +26,12 @@ import {
   codexTokenCount,
   codexTree,
   codexTurn,
+  codexAgentReasoning,
+  codexCompacted,
+  codexInterAgent,
+  codexUserMessage,
   NEVER_NUMBER,
+  type CodexUsage,
 } from "../fixtures/codex";
 
 const OTHER_SESSION = "11111111-2222-3333-4444-555555555555";
@@ -124,7 +131,7 @@ describe("parseCodexLine records (D45 mapping)", () => {
       source: "codex",
       kind: "call",
       sessionId: CODEX_SESSION,
-      folderId: CODEX_SESSION,
+      folderId: OTHER_SESSION,
       timestampMs: Date.parse(CODEX_TS),
       tokens: { input: 1200, cacheRead: 800, cacheWrite: 50, output: 300, reasoning: 120 },
     });
@@ -145,10 +152,43 @@ describe("parseCodexLine records (D45 mapping)", () => {
     expect(parse(codexRecord({ timestamp: "2026-11-08 15:00" }))).toEqual({ kind: "unrecognized", reason: "bad-timestamp" });
   });
 
-  it("a usage object over the slice limit → slice-too-large", () => {
+  it("a usage scalar over the slice limit → slice-too-large; a large usage object is fine (never decoded)", () => {
+    const big = codexRecord({ usage: { input_tokens: 1, output_tokens: 2 } }).replace('"input_tokens":1', `"input_tokens":${"1".repeat(5000)}`);
+    expect(parse(big)).toEqual({ kind: "unrecognized", reason: "slice-too-large" });
     const usage: Record<string, unknown> = { input_tokens: 1 };
     for (let i = 0; i < 400; i++) usage[`pad_${i}`] = 123456;
-    expect(parse(codexRecord({ usage }))).toEqual({ kind: "unrecognized", reason: "slice-too-large" });
+    const r = parse(codexRecord({ usage: usage as CodexUsage }));
+    expect(r.kind === "usage" && r.record.tokens).toEqual({ input: 1 });
+  });
+
+  it("zero usage is ignored: all counts 0, or only cache_write_input_tokens: 0", () => {
+    const zero = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 };
+    expect(parse(codexRecord({ usage: zero }))).toEqual({ kind: "ignored" });
+    expect(parse(codexRecord({ usage: { cache_write_input_tokens: 0 } }))).toEqual({ kind: "ignored" });
+    expect(parse(codexRecord({ usage: { input_tokens: 0, output_tokens: 1 } })).kind).toBe("usage");
+  });
+
+  it("usage counts are scalar paths: a duplicate count is malformed; a string count is never decoded", () => {
+    const dup = codexRecord({ usage: { input_tokens: 1, output_tokens: 2 } }).replace('"output_tokens":2', '"output_tokens":2,"output_tokens":3');
+    expect(parse(dup)).toEqual({ kind: "malformed" });
+    const spy = vi.spyOn(JSON, "parse");
+    try {
+      const withCanary = codexRecord({ usage: { input_tokens: CODEX_CANARY, output_tokens: 5 } });
+      const r = parse(withCanary);
+      expect(r.kind === "usage" && r.record.tokens).toEqual({ output: 5 });
+      parse(codexTokenCount({ total: { input_tokens: CODEX_CANARY, output_tokens: 5 } }));
+      expect(spy).toHaveBeenCalled();
+      for (const [text] of spy.mock.calls) expect(String(text)).not.toContain(CODEX_CANARY);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("records carry folderId = the file's id and sessionId = payload.session_id", () => {
+    const r = parse(codexRecord({ sessionId: CODEX_SESSION }));
+    expect(r.kind === "usage" && [r.record.sessionId, r.record.folderId]).toEqual([CODEX_SESSION, OTHER_SESSION]);
+    const f = parse(codexRecord({ sessionId: "not-a-session!" }));
+    expect(f.kind === "usage" && [f.record.sessionId, f.record.folderId]).toEqual([OTHER_SESSION, OTHER_SESSION]);
   });
 
   it("duplicate keys and truncated lines are malformed", () => {
@@ -278,10 +318,49 @@ describe("CodexSourceReader", () => {
     expect(res.records[0]!.model).toBe("gpt-5-codex");
     expect(res.usage).toBe(1);
     expect(res.activity).toBe(1);
-    expect(res.totals).toBeUndefined();
-    expect(res.hasTotals).toBe(false);
+    // The first record clears the file's session total.
+    expect(res.totals).toEqual([]);
+    expect(res.hasTotals).toBe(true);
+    expect(res.candidates).toBe(2);
     expect(res.malformed + res.unrecognized).toBe(0);
     expectNoLeak(res);
+  });
+
+  it("other line kinds (compacted, inter-agent, user_message, agent_reasoning) never leak and are not candidates", async () => {
+    const [p] = await codexTree(root, [
+      {
+        date: "2026/11/08",
+        sessionId: CODEX_SESSION,
+        lines: [codexMeta(), codexCompacted(), codexInterAgent(), codexUserMessage(), codexAgentReasoning(), codexOther("event_msg", "agent_message")],
+      },
+    ]);
+    const res = await reader().open(p!, candidate(p!)).read();
+    expect(res.records).toEqual([]);
+    expect(res.candidates).toBe(0);
+    expect(res.malformed + res.unrecognized).toBe(0);
+    expectNoLeak(res);
+    for (const l of [codexMeta(), codexCompacted(), codexInterAgent(), codexUserMessage(), codexAgentReasoning()]) expectNoLeak(parse(l));
+  });
+
+  it("the first record deletes the file's total even when payload.session_id differs from the file's id", async () => {
+    const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta(), codexTokenCount({ total: { input_tokens: 10 } })] }]);
+    const fr = reader().open(p!, candidate(p!));
+    const r1 = await fr.read();
+    expect(r1.totals?.map((t) => t.folderId)).toEqual([CODEX_SESSION]);
+    expect(r1.candidates).toBe(1);
+    await appendFile(p!, `${codexRecord({ sessionId: OTHER_SESSION, responseId: "r1" })}\n${codexRecord({ sessionId: OTHER_SESSION, responseId: "r2" })}\n`);
+    const r2 = await fr.read();
+    expect(r2.totals).toEqual([]);
+    expect(r2.hasTotals).toBe(true);
+    expect(r2.candidates).toBe(2);
+    expect(r2.records.map((r) => [r.sessionId, r.folderId])).toEqual([
+      [OTHER_SESSION, CODEX_SESSION],
+      [OTHER_SESSION, CODEX_SESSION],
+    ]);
+    await appendFile(p!, `${codexRecord({ responseId: "r3" })}\n`);
+    const r3 = await fr.read();
+    expect(r3.totals).toBeUndefined();
+    expect(r3.hasTotals).toBe(false);
   });
 
   it("reports the label only in the read that first finds it, and again after a reset", async () => {
@@ -331,8 +410,8 @@ describe("CodexSourceReader", () => {
     await writeFile(p!, `${codexRecord()}\n${codexTokenCount({ total: { input_tokens: 40 } })}\n`, { flag: "a" });
     const r3 = await fr.read();
     expect(r3.records).toHaveLength(1);
-    expect(r3.totals).toBeUndefined();
-    expect(r3.hasTotals).toBe(false);
+    expect(r3.totals).toEqual([]);
+    expect(r3.hasTotals).toBe(true);
 
     await writeFile(p!, `${codexTokenCount({ total: { input_tokens: 50 } })}\n`, { flag: "a" });
     const r4 = await fr.read();
@@ -341,11 +420,17 @@ describe("CodexSourceReader", () => {
 
   it("a record before a token_count in one read suppresses the total; readTotals off never yields one", async () => {
     const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexRecord(), codexTokenCount()] }]);
-    expect((await reader().open(p!, candidate(p!)).read()).totals).toBeUndefined();
+    expect((await reader().open(p!, candidate(p!)).read()).totals).toEqual([]);
     const [q] = await codexTree(root, [{ date: "2026/11/07", sessionId: OTHER_SESSION, lines: [codexTokenCount()] }]);
     const off = await reader(false).open(q!, candidate(q!, OTHER_SESSION)).read();
     expect(off.totals).toBeUndefined();
     expect(off.hasTotals).toBe(false);
+    // A token_count line is still a candidate with totals off (the raw needle, never decoded).
+    expect(off.candidates).toBe(1);
+    const [r] = await codexTree(root, [{ date: "2026/11/06", sessionId: OTHER_SESSION, lines: [codexRecord()] }]);
+    const offRec = await reader(false).open(r!, candidate(r!, OTHER_SESSION)).read();
+    expect(offRec.totals).toBeUndefined();
+    expect(offRec.hasTotals).toBe(false);
   });
 
   it("a turn without records counts as activity", async () => {
@@ -380,6 +465,22 @@ describe("CodexSourceReader", () => {
     expect(res.records).toHaveLength(1);
   });
 
+  it("an over-long line is classified by its first CODEX_HEAD_BYTES only (a 5 MiB line)", async () => {
+    const big = "x".repeat(5 * 1024 * 1024);
+    // The record needle sits past the head: the line counts as overlongOther.
+    const lateType = JSON.stringify({ timestamp: CODEX_TS, payload: { pad: big }, type: "token_usage_record" });
+    const earlyType = JSON.stringify({ timestamp: CODEX_TS, type: "token_usage_record", payload: { pad: big } });
+    const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [lateType, earlyType, codexRecord()] }]);
+    const res = await reader().open(p!, candidate(p!)).read();
+    expect(res.overlong).toBe(1);
+    expect(res.overlongOther).toBe(1);
+    expect(res.records).toHaveLength(1);
+    const buf = Buffer.from(lateType);
+    expect(classifyCodexLine(buf, 0, buf.length)).toBe("record");
+    expect(classifyCodexHead(buf, 0, buf.length)).toBe("other");
+    expect(CODEX_HEAD_BYTES).toBe(4096);
+  }, 30_000);
+
   it("a rewritten file resets: state starts over", async () => {
     const [p] = await codexTree(root, [
       { date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta(), codexTurn({ turnId: "t1", model: "gpt-old" }), codexRecord({ turnId: "t1", responseId: "r1" })] },
@@ -412,6 +513,31 @@ describe("CodexSourceReader", () => {
     expect(await reader().rootDirMtime()).toBeUndefined();
     await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta()] }]);
     expect(typeof (await reader().rootDirMtime())).toBe("number");
+  });
+
+  it("rootDirMtime covers the two newest day folders: a new file changes it, an append does not", async () => {
+    const [, , p] = await codexTree(root, [
+      { date: "2026/10/30", sessionId: ids0(1), lines: [codexMeta()] },
+      { date: "2026/11/07", sessionId: ids0(2), lines: [codexMeta()] },
+      { date: "2026/11/08", sessionId: ids0(3), lines: [codexMeta()] },
+    ]);
+    const old = new Date(Date.now() - 3_600_000);
+    const s = join(root, "sessions");
+    for (const d of [s, join(s, "2026"), join(s, "2026", "10"), join(s, "2026", "11"), join(s, "2026", "10", "30"), join(s, "2026", "11", "07"), join(s, "2026", "11", "08")]) {
+      await utimes(d, old, old);
+    }
+    const r = reader();
+    const before = await r.rootDirMtime();
+    expect(before).toBe(fs.statSync(s).mtimeMs);
+    await appendFile(p!, `${codexRecord()}\n`);
+    expect(await r.rootDirMtime()).toBe(before);
+    // A new file in the third-newest day folder is not seen; one in the second-newest is.
+    await writeFile(join(s, "2026", "10", "30", `rollout-x-${ids0(4)}.jsonl`), "");
+    expect(await r.rootDirMtime()).toBe(before);
+    await writeFile(join(s, "2026", "11", "07", `rollout-x-${ids0(5)}.jsonl`), "");
+    const after = await r.rootDirMtime();
+    expect(after).toBe(fs.statSync(join(s, "2026", "11", "07")).mtimeMs);
+    expect(after).toBeGreaterThan(before!);
   });
 });
 
@@ -487,7 +613,7 @@ describe("discoverCodex (D45)", () => {
     expect(p).toBeDefined();
   });
 
-  it("skips non-digit folders, non-rollout files, and uses the stem when no UUID ends the name", async () => {
+  it("skips non-digit folders, non-rollout files, and rollout files without a trailing session id", async () => {
     const mtime = new Date(now - 1000);
     await codexTree(root, [
       { date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta()], mtime },
@@ -497,7 +623,30 @@ describe("discoverCodex (D45)", () => {
     ]);
     await writeFile(join(root, "history.jsonl"), `${codexMeta()}\n`);
     const res = await discoverCodex(root, windowStart, dayStart, now);
-    expect(res.ok && res.candidates.map((c) => c.sessionId).sort()).toEqual([CODEX_SESSION, "rollout-odd"].sort());
+    expect(res.ok && res.candidates.map((c) => c.sessionId)).toEqual([CODEX_SESSION]);
+    expect(res.ok && res.unreadable).toEqual([]);
+  });
+
+  it("an unreadable year or month folder is reported under its YYYY or YYYY/MM segment", async () => {
+    await codexTree(root, [
+      { date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta()], mtime: new Date(now - 1000) },
+      { date: "2027/01/01", sessionId: OTHER_SESSION, lines: [codexMeta()], mtime: new Date(now - 1000) },
+    ]);
+    const month = join(root, "sessions", "2026", "11");
+    const year = join(root, "sessions", "2027");
+    await chmod(month, 0o000);
+    await chmod(year, 0o000);
+    try {
+      const res = await discoverCodex(root, windowStart, dayStart, now);
+      expect(res.ok && res.unreadable).toEqual([
+        { folderId: "2026/11", path: month, code: expect.stringMatching(/^E(ACCES|PERM)$/) },
+        { folderId: "2027", path: year, code: expect.stringMatching(/^E(ACCES|PERM)$/) },
+      ]);
+      expect(res.ok && res.candidates).toEqual([]);
+    } finally {
+      await chmod(month, 0o755);
+      await chmod(year, 0o755);
+    }
   });
 
   it("counts archived sessions by name and never opens them", async () => {

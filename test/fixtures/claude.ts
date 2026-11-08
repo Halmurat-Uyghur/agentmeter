@@ -1,7 +1,10 @@
 // Synthetic Claude Code log fixtures. Nothing here comes from real logs: every
 // content-bearing field (prompt and reply text, thinking, tool_use input,
-// toolUseResult, gitBranch, every cwd segment but the last, the projects/<slug>
-// directory name) holds CLAUDE_CANARY so tests can prove it never leaks.
+// toolUseResult, gitBranch, agentId, stop_sequence, the string and object
+// fields of message.usage (service_tier, cache_creation, server_tool_use), every
+// cwd segment but the last, the projects/<slug> directory name, and the
+// title/queue/bridge/api-request/telemetry lines) holds CLAUDE_CANARY so tests
+// can prove it never leaks.
 // Key order mirrors real logs: parentUuid, isSidechain, message, …, type, uuid,
 // timestamp, sessionId, cwd (user lines carry `type` early, as real ones do).
 import { mkdir, utimes, writeFile } from "node:fs/promises";
@@ -56,9 +59,10 @@ export function claudeAssistant(o: ClaudeAssistantOptions = {}): Plain {
     input_tokens: o.input ?? 3,
     cache_creation_input_tokens: o.cacheWrite ?? 200,
     cache_read_input_tokens: o.cacheRead ?? 1000,
-    cache_creation: { ephemeral_5m_input_tokens: o.cacheWrite ?? 200, ephemeral_1h_input_tokens: 0 },
+    cache_creation: { ephemeral_5m_input_tokens: o.cacheWrite ?? 200, ephemeral_1h_input_tokens: 0, [CLAUDE_CANARY]: CLAUDE_CANARY },
     output_tokens: o.output ?? 50,
-    service_tier: "standard",
+    server_tool_use: { web_search_requests: 0, [CLAUDE_CANARY]: CLAUDE_CANARY },
+    service_tier: CLAUDE_CANARY,
   };
   if (o.thinking !== undefined) usage.output_tokens_details = { thinking_tokens: o.thinking };
   const content: unknown[] = [
@@ -75,7 +79,7 @@ export function claudeAssistant(o: ClaudeAssistantOptions = {}): Plain {
     role: "assistant",
     content,
     stop_reason: o.stopReason === undefined ? "end_turn" : o.stopReason,
-    stop_sequence: null,
+    stop_sequence: CLAUDE_CANARY,
     ...(o.usage === null ? {} : { usage: o.usage ?? usage }),
   };
   return {
@@ -86,6 +90,7 @@ export function claudeAssistant(o: ClaudeAssistantOptions = {}): Plain {
     userType: "external",
     version: "2.0.31",
     gitBranch: CLAUDE_CANARY,
+    agentId: CLAUDE_CANARY,
     type: o.type ?? "assistant",
     uuid: UUID,
     timestamp: "timestamp" in o ? o.timestamp : CLAUDE_TS,
@@ -99,8 +104,10 @@ export function claudeAssistantLine(o: ClaudeAssistantOptions = {}): string {
 }
 
 export interface ClaudeUserOptions {
-  /** toolUseResult value (default holds the canary) */
+  /** toolUseResult value (default holds the canary; a string is kept as a string) */
   toolUseResult?: unknown;
+  /** message.content as one plain string (the canary, or `text`) instead of blocks */
+  contentString?: boolean;
   /** padding text in the prompt, to make long lines */
   text?: string;
   sessionId?: string;
@@ -115,10 +122,12 @@ export function claudeUserLine(o: ClaudeUserOptions = {}): string {
     type: "user",
     message: {
       role: "user",
-      content: [
-        { type: "text", text: o.text ?? CLAUDE_CANARY },
-        { type: "tool_result", tool_use_id: "toolu_0", content: CLAUDE_CANARY },
-      ],
+      content: o.contentString
+        ? (o.text ?? CLAUDE_CANARY)
+        : [
+            { type: "text", text: o.text ?? CLAUDE_CANARY },
+            { type: "tool_result", tool_use_id: "toolu_0", content: CLAUDE_CANARY },
+          ],
     },
     toolUseResult: o.toolUseResult ?? { stdout: CLAUDE_CANARY, stderr: CLAUDE_CANARY },
     userType: "external",
@@ -144,6 +153,35 @@ export function claudeOtherLine(type: string, o: { extra?: Plain } = {}): string
     cwd: CLAUDE_CWD,
   });
 }
+
+/** The metadata and telemetry line kinds real Claude Code logs carry besides user/assistant lines. */
+export type ClaudeMetaKind = "custom-title" | "ai-title" | "queue-operation" | "bridge-session" | "api-request" | "telemetry";
+
+/** One metadata line of `kind`, every content field the canary; "telemetry" has no `type` key at all. */
+export function claudeMetaLine(kind: ClaudeMetaKind): string {
+  switch (kind) {
+    case "custom-title":
+      return JSON.stringify({ type: "custom-title", customTitle: CLAUDE_CANARY, sessionId: CLAUDE_SESSION });
+    case "ai-title":
+      return JSON.stringify({ type: "ai-title", aiTitle: CLAUDE_CANARY, sessionId: CLAUDE_SESSION });
+    case "queue-operation":
+      return JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: CLAUDE_TS, sessionId: CLAUDE_SESSION, content: CLAUDE_CANARY });
+    case "bridge-session":
+      return JSON.stringify({ type: "bridge-session", bridgeId: CLAUDE_CANARY, url: `https://${CLAUDE_CANARY}.example/`, sessionId: CLAUDE_SESSION, timestamp: CLAUDE_TS });
+    case "api-request":
+      return JSON.stringify({
+        type: "api-request",
+        request: { model: CLAUDE_CANARY, messages: [{ role: "assistant", content: CLAUDE_CANARY }] },
+        response: { type: "message", role: "assistant", usage: { input_tokens: 9, output_tokens: 9, service_tier: CLAUDE_CANARY } },
+        sessionId: CLAUDE_SESSION,
+        timestamp: CLAUDE_TS,
+      });
+    case "telemetry":
+      return JSON.stringify({ event: CLAUDE_CANARY, role: "assistant", usage: { input_tokens: 9, output_tokens: 9 }, sessionId: CLAUDE_SESSION, timestamp: CLAUDE_TS });
+  }
+}
+
+export const CLAUDE_META_KINDS: readonly ClaudeMetaKind[] = ["custom-title", "ai-title", "queue-operation", "bridge-session", "api-request", "telemetry"];
 
 export interface ClaudeSessionFixture {
   slug?: string;
