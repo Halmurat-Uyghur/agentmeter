@@ -1,8 +1,11 @@
-// Incremental reader for one append-only events.jsonl file. Each read() picks
-// up where the last one stopped, gates every complete line through
-// classifyLine on raw bytes, and decodes only the lines it calls "usage"
-// (plus bounded "start" and "shutdown" lines when asked to).
-// Truncation, rotation and in-place rewrites reset the cursor to offset 0.
+// Incremental readers for one append-only JSONL file. ByteTailer is the
+// byte-level core: each read() picks up where the last one stopped and hands
+// every complete line (and every over-long line) to a LineHandler, without
+// decoding anything itself. Truncation, rotation and in-place rewrites reset
+// the cursor to offset 0.
+// LineTailer is the Copilot events.jsonl reader on top of it: it gates every
+// line through classifyLine on raw bytes and decodes only the lines it calls
+// "usage" (plus bounded "start" and "shutdown" lines when asked to).
 import * as fs from "node:fs";
 import {
   classifyLine,
@@ -31,6 +34,27 @@ export interface TailResult {
   overlong: number;
   /** lines over the size limit whose type shows they are not usage records */
   overlongOther: number;
+  reset: boolean;
+  error?: ReadErrorCode;
+}
+
+export interface LineHandler {
+  /** one complete line buf[start, end) without its \n (a trailing \r may be present) */
+  line(buf: Buffer, start: number, end: number): void;
+  /** a line longer than maxLineBytes: `whole` true when the entire line is in buf[start, end) (it arrived complete), false when only its first headBytes are */
+  overlong(buf: Buffer, start: number, end: number, whole: boolean): void;
+}
+
+export interface ByteTailerOptions {
+  /** longest line handed to `line()`; default 1_048_576 */
+  maxLineBytes?: number;
+  /** bytes per read call; default 262_144 */
+  chunkBytes?: number;
+  /** bytes of an over-long line's head kept for `overlong()`; default TYPE_HEAD_BYTES */
+  headBytes?: number;
+}
+
+export interface ByteTailResult {
   reset: boolean;
   error?: ReadErrorCode;
 }
@@ -74,43 +98,33 @@ function errorCode(e: unknown): ReadErrorCode {
     : "OTHER";
 }
 
-export class LineTailer {
-  private readonly maxCarryBytes: number;
+export class ByteTailer {
+  private readonly maxLineBytes: number;
   private readonly chunkBytes: number;
+  private readonly headBytes: number;
   private cursor: Cursor | undefined;
   /** bytes of the incomplete last line */
   private carry: Buffer = EMPTY;
   /** inside an over-long line: discard bytes until the next \n */
   private skipping = false;
-  private readonly decodeStart: boolean;
-  private readonly decodeShutdown: boolean;
 
   constructor(
     private readonly path: string,
-    opts: TailerOptions = {},
+    private readonly handler: LineHandler,
+    opts: ByteTailerOptions = {},
   ) {
-    this.maxCarryBytes = Math.max(1, opts.maxCarryBytes ?? 1_048_576);
+    this.maxLineBytes = Math.max(1, opts.maxLineBytes ?? 1_048_576);
     this.chunkBytes = Math.max(1, opts.chunkBytes ?? 262_144);
-    this.decodeStart = opts.decodeStart === true;
-    this.decodeShutdown = opts.decodeShutdown === true;
+    this.headBytes = Math.max(1, opts.headBytes ?? TYPE_HEAD_BYTES);
   }
 
   get carryLength(): number {
     return this.carry.length;
   }
 
-  async read(): Promise<TailResult> {
-    const result: TailResult = {
-      usageLines: [],
-      startLines: [],
-      shutdownLines: [],
-      shutdownOversize: 0,
-      activity: 0,
-      suspect: 0,
-      overlong: 0,
-      overlongOther: 0,
-      reset: false,
-    };
+  /** Never throws: errors come back as `error`, after any lines already handled. */
+  async read(): Promise<ByteTailResult> {
+    const result: ByteTailResult = { reset: false };
     let handle: fs.promises.FileHandle | undefined;
     try {
       handle = await fs.promises.open(this.path, OPEN_FLAGS);
@@ -143,7 +157,7 @@ export class LineTailer {
         const { bytesRead } = await handle.read(chunk, 0, want, cur.offset);
         if (bytesRead === 0) break; // shrank under us; the next read() resets
         const data = chunk.subarray(0, bytesRead);
-        this.consume(data, result);
+        this.consume(data);
         cur.offset += bytesRead;
         cur.tail =
           bytesRead >= TAIL_BYTES
@@ -189,8 +203,8 @@ export class LineTailer {
     return bytesRead !== n || !now.equals(cur.tail);
   }
 
-  /** Splits data at \n, gates each complete line, and keeps the remainder as carry. */
-  private consume(data: Buffer, out: TailResult): void {
+  /** Splits data at \n, hands on each complete line, and keeps the remainder as carry. */
+  private consume(data: Buffer): void {
     let pos = 0;
     if (this.skipping) {
       const nl = data.indexOf(NL);
@@ -206,30 +220,29 @@ export class LineTailer {
       if (this.carry.length > 0) {
         const line = Buffer.concat([this.carry, data.subarray(pos, nl)]);
         this.carry = EMPTY;
-        this.gate(line, 0, line.length, out);
+        this.complete(line, 0, line.length);
       } else {
-        this.gate(data, pos, nl, out);
+        this.complete(data, pos, nl);
       }
       pos = nl + 1;
     }
     if (pos >= data.length) return;
     const rest = data.length - pos;
-    if (this.carry.length + rest > this.maxCarryBytes) {
+    if (this.carry.length + rest > this.maxLineBytes) {
       // The line's first bytes are the carry (if any) followed by data[pos..].
-      // Only this head is held: the rest of the line is never in memory, so a
-      // usage type nested deeper in it can't be seen here (unlike in gate(),
-      // which holds the whole line). A line whose head names another type is
-      // counted as overlongOther; that is an inherent limit of streaming.
+      // Only this head is held: the rest of the line is never in memory, so
+      // the handler sees just its first headBytes (whole = false). The line is
+      // then skipped up to its \n.
       const head =
-        this.carry.length >= TYPE_HEAD_BYTES
-          ? this.carry.subarray(0, TYPE_HEAD_BYTES)
+        this.carry.length >= this.headBytes
+          ? this.carry.subarray(0, this.headBytes)
           : this.carry.length > 0
             ? Buffer.concat([
                 this.carry,
-                data.subarray(pos, pos + TYPE_HEAD_BYTES - this.carry.length),
+                data.subarray(pos, pos + this.headBytes - this.carry.length),
               ])
-            : data.subarray(pos, pos + TYPE_HEAD_BYTES);
-      this.countOverlong(head, 0, head.length, out);
+            : data.subarray(pos, pos + this.headBytes);
+      this.handler.overlong(head, 0, head.length, false);
       this.carry = EMPTY;
       this.skipping = true;
       return;
@@ -240,46 +253,80 @@ export class LineTailer {
       this.carry.length > 0 ? Buffer.concat([this.carry, piece]) : piece;
   }
 
+  /** buf[start, end) is one complete line without its \n. */
+  private complete(buf: Buffer, start: number, end: number): void {
+    // Same limit whether the line arrived in one chunk or several.
+    if (end - start > this.maxLineBytes) this.handler.overlong(buf, start, end, true);
+    else this.handler.line(buf, start, end);
+  }
+}
+
+function emptyTailResult(): TailResult {
+  return {
+    usageLines: [],
+    startLines: [],
+    shutdownLines: [],
+    shutdownOversize: 0,
+    activity: 0,
+    suspect: 0,
+    overlong: 0,
+    overlongOther: 0,
+    reset: false,
+  };
+}
+
+/** Copilot's per-line logic: classifyLine gating and over-long counting into `out`. */
+class CopilotLineHandler implements LineHandler {
+  /** the result of the read() in progress */
+  out: TailResult = emptyTailResult();
+
+  constructor(
+    private readonly decodeStart: boolean,
+    private readonly decodeShutdown: boolean,
+  ) {}
+
+  overlong(buf: Buffer, start: number, end: number, whole: boolean): void {
+    const out = this.out;
+    // With the whole line in memory, also search it like classifyLine does: a
+    // usage type nested deeper in the line makes it possibly-usage. From a head
+    // alone a usage type nested deeper can't be seen; a line whose head names
+    // another type is counted as overlongOther, an inherent limit of streaming.
+    if (whole) {
+      if (hasUsageNeedle(buf, start, end)) {
+        out.overlong++;
+        return;
+      }
+      if (this.decodeShutdown && hasShutdownNeedle(buf, start, end)) {
+        out.shutdownOversize++;
+        return;
+      }
+    }
+    this.countOverlong(buf, start, end);
+  }
+
   /** Counts a skipped over-long line by what its first bytes show it to be. */
-  private countOverlong(buf: Buffer, start: number, end: number, out: TailResult): void {
+  private countOverlong(buf: Buffer, start: number, end: number): void {
+    const out = this.out;
     if (this.decodeShutdown && isShutdownHead(buf, start, end)) out.shutdownOversize++;
     else if (isKnownNonUsage(buf, start, end)) out.overlongOther++;
     else out.overlong++;
   }
 
-  /** buf[start, end) is one complete line without its \n. */
-  private gate(buf: Buffer, start: number, end: number, out: TailResult): void {
-    // Same limit whether the line arrived in one chunk or several.
-    if (end - start > this.maxCarryBytes) {
-      // The whole line is in memory here, so also search it like classifyLine
-      // does: a usage type nested deeper in the line makes it possibly-usage.
-      if (hasUsageNeedle(buf, start, end)) out.overlong++;
-      else if (this.decodeShutdown && hasShutdownNeedle(buf, start, end)) out.shutdownOversize++;
-      else this.countOverlong(buf, start, end, out);
-      return;
-    }
+  line(buf: Buffer, start: number, end: number): void {
+    const out = this.out;
+    const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
     switch (classifyLine(buf, start, end)) {
-      case "usage": {
-        const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
+      case "usage":
         out.usageLines.push(buf.toString("utf8", start, stop));
         break;
-      }
-      case "start": {
-        if (!this.decodeStart) break;
-        const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
-        out.startLines.push(buf.toString("utf8", start, stop));
+      case "start":
+        if (this.decodeStart) out.startLines.push(buf.toString("utf8", start, stop));
         break;
-      }
-      case "shutdown": {
+      case "shutdown":
         if (!this.decodeShutdown) break;
-        if (end - start > MAX_SHUTDOWN_BYTES) {
-          out.shutdownOversize++;
-          break;
-        }
-        const stop = end > start && buf[end - 1] === CR ? end - 1 : end;
-        out.shutdownLines.push(buf.toString("utf8", start, stop));
+        if (end - start > MAX_SHUTDOWN_BYTES) out.shutdownOversize++;
+        else out.shutdownLines.push(buf.toString("utf8", start, stop));
         break;
-      }
       case "activity":
         out.activity++;
         break;
@@ -291,5 +338,32 @@ export class LineTailer {
       case "skip":
         break;
     }
+  }
+}
+
+/** The Copilot events.jsonl reader: a ByteTailer with the Copilot line handler. */
+export class LineTailer {
+  private readonly handler: CopilotLineHandler;
+  private readonly bytes: ByteTailer;
+
+  constructor(path: string, opts: TailerOptions = {}) {
+    this.handler = new CopilotLineHandler(opts.decodeStart === true, opts.decodeShutdown === true);
+    this.bytes = new ByteTailer(path, this.handler, {
+      maxLineBytes: opts.maxCarryBytes,
+      chunkBytes: opts.chunkBytes,
+    });
+  }
+
+  get carryLength(): number {
+    return this.bytes.carryLength;
+  }
+
+  async read(): Promise<TailResult> {
+    const result = emptyTailResult();
+    this.handler.out = result;
+    const { reset, error } = await this.bytes.read();
+    result.reset = reset;
+    if (error !== undefined) result.error = error;
+    return result;
   }
 }

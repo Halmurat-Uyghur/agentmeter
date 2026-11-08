@@ -14,7 +14,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LineTailer } from "../../src/core/tailer";
+import { ByteTailer, LineTailer, type LineHandler } from "../../src/core/tailer";
 import { CANARY, jsonl, otherEvent, shutdownEvent, usageEvent } from "../fixtures/build";
 
 const TS = "2026-11-05T14:30:00.000Z";
@@ -459,5 +459,98 @@ describe("only a regular file is read (review A7)", () => {
     await mkdtemp(join(dir, "d-")).then((d) => rename(d, file));
     const r = await new LineTailer(file).read();
     expect(r.error).toBeDefined();
+  });
+});
+
+describe("ByteTailer", () => {
+  interface Seen {
+    lines: string[];
+    overlong: { text: string; whole: boolean }[];
+  }
+  function recorder(): { seen: Seen; handler: LineHandler } {
+    const seen: Seen = { lines: [], overlong: [] };
+    return {
+      seen,
+      handler: {
+        line: (buf, start, end) => seen.lines.push(buf.toString("utf8", start, end)),
+        overlong: (buf, start, end, whole) => seen.overlong.push({ text: buf.toString("utf8", start, end), whole }),
+      },
+    };
+  }
+
+  it("a line split mid-way across two reads is delivered once, whole", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler);
+    await writeFile(file, "alpha\nbra");
+    expect(await t.read()).toEqual({ reset: false });
+    expect(seen.lines).toEqual(["alpha"]);
+    expect(t.carryLength).toBe(3);
+    await appendFile(file, "vo\r\ncharlie\n");
+    expect(await t.read()).toEqual({ reset: false });
+    expect(seen.lines).toEqual(["alpha", "bravo\r", "charlie"]);
+    expect(t.carryLength).toBe(0);
+    expect(seen.overlong).toEqual([]);
+  });
+
+  it("an over-long line that arrives in one read is passed whole", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler, { maxLineBytes: 100, chunkBytes: 1 << 20 });
+    const long = "L".repeat(500);
+    await writeFile(file, long + "\nok\n");
+    await t.read();
+    expect(seen.overlong).toEqual([{ text: long, whole: true }]);
+    expect(seen.lines).toEqual(["ok"]);
+  });
+
+  it("an over-long line streamed across chunks passes exactly headBytes of its head", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler, { maxLineBytes: 100, chunkBytes: 16, headBytes: 40 });
+    const long = Array.from({ length: 50 }, (_, i) => String(i).padStart(4, "0")).join("");
+    await writeFile(file, long + "\nok\n");
+    await t.read();
+    expect(seen.overlong).toEqual([{ text: long.slice(0, 40), whole: false }]);
+    expect(seen.lines).toEqual(["ok"]);
+  });
+
+  it("headBytes: 4096 is honoured", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler, { maxLineBytes: 8192, chunkBytes: 1000, headBytes: 4096 });
+    const long = Array.from({ length: 5000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("").repeat(3);
+    await writeFile(file, long + "\nok\n");
+    await t.read();
+    expect(seen.overlong).toHaveLength(1);
+    expect(seen.overlong[0]).toEqual({ text: long.slice(0, 4096), whole: false });
+    expect(seen.lines).toEqual(["ok"]);
+  });
+
+  it("truncation resets and re-delivers from offset 0", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler);
+    await writeFile(file, "one\ntwo\npart");
+    await t.read();
+    expect(seen.lines).toEqual(["one", "two"]);
+    await truncate(file, 0);
+    await appendFile(file, "three\n");
+    expect(await t.read()).toEqual({ reset: true });
+    expect(seen.lines).toEqual(["one", "two", "three"]);
+    expect(t.carryLength).toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "a FIFO path yields error OTHER without blocking",
+    async () => {
+      const fifo = join(dir, "y.fifo");
+      execFileSync("mkfifo", [fifo]);
+      const { seen, handler } = recorder();
+      const r = await new ByteTailer(fifo, handler).read();
+      expect(r).toEqual({ reset: false, error: "OTHER" });
+      expect(seen.lines).toEqual([]);
+    },
+    5000,
+  );
+
+  it("a missing file is ENOENT, not a throw", async () => {
+    const { handler } = recorder();
+    expect(await new ByteTailer(join(dir, "nope"), handler).read()).toEqual({ reset: false, error: "ENOENT" });
   });
 });
