@@ -664,6 +664,14 @@ describe("sources (D49)", () => {
     expect(t).toContain("copilotUsageMonitor.copilotHome");
     expect(t).toContain("copilotUsageMonitor.claudeHome");
     expect(t).not.toContain("codexHome");
+    expect(t).toContain("Copilot CLI and Claude Code logs are read when present");
+  });
+  it("permission notice names the enabled sources' settings (all three without per-source health)", () => {
+    const one = buildSidebarModel(snap({ health: health({ state: "permission", sources: { copilot: sh({ state: "permission" }), codex: sh({ state: "off" }) } }) }));
+    expect(one.notice[0]).toBe("The usage log folder of an enabled source could not be read on this computer.");
+    expect(one.notice.join(" ")).toContain("set copilotUsageMonitor.copilotHome in Settings");
+    const all = buildSidebarModel(snap({ health: health({ state: "permission" }) })).notice.join(" ");
+    expect(all).toContain("copilotUsageMonitor.copilotHome, copilotUsageMonitor.claudeHome or copilotUsageMonitor.codexHome");
   });
   it("health.reading with a snapshot: figures plus a reading line", () => {
     const model = buildSidebarModel(snap({ health: health({ reading: { done: 2, total: 9 } }) }));

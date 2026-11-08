@@ -1,7 +1,7 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { costLabel, costNotes, estWord, homeSettings, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, estWord, homeSettings, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
 import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
@@ -68,11 +68,12 @@ ${aboutNote(view, fullNote, mixedSources(s?.month?.totals?.sources))}`;
 /** Not role="alert": the page re-renders after every model call and would re-announce (O3). */
 export function stateNote(h: Health): string {
   const box = (text: string) => `<section class="note alert" aria-labelledby="problem-title"><h2 id="problem-title" class="sr">Problem reading logs</h2><p>${text}</p></section>`;
+  const settings = (all: boolean) => homeSettings(h, all).split(/(copilotUsageMonitor\.\w+)/).map((x, i) => (i % 2 ? `<b>${escapeHtml(x)}</b>` : escapeHtml(x))).join("");
   if (h.state === "no-dir" && multiSource(h))
-    return box(`No usage logs were found. Set ${homeSettings(h).split(/(copilotUsageMonitor\.\w+)/).map((x, i) => (i % 2 ? `<b>${escapeHtml(x)}</b>` : escapeHtml(x))).join("")} if a tool keeps its logs somewhere other than its default folder.`);
+    return box(`No usage logs were found. Set ${settings(false)} if a tool keeps its logs somewhere other than its default folder.`);
   if (h.state === "no-dir")
     return box(`No Copilot session logs were found. Set <b>copilotUsageMonitor.copilotHome</b> if Copilot keeps them somewhere other than COPILOT_HOME or the default folder in your home directory.`);
-  if (h.state === "permission") return box(`The Copilot session log folder could not be read on this computer.`);
+  if (h.state === "permission") return box(`${escapeHtml(PERMISSION_NOTE)} Check the folder's permissions, or set ${settings(true)}.`);
   if (h.state === "format-changed")
     return box(escapeHtml(`${h.unrecognized > 0 ? `${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ` : ""}Copilot may have changed its log format, so figures may be incomplete.`));
   return "";

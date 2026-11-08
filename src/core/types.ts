@@ -446,6 +446,8 @@ export interface MonthView {
   sessions: SessionSummary[];
   /** sessions in the viewed month (filters applied), before the SESSION_ROWS cut */
   sessionCount?: number;
+  /** sessions in the viewed month per source, counted before the SESSION_ROWS cut; filters applied like sessionCount */
+  sessionsBySource?: Partial<Record<Source, number>>;
   /** sessions counted from session totals in the viewed month; project filter applies, tool filter does not */
   totalsSessions?: number;
   /** I2 and I3 over the viewed month (D32) */

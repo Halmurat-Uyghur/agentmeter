@@ -38,13 +38,33 @@ export function enabledSources(h: Health): Source[] | undefined {
   return SOURCES.filter((x) => per[x] !== undefined && per[x]!.state !== "off");
 }
 
-/** "copilotUsageMonitor.copilotHome, …claudeHome or …codexHome": the folder settings of the
- * enabled sources (Copilot's alone without per-source health). */
-export function homeSettings(h: Health): string {
-  const names = (enabledSources(h) ?? ["copilot"]).map((x) => SOURCE_HOME_SETTING[x]);
-  if (names.length === 0) names.push(SOURCE_HOME_SETTING.copilot);
-  return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
+/** Enabled sources whose folder was found (state neither off nor no-dir), in SOURCES order;
+ * [] without per-source health. */
+export function foundSources(h: Health): Source[] {
+  return (enabledSources(h) ?? []).filter((x) => h.sources![x]!.state !== "no-dir");
 }
+
+function orList(xs: string[], word = "or"): string {
+  return xs.length <= 1 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} ${word} ${xs.at(-1)}`;
+}
+
+/** "copilotUsageMonitor.copilotHome, …claudeHome or …codexHome": the folder settings of the
+ * enabled sources. Without per-source health: Copilot's alone, or every source's when `all`. */
+export function homeSettings(h: Health, all = false): string {
+  const list = enabledSources(h) ?? (all ? [...SOURCES] : ["copilot" as const]);
+  const names = list.map((x) => SOURCE_HOME_SETTING[x]);
+  if (names.length === 0) names.push(SOURCE_HOME_SETTING.copilot);
+  return orList(names);
+}
+
+/** "Copilot CLI, Claude Code and Codex": the enabled sources by name (every source without per-source health). */
+export function enabledSourceNames(h: Health): string {
+  const list = enabledSources(h) ?? [...SOURCES];
+  return orList((list.length ? list : ["copilot" as const]).map((x) => (x === "copilot" ? "Copilot CLI" : SOURCE_LABEL[x])), "and");
+}
+
+/** The permission state's first sentence, for every enabled source (D49). */
+export const PERMISSION_NOTE = "The usage log folder of an enabled source could not be read on this computer.";
 
 /** True when a source other than Copilot is enabled (per-source health present). */
 export function multiSource(h: Health): boolean {
@@ -301,7 +321,7 @@ export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_
   if (!s) return "$(sync~spin) Copilot usage: loading";
   if (s.health.state === "no-dir")
     return "$(circle-slash) Local: no usage logs found";
-  if (s.health.state === "permission") return "$(lock) Copilot logs unreadable";
+  if (s.health.state === "permission") return "$(lock) Local: usage logs unreadable";
   const p = statusParts(s, view);
   return `$(${p.icon}) Local ${p.place}: ${p.figure}${p.suffix}`;
 }
@@ -358,7 +378,7 @@ export function spoken(text: string): string {
 export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "Copilot usage: loading";
   if (s.health.state === "no-dir") return "No usage logs found. Opens details.";
-  if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
+  if (s.health.state === "permission") return "Usage logs unreadable. Opens details.";
   const p = statusParts(s, view);
   const mode = view.statusBar ?? "today";
   const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
@@ -399,9 +419,7 @@ function healthLines(h: Health): string[] {
         : "No Copilot session logs were found. Set `copilotUsageMonitor.copilotHome` if Copilot keeps them elsewhere.",
     );
   } else if (h.state === "permission") {
-    out.push(
-      "The Copilot session log folder could not be read on this computer.",
-    );
+    out.push(`${PERMISSION_NOTE} Check the folder's permissions, or set ${homeSettings(h, true).replace(/copilotUsageMonitor\.\w+/g, (x) => `\`${x}\``)}.`);
   } else if (h.state === "format-changed") {
     out.push(
       `Data health: ${h.unrecognized} line(s) in a format this version doesn't recognize. Copilot may have changed its log format, so figures may be incomplete.`,

@@ -13,8 +13,11 @@ import {
   DEFAULT_VIEW,
   formatCount,
   formatRange,
+  enabledSourceNames,
   formatUsd,
+  foundSources,
   homeSettings,
+  PERMISSION_NOTE,
   mixedSources,
   multiSource,
   PRIOR_SHORT_NOTE,
@@ -30,7 +33,7 @@ import {
 } from "./format";
 import { CALLS_MISSING_NOTE, callsCell, callsPhrase, DASH, headlineValue, MONTHS, partialReasons, plural, tokens, withStar } from "./panel/shared";
 import type { SectionId } from "./panel/sections";
-import { type Counts, type GroupSummary, type Health, type Metric, type RangeState, type Snapshot, SOURCE_LABEL, SOURCES, type ViewOptions } from "./types";
+import { type Counts, type GroupSummary, type Health, type Metric, type RangeState, type Snapshot, SOURCE_LABEL, type ViewOptions } from "./types";
 
 export type SidebarState = "loading" | "no-dir" | "permission" | "ready";
 
@@ -121,11 +124,14 @@ const NOTICES: Record<Exclude<SidebarState, "ready">, string[]> = {
     "No Copilot session logs were found on this computer.",
     "Only Copilot clients that write session-state/*/events.jsonl are counted (the Copilot CLI and coding agent). If Copilot keeps its folder elsewhere, set copilotUsageMonitor.copilotHome in Settings, then use Refresh in this view's title bar.",
   ],
-  permission: [
-    "The Copilot session log folder could not be read on this computer.",
-    "Check the folder's permissions, or set copilotUsageMonitor.copilotHome in Settings, then use Refresh in this view's title bar.",
-  ],
+  // Replaced by permissionNotice(health) whenever a snapshot is at hand.
+  permission: [PERMISSION_NOTE, "Check the folder's permissions, then use Refresh in this view's title bar."],
 };
+
+/** The permission notice (D49): names the enabled sources' folder settings (all three without per-source health). */
+function permissionNotice(h: Health): string[] {
+  return [PERMISSION_NOTE, `Check the folder's permissions, or set ${homeSettings(h, true)} in Settings, then use Refresh in this view's title bar.`];
+}
 
 function section(id: SectionId): SidebarLink {
   return { command: "copilotUsageMonitor.showSection", args: [id] };
@@ -182,7 +188,7 @@ function groupLines(g: GroupSummary | undefined, view: ViewOptions, h: Health): 
 function noDirNotice(h: Health): string[] {
   return [
     "No usage logs were found on this computer.",
-    `Copilot CLI, Claude Code and Codex logs are read when present. If a tool keeps its folder elsewhere, set ${homeSettings(h)} in Settings, then use Refresh in this view's title bar.`,
+    `${enabledSourceNames(h)} logs are read when present. If a tool keeps its folder elsewhere, set ${homeSettings(h)} in Settings, then use Refresh in this view's title bar.`,
   ];
 }
 
@@ -264,7 +270,8 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const footNote = view.unit === "cost" ? `Local logs only · ${currencyCode()} figures are est.` : "Local logs only";
   const state: SidebarState = !s ? "loading" : s.health.state === "no-dir" ? "no-dir" : s.health.state === "permission" ? "permission" : "ready";
   if (!s || state !== "ready") {
-    const notice = s && state === "no-dir" && multiSource(s.health) ? noDirNotice(s.health) : NOTICES[state as Exclude<SidebarState, "ready">];
+    const notice =
+      s && state === "no-dir" && multiSource(s.health) ? noDirNotice(s.health) : s && state === "permission" ? permissionNotice(s.health) : NOTICES[state as Exclude<SidebarState, "ready">];
     return finish({ state, unitWord, notice, groups: [], unitSwitch, currencySwitch, footNote });
   }
 
@@ -357,8 +364,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   });
   // By source, last 7 days (D49): one row per enabled source whose folder exists, shown only
   // when a source other than Copilot is enabled and found. Each row filters the panel.
-  const per = h.sources;
-  const found = per ? SOURCES.filter((x) => per[x] !== undefined && per[x]!.state !== "off" && per[x]!.state !== "no-dir") : [];
+  const found = foundSources(h);
   if (found.some((x) => x !== "copilot")) {
     const activeSource = s.filter?.source;
     groups.push({

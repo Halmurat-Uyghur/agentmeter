@@ -2,8 +2,9 @@
 // Overview's By source card and the Data health Sources box. Labels come only from
 // SOURCE_LABEL and class names only from SOURCES, never from a log. Chips and the card
 // appear only when a source other than Copilot has records in scope.
-import { COST_SOURCES_NOTE, costLabel, formatCount, formatUsd, mixedSources, SOURCE_HOME_SETTING, SOURCE_TOGGLE_SETTING } from "../format";
+import { COST_SOURCES_NOTE, costLabel, enabledSources, formatCount, formatUsd, mixedSources, SOURCE_HOME_SETTING, SOURCE_TOGGLE_SETTING } from "../format";
 import { type Snapshot, type Source, SOURCE_LABEL, SOURCES, type SourceHealth, type ViewOptions } from "../types";
+import { fact } from "./health";
 import { filterHref } from "./links";
 import { callsCell, card, DASH, escapeHtml, foldedTable, monthTitle, plural, tokens, val, viewedStart, withStar } from "./shared";
 
@@ -27,17 +28,6 @@ export function rowChips(s: Snapshot, sources: Partial<Record<Source, number>> |
   return html ? ` <span class="srcchips">${html}</span>` : "";
 }
 
-/** Sessions per source among the month's listed sessions; `capped` when the list was cut. */
-function sessionsBySource(s: Snapshot): { n: Partial<Record<Source, number>>; capped: boolean } {
-  const list = s.month?.sessions ?? [];
-  const n: Partial<Record<Source, number>> = {};
-  for (const x of list) {
-    const src = x.source ?? "copilot";
-    n[src] = (n[src] ?? 0) + 1;
-  }
-  return { n, capped: (s.month?.sessionCount ?? list.length) > list.length };
-}
-
 /** The Overview's By source card for the viewed month (D49): one row per source with records;
  * click a row to filter to that source. Empty unless a non-Copilot source is in scope. */
 export function renderSourcesCard(s: Snapshot, view: ViewOptions): string {
@@ -46,7 +36,8 @@ export function renderSourcesCard(s: Snapshot, view: ViewOptions): string {
   if (!t || (!mixedSources(t.sources) && active === undefined)) return "";
   const scope = monthTitle(viewedStart(s));
   const partial = s.health.partial;
-  const sess = sessionsBySource(s);
+  // Counted by the monitor before the 50-row cut; never derived from the capped list.
+  const sess = s.month?.sessionsBySource;
   const rows = SOURCES.filter((x) => (t.sources?.[x] ?? 0) > 0 || t.bySource?.[x] !== undefined).map((x) => {
     const c = t.bySource?.[x];
     const on = x === active;
@@ -57,16 +48,13 @@ export function renderSourcesCard(s: Snapshot, view: ViewOptions): string {
     // Claude Code and Codex log no cost: their USD is "—", never 0 (D46).
     const cost = c && x === "copilot" ? withStar(formatUsd(c.nanoAiu), partial) : DASH;
     const calls = c ? callsCell(c.calls, c.callsMissing) : DASH;
-    const n = sess.n[x] ?? 0;
-    const sessions = sess.capped ? (n > 0 ? `${n}+` : DASH) : String(n);
     const td = (text: string, sum = false) => `<td class="num${sum ? " sum" : ""}${text === DASH ? " muted" : ""}">${val(text)}</td>`;
     return {
       keep: on,
-      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" aria-label="${escapeHtml(aria)}" title="${on ? "Clear the source filter" : "Show only this source"}">${escapeHtml(label)}</a> <span class="srcdot src-${x}" aria-hidden="true"></span>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}</td>${td(tok, view.unit === "tokens")}${td(cost, view.unit === "cost")}${td(calls)}${td(sessions)}</tr>`,
+      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink" href="${escapeHtml(href)}" aria-label="${escapeHtml(aria)}" title="${on ? "Clear the source filter" : "Show only this source"}">${escapeHtml(label)}</a> <span class="srcdot src-${x}" aria-hidden="true"></span>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}</td>${td(tok, view.unit === "tokens")}${td(cost, view.unit === "cost")}${td(calls)}${sess ? td(String(sess[x] ?? 0)) : ""}</tr>`,
     };
   });
-  const capNote = sess.capped ? `<p>${escapeHtml("Sessions marked + count only the sessions listed in Sessions (the largest 50).")}</p>` : "";
-  const body = `${foldedTable(`<th>Source</th><th>Tokens</th><th>${escapeHtml(costLabel())}</th><th>Calls</th><th>Sessions</th>`, rows, undefined, `Usage by source, ${scope}`)}<div class="fine"><p>${escapeHtml(COST_SOURCES_NOTE)}</p>${capNote}</div>`;
+  const body = `${foldedTable(`<th>Source</th><th>Tokens</th><th>${escapeHtml(costLabel())}</th><th>Calls</th>${sess ? "<th>Sessions</th>" : ""}`, rows, undefined, `Usage by source, ${scope}`)}<div class="fine"><p>${escapeHtml(COST_SOURCES_NOTE)}</p></div>`;
   return card("sources-title", "overview", "By source", `${scope} · ${plural(rows.length, "source")} · click to filter`, body, "srccard");
 }
 
@@ -88,9 +76,8 @@ const ORIGIN: Record<Source, Record<SourceHealth["rootSource"], string>> = {
 /** "Copilot default · Claude Code setting": each enabled source's folder origin. */
 export function sourceOrigins(s: Snapshot): string | undefined {
   const per = s.health.sources;
-  if (!per) return undefined;
-  const on = SOURCES.filter((x) => per[x] !== undefined && per[x]!.state !== "off");
-  if (!on.some((x) => x !== "copilot")) return undefined;
+  const on = enabledSources(s.health);
+  if (!per || !on || !on.some((x) => x !== "copilot")) return undefined;
   return on.map((x) => `${SOURCE_LABEL[x]} ${ORIGIN[x][per[x]!.rootSource]}`).join(" · ");
 }
 
@@ -99,8 +86,6 @@ export function sourceOrigins(s: Snapshot): string | undefined {
 export function sourcesHealthBox(s: Snapshot): string {
   const per = s.health.sources;
   if (!per) return "";
-  const fact = (k: string, v: number, warn = false) =>
-    `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
   const rows = SOURCES.filter((x) => per[x] !== undefined).map((x) => {
     const h = per[x]!;
     const head = `<h4 class="srch"><span class="srcchip src-${x}">${escapeHtml(SOURCE_LABEL[x])}</span> <span>${escapeHtml(sourceStatus(x, h))}</span></h4>`;

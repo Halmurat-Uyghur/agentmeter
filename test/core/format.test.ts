@@ -212,7 +212,7 @@ describe("statusText", () => {
       statusText(
         snap({ today: undefined, health: health({ state: "permission" }) }),
       ),
-    ).toBe("$(lock) Copilot logs unreadable");
+    ).toBe("$(lock) Local: usage logs unreadable");
   });
 });
 
@@ -769,6 +769,18 @@ describe("sources (D46, D49)", () => {
     const s = snap({ today: undefined, health: health({ state: "no-dir" }) });
     expect(statusText(s)).toBe("$(circle-slash) Local: no usage logs found");
     expect(statusAccessibilityLabel(s)).toBe("No usage logs found. Opens details.");
+  });
+  it("permission wording, text, spoken and tooltip naming the enabled sources' settings", () => {
+    const sh = { rootSource: "default" as const, files: 0, sessions: 0, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 };
+    const s = snap({ today: undefined, health: health({ state: "permission", sources: { copilot: { ...sh, state: "permission" }, "claude-code": { ...sh, state: "off" }, codex: { ...sh, state: "no-dir" } } }) });
+    expect(statusText(s)).toBe("$(lock) Local: usage logs unreadable");
+    expect(statusAccessibilityLabel(s)).toBe("Usage logs unreadable. Opens details.");
+    const md = tooltipMarkdown(s);
+    expect(md).toContain("The usage log folder of an enabled source could not be read on this computer.");
+    expect(md).toContain("`copilotUsageMonitor.copilotHome` or `copilotUsageMonitor.codexHome`");
+    expect(md).not.toContain("claudeHome");
+    const all = tooltipMarkdown(snap({ today: undefined, health: health({ state: "permission" }) }));
+    expect(all).toContain("`copilotUsageMonitor.copilotHome`, `copilotUsageMonitor.claudeHome` or `copilotUsageMonitor.codexHome`");
   });
   it("tooltip lists each source today only when two sources have records today", () => {
     const md = tooltipMarkdown(snap({ today: two() }));

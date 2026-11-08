@@ -119,6 +119,24 @@ describe("By source card", () => {
     expect(html).toContain(filterHref("source", "claude-code").replace(/"/g, "&quot;"));
     expect(html).toContain(COST_SOURCES_NOTE);
   });
+  it("Sessions column from month.sessionsBySource; omitted when absent", () => {
+    const s = snap(mixedTotals());
+    expect(renderSourcesCard(s, TOKENS)).not.toContain("<th scope=\"col\">Sessions</th>");
+    s.month!.sessionsBySource = { copilot: 70, "claude-code": 120 };
+    const html = renderSourcesCard(s, TOKENS);
+    expect(html).toContain('<th scope="col">Sessions</th>');
+    const cc = html.slice(html.indexOf(">Claude Code<"));
+    expect(cc.slice(0, cc.indexOf("</tr>"))).toMatch(/>120<\/td>$/);
+    const cp = html.slice(html.indexOf(">Copilot<"));
+    expect(cp.slice(0, cp.indexOf("</tr>"))).toMatch(/>70<\/td>$/);
+  });
+  it("permission note names the enabled sources' settings", () => {
+    const sh = { rootSource: "default" as const, files: 0, sessions: 0, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 };
+    const html = renderPanelHtml(snap(copilotTotals(), { health: health({ state: "permission", sources: { copilot: { ...sh, state: "ok" }, "claude-code": { ...sh, state: "permission" } } }) }), "csp", TOKENS, "overview");
+    expect(html).toContain("The usage log folder of an enabled source could not be read on this computer.");
+    expect(html).toContain("<b>copilotUsageMonitor.copilotHome</b> or <b>copilotUsageMonitor.claudeHome</b>");
+    expect(html).not.toContain("codexHome");
+  });
   it("renders nothing for a Copilot-only month", () => {
     expect(renderSourcesCard(snap(copilotTotals()), TOKENS)).toBe("");
   });

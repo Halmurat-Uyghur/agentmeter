@@ -4,10 +4,13 @@ import type { Snapshot } from "../types";
 import { escapeHtml } from "./shared";
 import { sourcesHealthBox } from "./sources";
 
+/** One labelled count; `warn` stars a non-zero value. */
+export function fact(k: string, v: number, warn = false): string {
+  return `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
+}
+
 export function healthBox(s: Snapshot): string {
   const h = s.health;
-  const fact = (k: string, v: number, warn = false) =>
-    `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
   // Always shown, first (2.6): Copilot Chat in VS Code is the gap most readers hit.
   const chat = `<div class="note"><p>${escapeHtml(CHAT_NOT_COVERED)}</p></div>`;
   return `${chat}<section class="box"><h3>Logs read<small>read-only · nothing leaves this computer</small></h3><div class="facts">
