@@ -109,7 +109,7 @@ function text(html: string): string {
 }
 
 function strings(model: SidebarModel): string[] {
-  const out = [model.unitWord, model.message ?? "", ...model.notice, model.unitSwitch.text];
+  const out = [model.unitWord, model.message ?? "", ...model.notice, model.unitSwitch.text, model.currencySwitch.text, model.currencySwitch.title];
   for (const g of model.groups) out.push(g.heading, g.title, g.empty ?? "");
   for (const x of sidebarRows(model)) out.push(x.label, x.value, x.title, x.spoken, x.marker?.text ?? "");
   if (model.insights) out.push(model.insights.text, model.insights.title, model.insights.spoken);
@@ -312,7 +312,7 @@ describe("sidebar model: links", () => {
     for (const s of states) {
       for (const view of [TOKENS, COST, { unit: "cost" as const, range: { min: 1, max: 2 } }]) {
         const model = buildSidebarModel(s, view, ["web"]);
-        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.coverage?.link, model.unitSwitch.link];
+        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.coverage?.link, model.unitSwitch.link, model.currencySwitch.link];
         for (const l of links) {
           if (!l) continue;
           expect(SIDEBAR_COMMANDS).toContain(l.command);
@@ -580,5 +580,19 @@ describe("v0.6 (2.6): the side bar names Copilot Chat as not covered", () => {
     }
     expect(buildSidebarModel(undefined, TOKENS).coverage).toBeUndefined();
     expect(buildSidebarModel(snap({ health: health({ state: "no-dir" }) }), TOKENS).coverage).toBeUndefined();
+  });
+});
+
+describe("sidebar model: currency switch", () => {
+  it("names the chosen currency, even while its rate is pending, and links to the picker", () => {
+    const usd = buildSidebarModel(snap(), COST, ["web"]);
+    expect(usd.currencySwitch.text).toBe("Currency: USD");
+    expect(usd.currencySwitch.link).toEqual({ command: "copilotUsageMonitor.selectCurrency", args: [] });
+    const cad = buildSidebarModel(snap(), { ...COST, currency: { code: "CAD", rate: 1.38, date: "2026-11-06" } }, ["web"]);
+    expect(cad.currencySwitch.text).toBe("Currency: CAD");
+    const pending = buildSidebarModel(snap(), { ...TOKENS, currencyPending: "CAD" }, ["web"]);
+    expect(pending.currencySwitch.text).toBe("Currency: CAD");
+    expect(pending.currencySwitch.title).toMatch(/No CAD exchange rate yet/);
+    expect(renderSidebarHtml(cad, "x")).toContain('href="command:copilotUsageMonitor.selectCurrency"');
   });
 });

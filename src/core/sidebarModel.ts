@@ -39,12 +39,13 @@ export const SIDEBAR_COMMANDS = [
   "copilotUsageMonitor.showSection",
   "copilotUsageMonitor.setFilter",
   "copilotUsageMonitor.toggleUnit",
+  "copilotUsageMonitor.selectCurrency",
 ] as const;
 export type SidebarCommand = (typeof SIDEBAR_COMMANDS)[number];
 
 export interface SidebarLink {
   command: SidebarCommand;
-  /** a section id, or ("project", key or "", "projects"); none for showDetails and toggleUnit */
+  /** a section id, or ("project", key or "", "projects"); none for showDetails, toggleUnit and selectCurrency */
   args: string[];
 }
 
@@ -97,6 +98,8 @@ export interface SidebarModel {
   coverage?: { text: string; title: string; link: SidebarLink };
   /** the unit switch link under the button */
   unitSwitch: { text: string; link: SidebarLink };
+  /** the currency picker link in the footer: "Currency: CAD" (the chosen code, even while its rate is pending) */
+  currencySwitch: { text: string; title: string; link: SidebarLink };
   /** footer words before the unit switch: "Local logs only", plus "USD is estimated" in USD view */
   footNote: string;
   /** equal models have equal signatures; the adapter skips a redraw when unchanged */
@@ -240,9 +243,15 @@ function healthNote(h: Health): SidebarModel["health"] {
 export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW, folders: readonly string[] = []): SidebarModel {
   const unitWord = view.unit === "cost" ? costLabel() : "tokens";
   const unitSwitch = { text: view.unit === "cost" ? "Show tokens" : `Show ${costLabel()}`, link: { command: "copilotUsageMonitor.toggleUnit" as const, args: [] } };
+  const chosen = view.currency?.code ?? view.currencyPending ?? "USD";
+  const currencySwitch = {
+    text: `Currency: ${chosen}`,
+    title: view.currencyPending ? `No ${chosen} exchange rate yet; figures stay in USD until it arrives. Click to choose another currency.` : "Choose the display currency: USD, or another such as CAD at the daily exchange rate.",
+    link: { command: "copilotUsageMonitor.selectCurrency" as const, args: [] },
+  };
   const footNote = view.unit === "cost" ? `Local logs only · ${currencyCode()} figures are est.` : "Local logs only";
   const state: SidebarState = !s ? "loading" : s.health.state === "no-dir" ? "no-dir" : s.health.state === "permission" ? "permission" : "ready";
-  if (!s || state !== "ready") return finish({ state, unitWord, notice: NOTICES[state as Exclude<SidebarState, "ready">], groups: [], unitSwitch, footNote });
+  if (!s || state !== "ready") return finish({ state, unitWord, notice: NOTICES[state as Exclude<SidebarState, "ready">], groups: [], unitSwitch, currencySwitch, footNote });
 
   const h = s.health;
   const partial = h.partial;
@@ -387,7 +396,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const health = healthNote(h);
   const message = s.filter ? "The panel is filtered; these figures are not." : undefined;
   const coverage = { text: CHAT_NOT_COVERED_SHORT, title: [SIDEBAR_BANNER, CHAT_NOT_COVERED, "Opens Data health."].join("\n"), link: section("health") };
-  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, footNote });
+  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, currencySwitch, footNote });
 }
 
 function finish(m: Omit<SidebarModel, "signature">): SidebarModel {

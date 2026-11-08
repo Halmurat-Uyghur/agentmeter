@@ -141,7 +141,8 @@
       {
         "command": "copilotUsageMonitor.selectCurrency",
         "title": "Choose Currency…",
-        "category": "Copilot Usage"
+        "category": "Copilot Usage",
+        "icon": "$(globe)"
       }
     ],
     "walkthroughs": [
@@ -316,6 +317,11 @@
           "command": "copilotUsageMonitor.toggleUnit",
           "when": "view == copilotUsageMonitor.summary",
           "group": "navigation@2"
+        },
+        {
+          "command": "copilotUsageMonitor.selectCurrency",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@0"
         },
         {
           "command": "copilotUsageMonitor.refresh",

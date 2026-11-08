@@ -42,7 +42,7 @@ interface TestState {
   snapshot?: { filter?: { project?: string; tool?: string } };
 }
 
-const SIDEBAR_COMMANDS = ["copilotUsageMonitor.showDetails", "copilotUsageMonitor.showSection", "copilotUsageMonitor.setFilter", "copilotUsageMonitor.toggleUnit"];
+const SIDEBAR_COMMANDS = ["copilotUsageMonitor.showDetails", "copilotUsageMonitor.showSection", "copilotUsageMonitor.setFilter", "copilotUsageMonitor.toggleUnit", "copilotUsageMonitor.selectCurrency"];
 const row = (s: TestState, id: string) => s.sidebar.rows.find((i) => i.id === id);
 /** The status bar figure in tokens view: "$(pulse) Local today: 1.2K tok" → "1.2K tok". */
 const statusFigure = (s: TestState) => s.statusText.replace(/^\$\([a-z-]+\) Local today: /, "");
