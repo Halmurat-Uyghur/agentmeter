@@ -143,6 +143,11 @@ function skipValue(buf: Buffer, i: number, end: number): number {
  * appended without a dot, e.g. "message.content[].type"). Keys are compared as raw bytes to
  * the ASCII path segments; a key with an escape never matches. Never throws: malformed or
  * truncated input ends the scan with complete=false.
+ *
+ * Structure is validated only along requested paths: malformed bytes inside a skipped value
+ * still give complete=true, and a bad scalar on a requested path (e.g. `tru`) gets a range
+ * that parseSlice later rejects. Duplicate keys yield every occurrence in source order;
+ * readers must treat more than one range at a path without "[]" as malformed.
  */
 export function scanJson(buf: Buffer, start: number, end: number, paths: readonly ScanPath[]): ScanResult {
   const ranges = new Map<string, SliceRange[]>();
@@ -178,6 +183,10 @@ export function scanJson(buf: Buffer, start: number, end: number, paths: readonl
     }
     const e = skipValue(buf, i, end);
     if (e < 0) return false;
+    // A scalar running into `end` inside an open container may be cut short
+    // ("123" of "12345"): never record it.
+    const scalar = c !== QUOTE && c !== OPEN_OBJ && c !== OPEN_ARR;
+    if (scalar && e === end && stack.length > 0) return false;
     if (node?.path !== undefined) record(node.path, i, e, ctx);
     i = e;
     first = false;
@@ -226,7 +235,8 @@ export function scanJson(buf: Buffer, start: number, end: number, paths: readonl
 /** The one JSON.parse in the new readers: refuses end - start > maxBytes (returns undefined) and returns undefined for invalid JSON. */
 export function parseSlice(buf: Buffer, r: SliceRange, maxBytes: number = MAX_SLICE_BYTES): unknown {
   if (!(r.start >= 0 && r.end >= r.start && r.end <= buf.length)) return undefined;
-  if (r.end - r.start > maxBytes) return undefined;
+  // Written so a NaN or undefined-coerced maxBytes fails closed.
+  if (!(r.end - r.start <= maxBytes)) return undefined;
   try {
     return JSON.parse(buf.toString("utf8", r.start, r.end));
   } catch {

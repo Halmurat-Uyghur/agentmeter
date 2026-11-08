@@ -137,6 +137,42 @@ describe("scanJson", () => {
     expect(res.ranges.get("message.content")).toBeUndefined();
   });
 
+  it("records no range for a scalar truncated mid-number", () => {
+    const { buf, res } = scan(`{"type":"assistant","message":{"usage":{"input_tokens":123`, [
+      ["type"],
+      ["message", "usage", "input_tokens"],
+    ]);
+    expect(res.complete).toBe(false);
+    expect(stringAt(buf, res, "type")).toBe("assistant");
+    expect(res.ranges.get("message.usage.input_tokens")).toBeUndefined();
+    // A complete top-level scalar is still fine.
+    const top = scan(`42`, [[]]);
+    expect(top.res.complete).toBe(true);
+  });
+
+  it("handles whitespace between tokens (pretty-printed input)", () => {
+    const obj = { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }], usage: { input_tokens: 5 } } };
+    const text = JSON.stringify(obj, null, 2).replace(/\n/g, " \t\r ");
+    const { buf, res } = scan(` ${text} `, [["type"], ["message", "usage"], ["message", "content", "[]", "name"]]);
+    expect(res.complete).toBe(true);
+    expect(stringAt(buf, res, "type")).toBe("assistant");
+    expect(values(buf, res, "message.usage")).toEqual([{ input_tokens: 5 }]);
+    expect(res.ranges.get("message.content[].name")!.map((r) => [r.idx, parseSlice(buf, r)])).toEqual([[0, "Bash"]]);
+  });
+
+  it("does not accept a leading BOM: no ranges, complete=false", () => {
+    const { res } = scan(`\uFEFF{"type":"assistant"}`, [["type"]]);
+    expect(res.complete).toBe(false);
+    expect(res.ranges.size).toBe(0);
+  });
+
+  it("yields every duplicate key in source order; stringAt refuses the ambiguity", () => {
+    const { buf, res } = scan(`{"type":"user","x":1,"type":"assistant"}`, [["type"]]);
+    expect(res.complete).toBe(true);
+    expect(values(buf, res, "type")).toEqual(["user", "assistant"]);
+    expect(stringAt(buf, res, "type")).toBeUndefined();
+  });
+
   it("never throws or hangs on garbage", () => {
     const inputs = ["", "{", "}", "]]]", `{"a"`, `{"a":`, `{"a":1,`, `{"a" 1}`, `{1:2}`, `{"a":[,]}`, `{"a":}`, `"abc`, `{"a":1}}`, "\\", `{"a":[1,2}`];
     for (const s of inputs) {
@@ -190,6 +226,7 @@ describe("parseSlice and stringAt", () => {
     expect(big.length).toBe(MAX_SLICE_BYTES + 1);
     expect(parseSlice(big, { start: 0, end: big.length })).toBeUndefined();
     expect(parseSlice(ok, { start: 0, end: ok.length }, 10)).toBeUndefined();
+    expect(parseSlice(ok, { start: 0, end: 3 }, NaN)).toBeUndefined();
   });
 
   it("returns undefined for invalid JSON or bad ranges", () => {
