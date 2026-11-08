@@ -555,6 +555,52 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect(s.records(all)[0]!.tokens.input).toBe(10);
   });
 
+  it("another holder's repeat lines never merge: the first file keeps the record", () => {
+    const s = new UsageStore();
+    expect(s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A")).toBe(true);
+    expect(s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "B")).toBe(false);
+    expect(s.add(cc("x", { tokens: { input: 99 }, tools: { Read: 1 } }), "B")).toBe(false);
+    const [r] = s.records(all);
+    expect(r!.tokens).toStrictEqual({ input: 10 });
+    expect(r!.tools).toEqual({ Read: 1 });
+    // the owner's own later line still merges
+    expect(s.add(cc("x", { tokens: { input: 20 }, tools: { Bash: 1 } }), "A")).toBe(true);
+    expect(s.records(all)[0]!.tools).toEqual({ Read: 1, Bash: 1 });
+  });
+
+  it("after the owner is reset, its re-read lines do not merge into the next holder's record", () => {
+    const s = new UsageStore();
+    s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A");
+    s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "B");
+    s.resetFile("A");
+    expect(s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A")).toBe(false);
+    expect(s.add(cc("x", { tokens: { input: 50 }, tools: { Read: 1 } }), "A")).toBe(false);
+    const [r] = s.records(all);
+    expect(r!.tokens).toStrictEqual({ input: 10 });
+    expect(r!.tools).toEqual({ Read: 1 });
+    expect(s.totals(all)!.records).toBe(1);
+  });
+
+  it("a merged record keeps hiding its session's totals; resetFile deletes it once", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { sessionId: "f", folderId: "f", tools: { bash: 1 } }), "a");
+    s.add(rec("u1", { sessionId: "f", folderId: "f", tokens: { input: 7 }, tools: { bash: 1 } }), "a");
+    s.setSessionTotals("f", "t", [total("f", "m")]);
+    expect(s.totals(all)!.records).toBe(1);
+    expect(s.totals(all)!.sessionTotals).toBe(0);
+    s.resetFile("a");
+    const t = s.totals(all)!;
+    expect(t.records).toBe(1);
+    expect(t.sessionTotals).toBe(1);
+  });
+
+  it("a repeat with no tools on either side creates no tools object", () => {
+    const s = new UsageStore();
+    s.add(cc("m1"), "a");
+    expect(s.add(cc("m1", { tools: {} }), "a")).toBe(false);
+    expect("tools" in s.records(all)[0]!).toBe(false);
+  });
+
   it("USD metrics count Copilot records only: a Claude Code record is never 'missing'", () => {
     const s = new UsageStore();
     s.add(cc("m1"), "a.jsonl");

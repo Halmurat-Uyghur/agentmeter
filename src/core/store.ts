@@ -138,7 +138,7 @@ function mergeRepeat(r: UsageRecord, next: UsageRecord): UsageRecord {
         names++;
       }
     }
-    out.tools = tools;
+    if (names > 0) out.tools = tools;
   }
   return out;
 }
@@ -160,12 +160,14 @@ export class UsageStore {
   private readonly totalKeys = new Map<string, string[]>();
 
   /** Returns whether the store changed. A key already known from another file counts once
-   * (`file` is still recorded for it); a later call line of the same key in the same file
-   * replaces the record's figures and adds its tools (D42 repeats). */
+   * (`file` is still recorded for it); a later call line of the same key in the file that
+   * owns the record (its first holder) replaces the record's figures and adds its tools (D42 repeats). */
   add(r: UsageRecord, file: string): boolean {
     const key = entryKey(r);
     const existing = this.entries.get(key);
-    if (existing && r.kind === "call" && existing.files.has(file)) {
+    // Only the owning (first) holder's later lines merge; another holder's repeat counts once,
+    // so tool names never merge twice (D42).
+    if (existing && r.kind === "call" && existing.files.keys().next().value === file) {
       const merged = mergeRepeat(existing.record, r);
       if (JSON.stringify(merged) === JSON.stringify(existing.record)) return false;
       existing.record = merged;
@@ -570,7 +572,7 @@ export function sessionSummaries(
       }
     }
     // Growth compares calls; a session total is one figure, not a call.
-    const priced = recs.filter((r) => r.kind === "call" && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
+    const priced = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
     let growth: number | undefined;
     let excessNanoAiu: number | undefined;
     if (priced.length >= 2 * GROWTH_SPAN) {
