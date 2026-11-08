@@ -297,9 +297,24 @@ describe("gates", () => {
   it("manifest scopes (v0.7): folder, project names and session totals per machine; currency and alert per user", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const scope = (k: string) => pkg.contributes.configuration.properties[`copilotUsageMonitor.${k}`].scope;
-    for (const k of ["copilotHome", "projectNames", "sessionTotals"]) expect(scope(k), k).toBe("machine");
+    for (const k of ["copilotHome", "projectNames", "sessionTotals", "claudeCode", "codex", "claudeHome", "codexHome"]) expect(scope(k), k).toBe("machine");
     // application: a workspace's settings can neither turn on the rate request nor the alert
     for (const k of ["currency", "targetAlert"]) expect(scope(k), k).toBe("application");
+  });
+
+  it("manifest (v0.8, D48): Claude Code and Codex settings are machine-scoped, sources on, folders empty", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const props = pkg.contributes.configuration.properties;
+    for (const k of ["claudeCode", "codex"]) expect(props[`copilotUsageMonitor.${k}`], k).toMatchObject({ type: "boolean", default: true, scope: "machine" });
+    for (const k of ["claudeHome", "codexHome"]) expect(props[`copilotUsageMonitor.${k}`], k).toMatchObject({ type: "string", default: "", scope: "machine" });
+    expect(props["copilotUsageMonitor.claudeHome"].description).toContain("CLAUDE_CONFIG_DIR");
+    expect(props["copilotUsageMonitor.codexHome"].description).toContain("CODEX_HOME");
+    for (const k of ["claudeCode", "codex"]) expect(props[`copilotUsageMonitor.${k}`].description, k).toContain("never decoded");
+    expect(pkg.keywords).toEqual(expect.arrayContaining(["claude", "codex"]));
+    expect(pkg.description).toContain("Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.");
+    const folder = readFileSync(join(ROOT, "media", "walkthrough", "folder.md"), "utf8");
+    expect(folder).toContain("`copilotUsageMonitor.claudeHome`, else `CLAUDE_CONFIG_DIR`, else `~/.claude`");
+    expect(folder).toContain("`copilotUsageMonitor.codexHome`, else `CODEX_HOME`, else `~/.codex`");
   });
 
   it("the rate reply is size-capped before parsing (v0.7)", () => {
