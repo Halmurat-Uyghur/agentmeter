@@ -13,11 +13,11 @@
 //     counted as skipped, never walked;
 //   - aborts, printing nothing, if any output token contains "/".
 //
-// Root: $CODEX_HOME (~ expanded, relative → home) or ~/.codex.
+// Root: $CODEX_HOME (as the extension: no ~ expansion, relative → home) or ~/.codex.
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
@@ -29,10 +29,11 @@ const FIELDS = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens
 const NEEDLES = ["token_usage_record", "turn_context", "session_meta", "event_msg"].map((t) => [t, Buffer.from(`"type":"${t}"`)]);
 const MAX_PARSE_BYTES = 16 * 1024 * 1024;
 
+/** As src/core/config.ts resolves an environment value: trimmed, blank = unset, no ~ expansion, relative → home. */
 function expandRoot(env, fallback) {
-  if (!env) return join(homedir(), fallback);
-  const expanded = env === "~" ? homedir() : env.startsWith("~/") ? join(homedir(), env.slice(2)) : env;
-  return isAbsolute(expanded) ? expanded : resolve(homedir(), expanded);
+  const v = env?.trim();
+  if (!v) return join(homedir(), fallback);
+  return resolve(homedir(), v);
 }
 
 // Node errors carry absolute paths in their message and stack: print only the code.

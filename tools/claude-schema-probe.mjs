@@ -2,7 +2,9 @@
 // Dev-only, shape-only probe of Claude Code session logs (spec D53; rules as in schema-probe.mjs).
 //
 // Prints key paths, value types, counts, lengths and digit-masked shapes. Never prints a
-// field value, a model id, a tool name, a folder or file name, or the root path. It:
+// field value, a model id, a tool name, a file name, a project or session folder name, or the
+// root path (a fixed list of known structural folder names, such as subagents or memory, is
+// printed). Line types and key names are printed only for files the extension reads. It:
 //   - lists only <root>/projects/ (depth ≤ 6, symlinks not followed, memory/ and tool-results/
 //     not entered) and opens only regular *.jsonl files found there; nothing else under the
 //     Claude Code folder is listed or opened;
@@ -12,11 +14,11 @@
 //   - prints line types only from a small pattern of lowercase words, else (other);
 //   - aborts, printing nothing, if any output token contains "/".
 //
-// Root: $CLAUDE_CONFIG_DIR (~ expanded, relative → home) or ~/.claude.
+// Root: $CLAUDE_CONFIG_DIR (as the extension: no ~ expansion, relative → home) or ~/.claude.
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$]{0,63}$/;
@@ -37,10 +39,11 @@ const NEEDLE_USER = Buffer.from('"type":"user"');
 const NEEDLE_USAGE = Buffer.from('"usage":{');
 const DAY = 86_400_000;
 
+/** As src/core/config.ts resolves an environment value: trimmed, blank = unset, no ~ expansion, relative → home. */
 function expandRoot(env, fallback) {
-  if (!env) return join(homedir(), fallback);
-  const expanded = env === "~" ? homedir() : env.startsWith("~/") ? join(homedir(), env.slice(2)) : env;
-  return isAbsolute(expanded) ? expanded : resolve(homedir(), expanded);
+  const v = env?.trim();
+  if (!v) return join(homedir(), fallback);
+  return resolve(homedir(), v);
 }
 
 // Node errors carry absolute paths in their message and stack: print only the code.
@@ -146,7 +149,9 @@ function visit(dir, depth, ctx) {
         layout.mainFiles++;
         if (!UUID.test(e.name.slice(0, -6))) layout.mainNotUuid++;
       } else layout.nestedFiles++;
-      layout.files.push({ path: p, depth: fileDepth, session: ctx.session, plugin: ctx.plugin });
+      // Read by the extension: a slug-level <uuid>.jsonl, or a .jsonl below a <uuid>/ session folder.
+      const read = (fileDepth === 2 && UUID.test(e.name.slice(0, -6))) || (ctx.session !== undefined && !ctx.plugin);
+      layout.files.push({ path: p, depth: fileDepth, session: ctx.session, plugin: ctx.plugin, read });
     } else layout.otherFiles++;
   }
 }
@@ -161,7 +166,7 @@ for (const s of slugs) {
 
 const now = Date.now();
 const recent = { d7: 0, d30: 0, d90: 0, min5: 0 };
-const lines = { total: 0, valid: 0, tooLong: 0, crlf: 0, noType: 0, noTypeInPlugin: 0, unreadable: 0 };
+const lines = { total: 0, valid: 0, tooLong: 0, crlf: 0, noType: 0, noTypeInPlugin: 0, unreadable: 0, notRead: 0, notReadFiles: 0 };
 const typeCounts = new Map();
 const firstKeys = new Map();
 const typeOffsets = [];
@@ -188,6 +193,7 @@ for (const f of layout.files) {
     continue;
   }
   if (!st.isFile()) continue;
+  if (!f.read) lines.notReadFiles++;
   const age = now - st.mtimeMs;
   if (age <= 7 * DAY) recent.d7 += st.size;
   if (age <= 30 * DAY) recent.d30 += st.size;
@@ -226,6 +232,11 @@ for (const f of layout.files) {
     if (!hasType) {
       lines.noType++;
       if (f.plugin) lines.noTypeInPlugin++;
+    }
+    // Files the extension never reads: counted only, no type names or key names printed.
+    if (!f.read) {
+      lines.notRead++;
+      continue;
     }
     bump(typeCounts, type);
     const keys = Object.keys(ev);
@@ -336,6 +347,7 @@ emit();
 emit("## Lines");
 emit(`- lines: ${lines.total}; valid JSON objects: ${lines.valid}; over 16 MiB (not decoded): ${lines.tooLong}; CRLF: ${lines.crlf}; unreadable files: ${lines.unreadable}`);
 emit(`- without a type key: ${lines.noType} (in vercel-plugin: ${lines.noTypeInPlugin})`);
+emit(`- files the extension does not read (counted only, no types or keys printed below): ${lines.notReadFiles}; their valid lines: ${lines.notRead}`);
 emit(`- byte offset of the type key: ${stats(typeOffsets)}`);
 emit(`- first two keys: ${fmt(firstKeys)}`);
 emit(`- lines over 1 MiB by type: ${fmt(over1MiB)}`);
