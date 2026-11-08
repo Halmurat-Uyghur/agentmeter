@@ -8,6 +8,10 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { LOCAL_BANNER } from "../../src/core/format";
 import { PANEL_COMMANDS } from "../../src/core/panelHtml";
 import { SIDEBAR_COMMANDS } from "../../src/core/sidebarModel";
+import { CLAUDE_MAX_FILES, CLAUDE_MAX_LINE_BYTES } from "../../src/core/claude";
+import { CODEX_MAX_TURNS } from "../../src/core/codex";
+import { MAX_SLICE_BYTES } from "../../src/core/jsonScan";
+import { RECENT_MS } from "../../src/core/source";
 
 const ROOT = join(__dirname, "..", "..");
 /** The getting-started walkthrough's media (v0.6, 2.4): the only files besides the four core ones in the .vsix. */
@@ -373,5 +377,61 @@ describe("gates", () => {
       texts.push(md);
     }
     for (const t of texts) expect(t).not.toMatch(COPY_RE);
+  });
+
+  // Task 12 (D41, D50, D53): the new sources' privacy gates.
+  it("JSON.parse( appears once in src/core/jsonScan.ts (in parseSlice, bound checked first) and never in the Claude Code or Codex reader (D41)", () => {
+    const count = (f: string) => readFileSync(join(ROOT, "src", "core", f), "utf8").split("JSON.parse(").length - 1;
+    expect(count("jsonScan.ts")).toBe(1);
+    expect(count("claude.ts")).toBe(0);
+    expect(count("codex.ts")).toBe(0);
+    const scan = readFileSync(join(ROOT, "src", "core", "jsonScan.ts"), "utf8");
+    const fn = /export function parseSlice\(buf: Buffer, r: SliceRange, maxBytes: number = MAX_SLICE_BYTES\): unknown \{([\s\S]*?)\n\}/.exec(scan);
+    expect(fn, "parseSlice").not.toBeNull();
+    const body = fn![1]!;
+    // fail-closed (a NaN maxBytes refuses), and before the one parse
+    const bound = body.indexOf("if (!(r.end - r.start <= maxBytes)) return undefined;");
+    expect(bound).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf("JSON.parse(")).toBeGreaterThan(bound);
+  });
+
+  it("never-read file names appear in src/ only in comments or a NEVER_READ deny-list (D53)", () => {
+    const NAMES = ["auth.json", "history.jsonl", "rate_limits", "settings.json"];
+    const hits: string[] = [];
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) {
+      const lines = readFileSync(f, "utf8").split("\n");
+      let inDeny = false;
+      for (const [i, line] of lines.entries()) {
+        if (/\bNEVER_READ\b.*=\s*\[/.test(line)) inDeny = true;
+        const t = line.trim();
+        const comment = t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+        for (const n of NAMES) if (line.includes(n) && !comment && !inDeny) hits.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${t}`);
+        if (inDeny && t.includes("]")) inDeny = false;
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it("the monitor asks the reader's pathAllowed( before it opens a file (D53)", () => {
+    const src = readFileSync(join(ROOT, "src", "core", "monitor.ts"), "utf8");
+    // the only open in the monitor is a reader's, and it is the one guarded by pathAllowed
+    expect(src.split(".open(").length - 1).toBe(1);
+    expect(src.split("reader.open(").length - 1).toBe(1);
+    const guard = src.indexOf("if (!reader.pathAllowed(path)) {");
+    expect(guard).toBeGreaterThanOrEqual(0);
+    const open = src.indexOf("reader.open(path, c)");
+    expect(open).toBeGreaterThan(guard);
+    // the refusal skips the file: nothing between the guard and its `continue;` opens it
+    const refusal = src.slice(guard, src.indexOf("continue;", guard));
+    expect(refusal).not.toContain(".open(");
+    expect(src.indexOf("continue;", guard)).toBeLessThan(open);
+  });
+
+  it("source caps and the hot window are the specified constants (D50)", () => {
+    expect(RECENT_MS).toBe(300_000);
+    expect(CLAUDE_MAX_LINE_BYTES).toBe(4 * 1024 * 1024);
+    expect(CLAUDE_MAX_FILES).toBe(10_000);
+    expect(CODEX_MAX_TURNS).toBe(1024);
+    expect(MAX_SLICE_BYTES).toBe(4096);
   });
 });
