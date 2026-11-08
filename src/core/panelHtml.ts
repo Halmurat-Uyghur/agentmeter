@@ -42,12 +42,13 @@ export function renderPanelHtml(
   cspSource: string,
   view: ViewOptions = DEFAULT_VIEW,
   section: SectionId = DEFAULT_SECTION,
+  navCollapsed = false,
 ): string {
   const def = sectionDef(isSectionId(section) ? section : DEFAULT_SECTION);
   if (!s) {
     const body = `${skipLink(def)}
 ${topBar(undefined, view)}
-${shell(undefined, def, "Reading Copilot session logs…", `<p class="muted">Loading…</p>`)}`;
+${shell(undefined, def, "Reading Copilot session logs…", `<p class="muted">Loading…</p>`, navCollapsed)}`;
     return page(body, cspSource, def.label);
   }
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);
@@ -55,6 +56,6 @@ ${shell(undefined, def, "Reading Copilot session logs…", `<p class="muted">Loa
 ${topBar(s, view, def.id === "health")}
 ${stateNote(s.health)}
 ${toolbar(s, view)}
-${shell(s, def, description, RENDER[def.id](s, view))}`;
+${shell(s, def, description, RENDER[def.id](s, view), navCollapsed)}`;
   return page(body, cspSource, def.label);
 }

@@ -187,6 +187,17 @@ details.more[open] > summary::before { content: "▾ "; }
 .sidenav a[aria-current="page"] .ic { color: var(--hot); }
 .sidenav .cnt { color: var(--muted); font-size: 11.5px; }
 .sidenav .cnt.warn { color: var(--warn-text); font-weight: 650; }
+/* Collapse / expand toggle: the nav shrinks to an icon rail (labels kept for screen readers) */
+.sidenav .navtop { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.sidenav a.navtoggle { min-height: 0; padding: 4px; border: 1px solid transparent; border-radius: 6px; color: var(--muted); }
+.sidenav a.navtoggle:hover { color: var(--fg); }
+.shell.navcollapsed { grid-template-columns: 44px minmax(0, 1fr); }
+.sidenav.collapsed .navtop { justify-content: center; }
+.sidenav.collapsed a:not(.navtoggle) { justify-content: center; padding: 5px 0; gap: 0; }
+.sidenav.collapsed .lbl, .sidenav.collapsed .cnt.num, .sidenav.collapsed .grp { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.sidenav.collapsed a { position: relative; }
+.sidenav.collapsed .cnt.warn { position: absolute; top: 1px; right: 4px; font-size: 10px; line-height: 1; }
+.sidenav.collapsed ul + .grp + ul { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .content { container-type: inline-size; min-width: 0; }
 .sec { margin: 0; font-size: 16px; font-weight: 650; }
 .secdesc { margin: 2px 0 12px; color: var(--muted); font-size: 12px; }
@@ -325,5 +336,12 @@ body.vscode-high-contrast .fill, body.vscode-high-contrast .bar, body.vscode-hig
   .sidenav a { gap: 6px; }
   .sidenav a { border-left-width: 1px; border-bottom-width: 3px; white-space: nowrap; }
   .sidenav a[aria-current="page"] { border-left-color: transparent; border-bottom-color: var(--accent); }
+  /* the row layout has room for labels, so the collapse toggle does not apply here */
+  .sidenav .navtop { display: none; }
+  .shell.navcollapsed { grid-template-columns: minmax(0, 1fr); }
+  .sidenav.collapsed a:not(.navtoggle) { padding: 5px 10px; gap: 6px; }
+  .sidenav.collapsed .cnt.warn { position: static; font-size: 11.5px; }
+  .sidenav.collapsed .lbl, .sidenav.collapsed .cnt.num { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; }
+  .sidenav.collapsed ul + .grp + ul { margin-top: 0; padding-top: 0; border-top: 0; }
 }
 `;
