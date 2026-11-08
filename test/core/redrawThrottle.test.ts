@@ -25,7 +25,11 @@ function fakeClock() {
     }
     now = end;
   };
-  return { clock, advance, timers };
+  /** Moves the wall clock without firing timers (a clock change, not elapsed time). */
+  const jump = (ms: number) => {
+    now += ms;
+  };
+  return { clock, advance, jump, timers };
 }
 
 function setup(changed = () => true) {
@@ -156,5 +160,16 @@ describe("RedrawThrottle (A11y C1)", () => {
     expect(x.draws()).toBe(2);
     x.t.request("k", true); // after a reset the next request draws at once
     expect(x.draws()).toBe(3);
+  });
+
+  it("a clock set back never holds a focused redraw longer than the interval", () => {
+    const x = setup();
+    x.t.request("k", true);
+    x.advance(1_000);
+    x.jump(-3_600_000); // wall clock set back 1 h (NTP or a manual change)
+    x.t.request("k", true);
+    x.advance(FOCUSED_REDRAW_MS);
+    expect(x.draws()).toBe(2);
+    expect(x.t.pending).toBe(false);
   });
 });

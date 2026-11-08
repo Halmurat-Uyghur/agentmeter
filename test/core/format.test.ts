@@ -673,3 +673,75 @@ describe("review fix 5: status bar label and tooltip follow the statusBar mode",
     expect(tooltipMarkdown(s, { unit: "tokens", statusBar: "session" })).not.toMatch(/\$\d|est\\\./);
   });
 });
+
+describe("review fixes: money, spoken, rangeState and changeAmount in a display currency", () => {
+  const cur = (code: string, rate = 1.37) => ({ code, rate, date: "2026-11-06" });
+  const reset = async () => (await import("../../src/core/format")).setDisplayCurrency(undefined);
+
+  it("spoken never calls a non-USD amount US dollars", async () => {
+    const { money, setDisplayCurrency } = await import("../../src/core/format");
+    const { CURRENCIES } = await import("../../src/core/currency");
+    try {
+      for (const [code] of CURRENCIES) {
+        if (code === "USD") continue;
+        setDisplayCurrency(cur(code));
+        const s = spoken(`${money(12.34)} est. · <${money(150.4)}`);
+        expect(s, code).not.toContain("US dollars");
+        expect(s, code).not.toMatch(/[A-Za-z]\d/);
+      }
+      setDisplayCurrency(cur("CAD"));
+      expect(spoken(money(12.34))).toBe("16.91 CAD");
+    } finally {
+      await reset();
+    }
+    expect(spoken("$12.40")).toBe("12.40 US dollars");
+  });
+
+  it("changeAmount 'same' follows display precision in GBP/JPY", async () => {
+    const { changeAmount, setDisplayCurrency } = await import("../../src/core/format");
+    try {
+      setDisplayCurrency(cur("GBP", 0.78));
+      const g = changeAmount(m(0.0006e11, 1, 0), m(0, 1, 0), "cost").text;
+      expect(g).toBe("same");
+      setDisplayCurrency(cur("JPY", 150));
+      expect(changeAmount(m(0.0004e11, 1, 0), m(0, 1, 0), "cost").text).toBe("▲ ¥0.060");
+    } finally {
+      await reset();
+    }
+  });
+
+  it("rangeState is not over when shown spend equals shown max", async () => {
+    const { rangeState, setDisplayCurrency } = await import("../../src/core/format");
+    const { rangeToUsd } = await import("../../src/core/currency");
+    expect(rangeState(150.4, { min: 20, max: 150 })).toBe("in");
+    expect(rangeState(151, { min: 20, max: 150 })).toBe("over");
+    expect(rangeState(19.999, { min: 20, max: 150 })).toBe("in");
+    expect(rangeState(19.99, { min: 20, max: 150 })).toBe("under");
+    const CAD = cur("CAD", 1.3712);
+    try {
+      setDisplayCurrency(CAD);
+      const r = rangeToUsd({ min: 10, max: 50 }, CAD);
+      expect(rangeState(r.max + 0.000003, r)).toBe("in");
+      expect(rangeState(r.max + 0.01, r)).toBe("over");
+    } finally {
+      await reset();
+    }
+  });
+
+  it("money band edges and sub-tenth-cent", async () => {
+    const { money } = await import("../../src/core/format");
+    expect(money(0.9995)).toBe("$1.00");
+    expect(money(99.995)).toBe("$100");
+    expect(money(99.5)).toBe("$99.50");
+    expect(money(0.0004)).toBe("<$0.001");
+    expect(money(0.0005)).toBe("$0.001");
+    expect(money(0)).toBe("$0.00");
+    expect(spoken(money(0.0004))).toBe("less than 0.001 US dollars");
+    const one = cur("CAD", 1);
+    expect(money(0.9995, one)).toBe("CA$1.00");
+    expect(money(99.995, one)).toBe("CA$100");
+    expect(money(0.0004, one)).toBe("<CA$0.001");
+    expect(money(0, one)).toBe("CA$0.00");
+    expect(spoken(money(0.0004, one))).toBe("less than 0.001 CAD");
+  });
+});

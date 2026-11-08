@@ -1,6 +1,6 @@
 // A2: the Overview dashboard cards (Today hero, heatmap, cache ring, Month to
 // date, last 30 days) and the wordmark header.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LOCAL_BANNER, SESSION_TOTAL_NOTE } from "../../src/core/format";
 import { changeVs, dailyBars } from "../../src/core/panel/dashboard";
 import { PANEL_CSS } from "../../src/core/panelCss";
@@ -350,6 +350,23 @@ describe("v0.4 review fixes (dashboard)", () => {
     expect(heat).toMatch(/aria-label="Daily activity from Jun 22 to Nov 6: 5 of 138 days active, busiest Nov 4 \(6\.0M tokens\)\. 6 active days since Nov 1\./);
     expect(PANEL_CSS).toMatch(/\.heat \.ax \{[^}]*font-size: 10\.5px/);
     expect(PANEL_CSS).not.toMatch(/\.heat \{[^}]*max-width: 420px/);
+  });
+
+  it("heatmap labels the first month that starts within the first weeks", () => {
+    // Sat Nov 7 with activity since Jan 1: the 20-week grid starts Mon Jun 22 and July 1 sits in
+    // column 1; a real month start replaces the column-0 label instead of being dropped.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 10, 7, 10));
+    try {
+      const today = day(10, 7);
+      const days: DayStats[] = [];
+      for (let d = new Date(2026, 0, 1); d.getTime() <= today; d.setDate(d.getDate() + 1)) days.push(stats(d.getTime(), 1000));
+      const html = render(snap({ generatedAtMs: new Date(2026, 10, 7, 10).getTime(), dayStartMs: today, activity: { fromMs: day(0, 1), days } }));
+      const labels = [...html.matchAll(/<text class="ax" x="(\d+)" y="11">(\w+)<\/text>/g)].map((x) => `${x[2]}@${x[1]}`);
+      expect(labels).toEqual(["Jul@45", "Aug@105", "Sep@180", "Oct@240", "Nov@300"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("design #5: the chips sit in the card header, three value ticks, no repeated average in the legend", () => {

@@ -11,14 +11,14 @@ export interface CopilotRoot {
  * Resolves the Copilot folder: the `copilotUsageMonitor.copilotHome` setting, then the
  * `COPILOT_HOME` environment variable, then `<homedir>/.copilot`. Blank values fall through.
  * Relative values resolve against the home folder, never the process cwd. Pure: the caller
- * passes env and homedir.
+ * passes env and homedir. A non-string setting (settings.json `"copilotHome": 42`) counts as unset.
  */
 export function resolveCopilotRoot(o: {
-  setting?: string;
+  setting?: unknown;
   env: Record<string, string | undefined>;
   homedir: string;
 }): CopilotRoot {
-  const setting = o.setting?.trim();
+  const setting = typeof o.setting === "string" ? o.setting.trim() : undefined;
   if (setting) return { root: resolveAgainstHome(expandTilde(setting, o.homedir), o.homedir), source: "setting" };
 
   const env = o.env.COPILOT_HOME?.trim();
@@ -29,7 +29,8 @@ export function resolveCopilotRoot(o: {
 
 function expandTilde(value: string, homedir: string): string {
   if (value === "~") return homedir;
-  if (value.startsWith("~/")) return path.join(homedir, value.slice(2));
+  // `~\` too, so a Windows-style setting expands on win32.
+  if (/^~[\\/]/.test(value)) return path.join(homedir, value.slice(2));
   return value;
 }
 

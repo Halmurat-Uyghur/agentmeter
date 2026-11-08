@@ -15,7 +15,7 @@ import { clampHistory, UsageMonitor } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
-import { nextLocalMidnight } from "./core/store";
+import { monthStarts, nextLocalMidnight } from "./core/store";
 import { STATUS_BAR_CONTENTS, type Currency, type Filter, type Snapshot, type StatusBarContent, type ViewOptions } from "./core/types";
 import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
   panel.setNavCollapsed(readNavCollapsed());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */
-  const alert = new TargetAlert(() => panel.show());
+  const alert = new TargetAlert(() => panel.show(), log);
   /** basenames of the open workspace folders, for the side bar's "This workspace" group */
   let folders = readFolders();
   context.subscriptions.push(channel, status, panel, sidebar);
@@ -101,6 +101,9 @@ export function activate(context: vscode.ExtensionContext): void {
   let history = readHistory();
   let rate: Currency | undefined;
   let rateTimer: ReturnType<typeof setTimeout> | undefined;
+  /** bumped per refreshRate call; a fetch that settles after a newer call (or after dispose) is dropped (v0.7) */
+  let rateGen = 0;
+  let disposed = false;
   let view = readView(rate);
   /** viewed month start, kept across monitor restarts; undefined = current */
   let selected: number | undefined;
@@ -224,17 +227,34 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.workspace.getConfiguration(SECTION).update("panelNavCollapsed", collapsed, vscode.ConfigurationTarget.Global);
   };
 
+  /** "cost" | "tokens" sets the unit, no argument toggles it, anything else is ignored. Written at
+   * the scope that holds the value (folder, workspace, else user), so no workspace entry is created;
+   * a rejected write rolls the unit back (v0.7). */
   const setUnit = async (arg?: unknown) => {
-    const unit = arg === "cost" || arg === "tokens" ? arg : view.unit === "cost" ? "tokens" : "cost";
+    if (arg !== undefined && arg !== "cost" && arg !== "tokens") return;
+    const prev = view.unit;
+    const unit = arg ?? (prev === "cost" ? "tokens" : "cost");
     view = { ...view, unit };
     render();
-    await vscode.workspace.getConfiguration(SECTION).update("display", unit, vscode.ConfigurationTarget.Global);
+    const c = vscode.workspace.getConfiguration(SECTION);
+    const at = c.inspect("display");
+    const T = vscode.ConfigurationTarget;
+    const target = at?.workspaceFolderValue !== undefined ? T.WorkspaceFolder : at?.workspaceValue !== undefined ? T.Workspace : T.Global;
+    try {
+      await c.update("display", unit, target);
+    } catch {
+      log.error("unit.write", "WRITE_FAILED");
+      if (view.unit !== unit) return; // changed again meanwhile
+      view = { ...view, unit: prev };
+      render();
+    }
   };
 
   /** Fetches the chosen currency's rate now and every 6 hours; USD clears it and makes no request. */
   const refreshRate = async () => {
     if (rateTimer) clearTimeout(rateTimer);
     rateTimer = undefined;
+    const gen = ++rateGen;
     const code = readCurrency();
     if (code === DEFAULT_CURRENCY) {
       rate = undefined;
@@ -243,10 +263,12 @@ export function activate(context: vscode.ExtensionContext): void {
     let next = RATE_REFRESH_MS;
     try {
       const r = await fetchUsdRate(code);
-      if (readCurrency() !== code) return; // changed while in flight; that change re-fetches
+      // deactivated, or superseded by a newer call (a currency change), while in flight (v0.7)
+      if (disposed || gen !== rateGen) return;
       rate = r;
       log.count("rate.fetched", 1);
     } catch (e) {
+      if (disposed || gen !== rateGen) return;
       log.error("rate.fetch", e instanceof Error && /^[A-Z0-9_]+$/.test(e.message) ? e.message : "NETWORK");
       next = RATE_RETRY_MS;
     }
@@ -267,6 +289,9 @@ export function activate(context: vscode.ExtensionContext): void {
     stop();
     const { root, source } = resolve();
     rootKey = `${source}\u0000${root}`;
+    // A viewed month outside the (possibly shorter) window is dropped, so raising
+    // historyMonths again later does not jump back to it (v0.7).
+    if (selected !== undefined && selected < monthStarts(new Date(), history)[0]!) selected = undefined;
     const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
     if (selected !== undefined) m.selectMonth(selected);
     if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
@@ -300,7 +325,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     { dispose: stop },
-    { dispose: () => rateTimer && clearTimeout(rateTimer) },
+    {
+      dispose: () => {
+        disposed = true;
+        if (rateTimer) clearTimeout(rateTimer);
+        rateTimer = undefined;
+      },
+    },
     vscode.commands.registerCommand("copilotUsageMonitor.selectCurrency", pickCurrency),
     vscode.commands.registerCommand("copilotUsageMonitor.showDetails", () => panel.show()),
     vscode.commands.registerCommand("copilotUsageMonitor.refresh", () => monitor?.refresh({ full: true })),

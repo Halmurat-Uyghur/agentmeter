@@ -56,6 +56,13 @@ const TAIL_BYTES = 64;
 const NL = 0x0a;
 const CR = 0x0d;
 const EMPTY = Buffer.alloc(0);
+/** UTF-8 byte order mark; skipped at offset 0 only (review A5). */
+const BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+/**
+ * Read-only; never follow a symlink swapped in after discovery, and never block on
+ * a FIFO (review A7). `?? 0` keeps Windows, which lacks both flags, working.
+ */
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
 
 function errorCode(e: unknown): ReadErrorCode {
   const code = (e as { code?: unknown } | null)?.code;
@@ -106,8 +113,13 @@ export class LineTailer {
     };
     let handle: fs.promises.FileHandle | undefined;
     try {
-      handle = await fs.promises.open(this.path, "r");
+      handle = await fs.promises.open(this.path, OPEN_FLAGS);
       const st = await handle.stat();
+      // A FIFO, device or directory is unreadable, never waited on (review A7).
+      if (!st.isFile()) {
+        result.error = "OTHER";
+        return result; // the finally closes the handle
+      }
       const size = st.size;
       let cur = this.cursor;
       if (
@@ -123,6 +135,7 @@ export class LineTailer {
         this.skipping = false;
       }
       this.cursor = cur;
+      if (cur.offset === 0 && !(await this.skipBom(handle, cur, size))) return result;
 
       while (cur.offset < size) {
         const want = Math.min(this.chunkBytes, size - cur.offset);
@@ -143,6 +156,22 @@ export class LineTailer {
       await handle?.close().catch(() => undefined);
     }
     return result;
+  }
+
+  /**
+   * At offset 0: steps past a UTF-8 BOM so the first line classifies normally.
+   * False while the file holds only part of a BOM (wait for the rest).
+   */
+  private async skipBom(handle: fs.promises.FileHandle, cur: Cursor, size: number): Promise<boolean> {
+    const n = Math.min(BOM.length, size);
+    if (n === 0) return true;
+    const head = Buffer.alloc(n);
+    const { bytesRead } = await handle.read(head, 0, n, 0);
+    if (!head.subarray(0, bytesRead).equals(BOM.subarray(0, bytesRead))) return true;
+    if (bytesRead < BOM.length) return false;
+    cur.offset = BOM.length;
+    cur.tail = Buffer.from(BOM);
+    return true;
   }
 
   private async mustReset(

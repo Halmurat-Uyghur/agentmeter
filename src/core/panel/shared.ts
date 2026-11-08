@@ -115,13 +115,16 @@ function scopeCols(head: string): string {
  */
 export function val(text: string): string {
   if (text === DASH) return `<span aria-hidden="true">${DASH}</span><span class="sr">not reported</span>`;
-  if (text.endsWith("*")) return `${escapeHtml(text.slice(0, -1))}<span class="star" aria-hidden="true">*</span><span class="sr"> (may be incomplete)</span>`;
+  // "*" last, or before a " unit" suffix ("1.5M* tok", the side bar's tokens view).
+  const m = /^(.*)\*( [a-z]+)?$/s.exec(text);
+  if (m) return `${escapeHtml(m[1]!)}<span class="star" aria-hidden="true">*</span><span class="sr"> (may be incomplete)</span>${escapeHtml(m[2] ?? "")}`;
   return escapeHtml(text);
 }
 
-/** Text with ▲ ▼ × or "<" in it: shown as is, read as words ("up 2.7 times"). */
+/** Text with ▲ ▼ × or "<" in it: shown as is, read as words ("up 2.7 times"). The "<" may
+ * precede a digit or a currency symbol of up to 4 characters ("<$0.001", "<CA$0.001", "<CHF 0.001"). */
 export function sym(text: string): string {
-  if (!/[▲▼×]|<\d/.test(text)) return escapeHtml(text);
+  if (!/[▲▼×]|<[^\s\d<>]{0,4}\s?\d/.test(text)) return escapeHtml(text);
   return `<span aria-hidden="true">${escapeHtml(text)}</span><span class="sr">${escapeHtml(spoken(text))}</span>`;
 }
 

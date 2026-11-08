@@ -251,3 +251,12 @@ describe("monitor: session title lifecycle", () => {
     expect(names()).toEqual([[ID1, 1]]);
   });
 });
+
+describe("parseWorkspaceName: UTF-8 BOM (review A5)", () => {
+  it("a leading BOM does not hide the first name: line", () => {
+    expect(parseWorkspaceName("﻿name: My session\ncwd: /x\n")).toBe("My session");
+  });
+  it("a BOM elsewhere is not a name: line", () => {
+    expect(parseWorkspaceName("cwd: /x\n﻿name: nope\n")).toBeUndefined();
+  });
+});

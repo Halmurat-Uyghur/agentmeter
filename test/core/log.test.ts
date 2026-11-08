@@ -64,4 +64,15 @@ describe("Logger", () => {
       "timing refresh 0ms",
     ]);
   });
+
+  it("a throwing sink never throws out of Logger", () => {
+    const log = new Logger(() => {
+      throw new Error("sink down");
+    });
+    expect(() => {
+      log.count("usage", 1);
+      log.error("refresh", "EIO");
+      log.timing("refresh", 1);
+    }).not.toThrow();
+  });
 });

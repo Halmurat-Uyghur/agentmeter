@@ -382,14 +382,16 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
     empty: "Nothing logged in the last 7 days.",
   });
 
-  // Insights of the month the panel shows.
+  // Insights of the month the panel shows, under the panel's filter (the monitor computes
+  // them for the panel's Insights section); unlike the rows above, so the copy says so.
   const n = s.month?.insights?.items.length ?? 0;
+  const filtered = s.filter?.project !== undefined || s.filter?.tool !== undefined ? " for the panel's filter" : "";
   const insights =
     n > 0
       ? {
           text: plural(n, "finding"),
-          title: [SIDEBAR_BANNER, `${plural(n, "pattern")} in the sessions of the month the panel shows. Opens Insights.`].join("\n"),
-          spoken: `${plural(n, "finding")}. Review in Insights`,
+          title: [SIDEBAR_BANNER, `${plural(n, "pattern")} in the sessions of the month the panel shows${filtered}. Opens Insights.`].join("\n"),
+          spoken: `${plural(n, "finding")}${filtered}. Review in Insights`,
           link: section("insights"),
         }
       : undefined;

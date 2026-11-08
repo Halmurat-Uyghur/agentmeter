@@ -428,3 +428,88 @@ describe("v0.6 fields: initiator, finishReason, tool definitions, per-type cost"
     );
   });
 });
+
+describe("record key policy (review A1)", () => {
+  // Real usageIds are base64, 496–516 chars; real event ids are 36-char UUIDs.
+  const B64 = "QUJD+/09".repeat(63) + "ab+/=="; // 510 chars of the base64 alphabet
+  const EID = "0000bbbb-0000-4000-8000-000000000002";
+
+  it("a real-shaped base64 usageId is the key", () => {
+    const id = B64.padEnd(512, "A");
+    const r = record(parseUsageLine(line({ usageId: id, id: EID }), "f"));
+    expect(r.key).toBe(id);
+    expect(r.keySource).toBe("usageId");
+  });
+
+  it.each([
+    ["a space", "abc def"],
+    ["1025 chars", "A".repeat(1025)],
+    ["a <", "abc<def"],
+    ["a newline", "abc\ndef"],
+  ])("a usageId with %s falls back to the event id", (_name, bad) => {
+    const r = record(parseUsageLine(line({ usageId: bad, id: EID }), "f"));
+    expect(r.key).toBe(EID);
+    expect(r.keySource).toBe("eventId");
+  });
+
+  it("a 1024-char usageId is still accepted", () => {
+    const id = "A".repeat(1024);
+    expect(record(parseUsageLine(line({ usageId: id, id: EID }), "f")).key).toBe(id);
+  });
+
+  it.each([
+    ["a space", "CANARY prompt text"],
+    ["129 chars", "e".repeat(129)],
+    ["a +", "a+b"],
+  ])("no-key when the usageId is bad and the event id has %s", (_name, badId) => {
+    expect(parseUsageLine(line({ usageId: "bad id", id: badId }), "f")).toStrictEqual({ kind: "unrecognized", reason: "no-key" });
+  });
+});
+
+describe("re-spaced type key is suspect (review A2)", () => {
+  it.each([
+    `{"type" : "session.usage_record","data":{}}`,
+    `{"type":\t"session.usage_record","data":{}}`,
+    `{ "type":"session.usage_record","data":{}}`,
+    `{\n"type"  :  "session.usage_record"}`.replace("\n", " "),
+  ])("%s → suspect", (s) => {
+    expect(cls(s)).toBe("suspect");
+  });
+
+  it("only an anchored type key counts: the bare type string elsewhere is skipped", () => {
+    expect(cls(`{"type":"tool.result","data":{"text":"session.usage_record"}}`)).toBe("skip");
+    expect(cls(`{"id":"x","note" : "session.usage_record"}`)).toBe("skip");
+  });
+});
+
+describe("strict timestamps (review A3)", () => {
+  it.each(["1", "2026-11-07T02:00:00.000", "2026-11-07", "2026-11-07 02:00:00Z", "Sat, 07 Nov 2026 02:00:00 GMT", "2026-11-07T02:00:00.000z"])(
+    "%s is bad-timestamp",
+    (ts) => {
+      expect(parseUsageLine(line({ timestamp: ts }), "f")).toStrictEqual({ kind: "unrecognized", reason: "bad-timestamp" });
+    },
+  );
+
+  it.each([
+    ["2026-11-07T02:00:00Z", Date.UTC(2026, 10, 7, 2)],
+    ["2026-11-07T02:00:00.000Z", Date.UTC(2026, 10, 7, 2)],
+    ["2026-11-07T02:00:00.000+00:00", Date.UTC(2026, 10, 7, 2)],
+    ["2026-11-07T04:00:00-02:00", Date.UTC(2026, 10, 7, 6)],
+  ])("%s is accepted", (ts, ms) => {
+    expect(record(parseUsageLine(line({ timestamp: ts }), "f")).timestampMs).toBe(ms);
+  });
+});
+
+describe("tokenDetails tokenType must be a string (review A6)", () => {
+  it.each([
+    ["missing", (d: Plain) => delete d.tokenType],
+    ["a number", (d: Plain) => (d.tokenType = 3)],
+    ["null", (d: Plain) => (d.tokenType = null)],
+  ])("a tokenType that is %s drops the whole split", (_name, patch) => {
+    const d = JSON.parse(JSON.stringify(DETAILS)) as Plain[];
+    patch(d[3]!);
+    const r = record(parseUsageLine(line({ tokenDetails: d }), "f"));
+    expect("typeCost" in r).toBe(false);
+    expect(r.nanoAiu).toBe(2_000_000_000);
+  });
+});

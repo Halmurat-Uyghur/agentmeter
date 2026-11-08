@@ -13,11 +13,9 @@ export interface Tokens {
 /** Who started a call (v0.6): "user" for a prompt, "agent" for a follow-up call the agent
  * made on its own. Any other logged value is "other"; the log's string is never kept. */
 export type Initiator = "user" | "agent" | "other";
-export const INITIATORS: readonly Initiator[] = ["user", "agent", "other"];
 
 /** Why a call ended (v0.6). Values outside the known set are "other"; the log's string is never kept. */
 export type FinishReason = "stop" | "tool_calls" | "length" | "content_filter" | "other";
-export const FINISH_REASONS: readonly FinishReason[] = ["stop", "tool_calls", "length", "content_filter", "other"];
 
 /**
  * A call's logged AIU split by token type (v0.6), from copilotUsage.tokenDetails[]:

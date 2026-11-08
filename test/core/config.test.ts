@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveCopilotRoot } from "../../src/core/config";
 
 describe("resolveCopilotRoot", () => {
@@ -58,5 +58,28 @@ describe("resolveCopilotRoot", () => {
       root: "/h/alt",
       source: "setting",
     });
+  });
+
+  it.each([42, true, {}, ["/x"], null])("a non-string setting %j falls through to env/default", (setting) => {
+    const o = { setting: setting as unknown, homedir: "/h" };
+    expect(resolveCopilotRoot({ ...o, env: { COPILOT_HOME: "/x/cp" } })).toEqual({ root: "/x/cp", source: "env" });
+    expect(resolveCopilotRoot({ ...o, env: {} })).toEqual({ root: "/h/.copilot", source: "default" });
+  });
+
+  it("expands ~\\ on win32", async () => {
+    vi.resetModules();
+    vi.doMock("node:path", async () => {
+      const p = await vi.importActual<typeof import("node:path")>("node:path");
+      return { ...p.win32, default: p.win32 };
+    });
+    try {
+      const { resolveCopilotRoot: resolveWin } = await import("../../src/core/config");
+      const homedir = "C:\\Users\\me";
+      expect(resolveWin({ setting: "~\\.copilot-work", env: {}, homedir }).root).toBe("C:\\Users\\me\\.copilot-work");
+      expect(resolveWin({ setting: "~/x/", env: {}, homedir }).root).toBe("C:\\Users\\me\\x");
+    } finally {
+      vi.doUnmock("node:path");
+      vi.resetModules();
+    }
   });
 });

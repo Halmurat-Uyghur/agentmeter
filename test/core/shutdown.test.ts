@@ -256,3 +256,28 @@ describe("all-zero model entries (N2)", () => {
     expect(records(parseShutdownLine(line({ models: { m: { ...zero, requests: 2 } } }), "f"))).toHaveLength(1);
   });
 });
+
+describe("strict timestamps and sessionStartTime (review A3, A4)", () => {
+  it.each(["1", "2026-11-07T02:00:00.000", "2026-11-07"])("timestamp %s is bad-timestamp", (ts) => {
+    expect(parseShutdownLine(line({ timestamp: ts, sessionStartTime: 0 }), "f")).toStrictEqual({ kind: "unrecognized", reason: "bad-timestamp" });
+  });
+
+  it.each([
+    ["2026-11-07T02:00:00Z", Date.UTC(2026, 10, 7, 2)],
+    ["2026-11-07T02:00:00.000+00:00", Date.UTC(2026, 10, 7, 2)],
+  ])("timestamp %s is accepted", (ts, ms) => {
+    const [r] = records(parseShutdownLine(line({ timestamp: ts, sessionStartTime: ms - 1000 }), "f"));
+    expect(r!.timestampMs).toBe(ms);
+    expect(r!.startedMs).toBe(ms - 1000);
+  });
+
+  it("a sessionStartTime of 0 is not a start time (1970)", () => {
+    const [r] = records(parseShutdownLine(line({ sessionStartTime: 0 }), "f"));
+    expect("startedMs" in r!).toBe(false);
+  });
+
+  it("a sessionStartTime equal to the timestamp is kept", () => {
+    const [r] = records(parseShutdownLine(line({ sessionStartTime: Date.parse(TS) }), "f"));
+    expect(r!.startedMs).toBe(Date.parse(TS));
+  });
+});

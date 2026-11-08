@@ -36,6 +36,30 @@ const SHUTDOWN_NEEDLES = [
   Buffer.from(`${TYPE_KEY}${SHUTDOWN_TYPE}"`),
   Buffer.from(`"type": "${SHUTDOWN_TYPE}"`),
 ];
+const TYPE_NAME = Buffer.from(`"type"`);
+const USAGE_NAME = Buffer.from(`"${USAGE_TYPE}"`);
+const SHUTDOWN_NAME = Buffer.from(`"${SHUTDOWN_TYPE}"`);
+
+/** JSON whitespace (a line holds no \n): space, tab, \r. */
+function skipWs(buf: Buffer, i: number, end: number): number {
+  while (i < end && (buf[i] === 0x20 || buf[i] === 0x09 || buf[i] === 0x0d)) i++;
+  return i;
+}
+
+/**
+ * True if buf[start, end) opens like /^\{\s*"type"\s*:\s*"<name>"/ (review A2): the
+ * type key first but re-spaced. Anchored at the line start, so the bare type string
+ * inside another event's data never matches. Byte compare only, no decoding.
+ */
+function hasSpacedTypeHead(buf: Buffer, start: number, end: number, name: Buffer): boolean {
+  if (start >= end || buf[start] !== 0x7b) return false;
+  let i = skipWs(buf, start + 1, end);
+  if (!startsWith(buf, i, end, TYPE_NAME)) return false;
+  i = skipWs(buf, i + TYPE_NAME.length, end);
+  if (i >= end || buf[i] !== 0x3a) return false;
+  i = skipWs(buf, i + 1, end);
+  return startsWith(buf, i, end, name);
+}
 
 function startsWith(
   buf: Buffer,
@@ -71,17 +95,18 @@ export function isShutdownHead(buf: Buffer, start: number, end: number): boolean
 /** Like hasUsageNeedle, for the shutdown type. Raw byte search, no decoding. */
 export function hasShutdownNeedle(buf: Buffer, start: number, end: number): boolean {
   const line = buf.subarray(start, end);
-  return SHUTDOWN_NEEDLES.some((needle) => line.indexOf(needle) !== -1);
+  return SHUTDOWN_NEEDLES.some((needle) => line.indexOf(needle) !== -1) || hasSpacedTypeHead(buf, start, end, SHUTDOWN_NAME);
 }
 
 /**
  * True if the usage type appears as a `"type"` value anywhere in buf[start, end)
- * (keys reordered, re-spaced, or nested). Raw byte search, no decoding.
+ * (keys reordered, re-spaced, or nested), or the line opens with a re-spaced
+ * `"type"` key naming it (review A2). Raw byte search, no decoding.
  */
 export function hasUsageNeedle(buf: Buffer, start: number, end: number): boolean {
   // subarray is a view (no copy, no decode) so the search stops at `end`.
   const line = buf.subarray(start, end);
-  return SUSPECT_NEEDLES.some((needle) => line.indexOf(needle) !== -1);
+  return SUSPECT_NEEDLES.some((needle) => line.indexOf(needle) !== -1) || hasSpacedTypeHead(buf, start, end, USAGE_NAME);
 }
 
 /** How far past `{"type":"` to look for the closing quote of the type name. */
@@ -123,8 +148,22 @@ function count(v: unknown): number | undefined {
     : undefined;
 }
 
-function nonEmptyString(v: unknown): string | undefined {
-  return typeof v === "string" && v.length > 0 ? v : undefined;
+/**
+ * Record keys (review A1). Real usageIds are base64, 496–516 chars; real event ids
+ * are 36-char UUIDs. The key is only an in-memory dedupe/sort key, never rendered.
+ */
+const USAGE_ID = /^[A-Za-z0-9+\/=._:-]{1,1024}$/;
+const EVENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/**
+ * ISO 8601 with seconds and a zone, as Copilot writes it (`YYYY-MM-DDTHH:MM:SS.sssZ`;
+ * 46 of 46 records). A zone-less time would be read as local time, "1" as a year (review A3).
+ */
+const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+
+/** Epoch ms of a log timestamp of the TIMESTAMP shape, else NaN. */
+function timestampOf(v: unknown): number {
+  return typeof v === "string" && TIMESTAMP.test(v) ? Date.parse(v) : NaN;
 }
 
 const MODEL_ID = /^[A-Za-z0-9._:\/-]{1,100}$/;
@@ -202,7 +241,8 @@ export const MAX_TITLE_CHARS = 60;
  * and empty values are no title. Every other key (cwd, git_root, branch, ...) is ignored.
  */
 export function parseWorkspaceName(text: string): string | undefined {
-  const m = /^name:[ \t]*(.*)$/m.exec(text);
+  // A leading UTF-8 BOM would hide a `name:` on the first line (review A5).
+  const m = /^name:[ \t]*(.*)$/m.exec(text.startsWith("\uFEFF") ? text.slice(1) : text);
   if (!m) return undefined;
   const raw = m[1]!.trim();
   let v: string;
@@ -261,7 +301,7 @@ export function parseShutdownLine(line: string, folderId: string): ShutdownParse
   const data = event.data;
   const metrics = isObject(data) ? data.modelMetrics : undefined;
   if (!isObject(data) || !isObject(metrics)) return { kind: "unrecognized", reason: "no-model-metrics" };
-  const timestampMs = typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+  const timestampMs = timestampOf(event.timestamp);
   if (!Number.isFinite(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
   const entries = Object.entries(metrics);
   if (entries.length === 0) return { kind: "empty" };
@@ -302,7 +342,8 @@ export function parseShutdownLine(line: string, folderId: string): ShutdownParse
       timestampMs,
       tokens,
     };
-    if (started !== undefined && started <= timestampMs) record.startedMs = started;
+    // 0 is "not known", not 1970 (review A4).
+    if (started !== undefined && started > 0 && started <= timestampMs) record.startedMs = started;
     if (model !== undefined) record.model = model;
     if (requests !== undefined) record.calls = requests;
     let nanoAiu = count(m.totalNanoAiu);
@@ -343,7 +384,7 @@ function enumValue<T>(v: unknown, known: ReadonlyMap<string, T>, other: T): T | 
 
 /**
  * The per-type split of `totalNanoAiu` from copilotUsage.tokenDetails[] (v0.6). Every
- * entry needs integer tokenCount ≥ 0, batchSize > 0 and costPerBatch ≥ 0, else there is
+ * entry needs a string tokenType, integer tokenCount ≥ 0, batchSize > 0 and costPerBatch ≥ 0, else there is
  * no split; tokenType is mapped to a fixed bucket and never kept; the entry's model
  * string is not read. The split is kept only when it adds up to `total` (within one
  * nanoAIU per entry for rounding), so a shown part is exact.
@@ -361,8 +402,10 @@ function typeCostOf(details: unknown, total: number | undefined): TypeCost | und
     const batch = count(d.batchSize);
     const per = count(d.costPerBatch);
     if (tokens === undefined || batch === undefined || batch === 0 || per === undefined) return undefined;
+    // A missing or non-string tokenType is an invalid entry: no split (review A6).
+    if (typeof d.tokenType !== "string") return undefined;
     const nano = (tokens / batch) * per;
-    const kind = typeof d.tokenType === "string" ? TOKEN_TYPES.get(d.tokenType) : undefined;
+    const kind = TOKEN_TYPES.get(d.tokenType);
     if (kind === undefined) {
       other += nano;
       continue;
@@ -399,13 +442,12 @@ export function parseUsageLine(line: string, folderId: string): ParseResult {
     return { kind: "unrecognized", reason: "no-usage-object" };
 
   const accounting = isObject(usage.accounting) ? usage.accounting : {};
-  const usageId = nonEmptyString(accounting.usageId);
-  const eventId = nonEmptyString(event.id);
+  const usageId = typeof accounting.usageId === "string" && USAGE_ID.test(accounting.usageId) ? accounting.usageId : undefined;
+  const eventId = typeof event.id === "string" && EVENT_ID.test(event.id) ? event.id : undefined;
   const key = usageId ?? eventId;
   if (key === undefined) return { kind: "unrecognized", reason: "no-key" };
 
-  const timestampMs =
-    typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
+  const timestampMs = timestampOf(event.timestamp);
   if (!Number.isFinite(timestampMs))
     return { kind: "unrecognized", reason: "bad-timestamp" };
 

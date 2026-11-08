@@ -536,7 +536,7 @@ emit("## Roots");
 for (const [k, v] of layout.roots) emit(`- ${k}: ${v}`);
 emit();
 emit("## Layout");
-emit(`- workspace folders: ${layout.hashFolders} (${fmtTypes(layout.hashNameShape)}); unreadable dirs: ${layout.unreadable}`);
+emit(`- workspace folders: ${layout.hashFolders}${layout.hashFolders ? ` (${fmtTypes(layout.hashNameShape)})` : ""}; unreadable dirs: ${layout.unreadable}`);
 emit(`- with chatSessions: ${layout.withChatSessions}; chatSessions *.jsonl files: ${chatFiles.length}; other entries: ${layout.chatOtherEntries}`);
 emit(`- with GitHub.copilot-chat: ${layout.withCopilotChat}; with debug-logs: ${layout.withDebugLogs}`);
 emit(`- GitHub.copilot-chat entries: ${fmtTypes(layout.copilotChatEntries) || "none"}`);
@@ -551,7 +551,7 @@ emit("- first key of each line:");
 for (const [k, n] of dbg.firstBytes) emit(`  - ${k} × ${n}`);
 emit("- top-level keys:");
 for (const [k, m] of dbg.topKeys) emit(`  - ${k}: ${fmtTypes(m)}`);
-emit(`- string name fields: ${fmtTypes(dbg.typeField)}`);
+emit(`- string name fields: ${fmtTypes(dbg.typeField) || "none"}`);
 emit("- event names:");
 for (const [k, n] of [...dbg.eventNames].sort((a, b) => b[1] - a[1])) emit(`  - ${k} × ${n}`);
 emit();
@@ -612,13 +612,26 @@ emit(`- promptTokens vs result.metadata.promptTokens: equal ${q.ptEqual}, differ
 for (const [k, c] of q.models) emit(`- ${k}: passes model allowlist ${c.ok}, fails ${c.bad}, absent ${c.absent}; distinct ${c.distinct.size}`);
 emit(`- modelId vs resolvedModel: equal ${q.modelEqual}, differ ${q.modelDiffer}; toolCallRounds[].modelId passes ${q.roundModel.ok}, fails ${q.roundModel.bad}`);
 emit(`- toolCallRounds per request: ${stats(q.rounds)}`);
-emit(`- time fields: ${fmtTypes(q.ts)}`);
+emit(`- time fields: ${fmtTypes(q.ts) || "none"}`);
 emit(`- ${fmtTypes(q.state) || "no modelState"}`);
-emit(`- agent ids: ${fmtTypes(q.agents)}`);
-emit(`- modes: ${fmtTypes(q.modes)}`);
+emit(`- agent ids: ${fmtTypes(q.agents) || "none"}`);
+emit(`- modes: ${fmtTypes(q.modes) || "none"}`);
 emit(`- recency: today ${q.recency.today}, earlier this month ${q.recency.month}, older ${q.recency.older}, no timestamp ${q.recency.noTs}`);
 emit(`- result.metadata.sessionId equal to a session-state folder id: ${q.metaSessionIsCli}`);
 emit(`- (prompt, output) tokens equal to a session-state usage record: any time ${q.overlapAny}, within ±5 s ${q.overlap5s}; any session-state record within ±5 s: ${q.cliRecordWithin5s}`);
+
+// No Chat log files under any root: say so instead of a zero-filled report, and exit 2
+// like schema-probe.mjs does when there is nothing to read (v0.7).
+if (debugFiles.length === 0 && chatFiles.length === 0) {
+  out.length = 0;
+  emit("# VS Code Copilot Chat log probe (shape only)");
+  emit();
+  emit("## Roots");
+  for (const [k, v] of layout.roots) emit(`- ${k}: ${v}`);
+  emit();
+  emit(`chat-schema-probe: nothing found (no debug-logs or chatSessions *.jsonl files under ${layout.hashFolders} workspace folder${layout.hashFolders === 1 ? "" : "s"})`);
+  process.exitCode = 2;
+}
 
 // ---------------------------------------------------------------- guard
 for (const line of out) {

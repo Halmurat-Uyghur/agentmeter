@@ -34,7 +34,8 @@ export const LONG_CONTEXT_THRESHOLDS: readonly LongContextEntry[] = [
   { id: "gpt-6-sol", thresholdTokens: 272_000 },
   { id: "grok-4", prefix: true, thresholdTokens: 200_000 },
 ];
-/** I1 fires at 3 calls over the threshold whose AIU reaches $0.50 (no month-share floor). */
+/** I1 fires at 3 priced calls over the threshold whose AIU reaches $0.50 (no month-share floor).
+ * Counting priced calls keeps the card's "these calls cost" true of the calls it counts. */
 const LONG_MIN_CALLS = 3;
 const LONG_FLOOR_NANO = 0.5 * NANO_PER_USD;
 
@@ -137,7 +138,7 @@ function longContext(monthRecords: UsageRecord[], conventions: Map<string, Promp
   }
   let best: Insight | undefined;
   for (const [model, g] of [...byModel].sort((a, b) => a[0].localeCompare(b[0]))) {
-    const fires = g.calls >= LONG_MIN_CALLS && g.priced > 0 && g.nano >= LONG_FLOOR_NANO;
+    const fires = g.priced >= LONG_MIN_CALLS && g.nano >= LONG_FLOOR_NANO;
     if (!fires || (best && best.nanoAiu >= g.nano)) continue;
     best = { id: "long-context", nanoAiu: g.nano, tokens: g.tokens, calls: g.calls, sessions: g.sessions.size, model, thresholdTokens: g.threshold, maxPromptTokens: g.max };
   }
@@ -172,11 +173,10 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
   for (const [model, g] of [...byModel].sort((a, b) => a[0].localeCompare(b[0]))) {
     const share = g.prompt > 0 ? g.cacheRead / g.prompt : 1;
     const fires =
-      g.calls >= CACHE_MIN_CALLS &&
+      g.priced >= CACHE_MIN_CALLS && // priced calls, as I1: the stated cost covers the count
       g.sessions.size >= CACHE_MIN_SESSIONS &&
       g.prompt / g.calls >= CACHE_MIN_MEAN_PROMPT &&
       share < CACHE_LOW_SHARE &&
-      g.priced > 0 &&
       clearsFloors(g.nano, monthNano);
     if (!fires || (best && best.nanoAiu >= g.nano)) continue;
     best = { id: "cache-reuse", nanoAiu: g.nano, tokens: g.tokens, calls: g.calls, sessions: g.sessions.size, model, share, meanPromptTokens: g.prompt / g.calls };
