@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const { sink, channel } = createOutputSink();
   const log = new Logger(sink);
   const status = new StatusBar("copilotUsageMonitor.showDetails");
-  const panel = new DetailsPanel();
+  const panel = new DetailsPanel(undefined, context.extensionUri && vscode.Uri.joinPath(context.extensionUri, "media", "icon.svg"));
   panel.setNavCollapsed(readNavCollapsed());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */

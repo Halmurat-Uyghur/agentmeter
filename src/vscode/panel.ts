@@ -26,7 +26,8 @@ export class DetailsPanel implements vscode.Disposable {
   /** webview.html assignments, for the integration tests */
   renders = 0;
 
-  constructor(intervalMs = FOCUSED_REDRAW_MS) {
+  /** `icon` is the logo shown on the editor tab (media/icon.svg); absent in unit tests. */
+  constructor(intervalMs = FOCUSED_REDRAW_MS, private readonly icon?: vscode.Uri) {
     this.throttle = new RedrawThrottle(() => this.draw(), intervalMs);
   }
 
@@ -48,6 +49,7 @@ export class DetailsPanel implements vscode.Disposable {
       vscode.ViewColumn.Active,
       { enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: [], retainContextWhenHidden: false },
     );
+    if (this.icon) this.panel.iconPath = this.icon;
     this.html = undefined;
     this.throttle.reset();
     const panel = this.panel;

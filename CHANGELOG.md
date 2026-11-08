@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **A logo.** A usage gauge over three rising bars (`media/icon.svg`, `media/icon.png`, `media/activity.svg`), drawn in code with Remotion (`tools/logo`, development only; `npm run export` there rewrites the three files). It is the extension's icon, the icon on the details panel's editor tab (before, the tab had none) and the activity bar icon, in place of the generic graph glyph. The icons add about 80 KB to the .vsix; nothing else changes and no network or settings are involved.
+
 ## 0.7.0 - 2026-11-07
 
 A review release: ten independent reviews of the whole code base (parsing, discovery, aggregation, formatting, insights, the panel, the VS Code layer, security, docs and an end-to-end run in VS Code 1.90), each finding reproduced before it was fixed, and every fix shipped with its regression test. No new data is read; nothing is stored.
