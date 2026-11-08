@@ -28,7 +28,7 @@ which prints key paths, types and counts, never values. Read it before pasting.
 - OS and version: <!-- e.g. macOS 15.1, Windows 11 23H2, Ubuntu 24.04 -->
 - VS Code version: <!-- Help → About, or `code --version` -->
 - Copilot version: <!-- `copilot --version` for the CLI; Copilot Chat extension version from the Extensions view -->
-- Copilot Usage Monitor version: <!-- e.g. 0.1.0 -->
+- Copilot Usage Monitor version: <!-- e.g. 0.7.0 -->
 
 **Shape-only probe output (optional)**
 

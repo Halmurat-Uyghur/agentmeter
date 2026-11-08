@@ -12,7 +12,13 @@ export const UNKNOWN_MODEL = "(unknown model)";
 
 interface Entry {
   record: UsageRecord;
-  files: Set<string>;
+  /** file → folderId of the file; a call key counts as held by every folder here (D29) */
+  files: Map<string, string>;
+}
+
+function holds(e: Entry, folderId: string): boolean {
+  for (const f of e.files.values()) if (f === folderId) return true;
+  return false;
 }
 
 function emptyMetric(): Metric {
@@ -92,8 +98,8 @@ export class UsageStore {
   private readonly entries = new Map<string, Entry>();
   /** sessionId → call records held; a session in here hides its session totals */
   private readonly callsPerSession = new Map<string, number>();
-  /** folderId → call records held; a folder in here hides its session totals, whatever
-   * sessionId its call records carry (a resumed or forked session) */
+  /** folderId → call keys held by its files; a folder in here hides its session totals,
+   * whatever sessionId its call records carry (a resumed, forked or copied session) */
   private readonly callsPerFolder = new Map<string, number>();
   /** folderId → store keys of its current session-total records */
   private readonly totalKeys = new Map<string, string[]>();
@@ -103,10 +109,12 @@ export class UsageStore {
     const key = entryKey(r);
     const existing = this.entries.get(key);
     if (existing) {
-      existing.files.add(file);
+      // A copied folder delivers the same key: that folder holds it too (D29).
+      if (r.kind === "call" && !existing.files.has(file) && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
+      if (!existing.files.has(file)) existing.files.set(file, r.folderId);
       return false;
     }
-    this.entries.set(key, { record: r, files: new Set([file]) });
+    this.entries.set(key, { record: r, files: new Map([[file, r.folderId]]) });
     if (r.kind === "call") {
       bump(this.callsPerSession, r.sessionId, 1);
       bump(this.callsPerFolder, r.folderId, 1);
@@ -133,7 +141,7 @@ export class UsageStore {
     for (const r of records) {
       const key = entryKey(r);
       if (r.kind !== "sessionTotal" || this.entries.has(key)) continue;
-      this.entries.set(key, { record: r, files: new Set([file]) });
+      this.entries.set(key, { record: r, files: new Map([[file, folderId]]) });
       keys.push(key);
     }
     if (keys.length > 0) this.totalKeys.set(folderId, keys);
@@ -141,15 +149,19 @@ export class UsageStore {
     return true;
   }
 
-  /** Forgets `file`; records no other file holds are deleted. */
+  /** Forgets `file`; records no other file holds are deleted. A folder stops holding a
+   * call key once none of its files does. */
   resetFile(file: string): void {
     for (const [key, entry] of this.entries) {
-      if (entry.files.delete(file) && entry.files.size === 0) {
+      const folderId = entry.files.get(file);
+      if (folderId === undefined) continue;
+      entry.files.delete(file);
+      const r = entry.record;
+      if (r.kind === "call" && !holds(entry, folderId)) bump(this.callsPerFolder, folderId, -1);
+      if (entry.files.size === 0) {
         this.entries.delete(key);
-        const r = entry.record;
         if (r.kind === "call") {
           bump(this.callsPerSession, r.sessionId, -1);
-          bump(this.callsPerFolder, r.folderId, -1);
         } else {
           const keys = this.totalKeys.get(r.folderId)?.filter((k) => k !== key) ?? [];
           if (keys.length > 0) this.totalKeys.set(r.folderId, keys);

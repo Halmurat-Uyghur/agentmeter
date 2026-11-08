@@ -73,7 +73,12 @@ interface FileState {
  * symlink where the OS allows) and returns its title; a longer file has no title.
  */
 async function readBoundedTitle(path: string): Promise<string | undefined> {
-  const fh = await fs.promises.open(path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  // O_NONBLOCK: a FIFO swapped in after the caller's lstat cannot block the open; it then
+  // fails the isFile check below (v0.7).
+  const fh = await fs.promises.open(
+    path,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+  );
   try {
     if (!(await fh.stat()).isFile()) return undefined;
     const buf = Buffer.alloc(MAX_WORKSPACE_BYTES + 1);
@@ -122,6 +127,8 @@ export class UsageMonitor {
   private readonly files = new Map<string, FileState>();
   /** folderId → candidate from the last successful discover */
   private candidates = new Map<string, Candidate>();
+  /** folderIds whose events.jsonl lstat failed (not ENOENT) in the last discover: kept, partial */
+  private unreadable = new Set<string>();
   private discoverError: "no-dir" | "permission" | undefined;
   private discovered = false;
   private lastDiscoverAt = 0;
@@ -153,14 +160,16 @@ export class UsageMonitor {
   /**
    * Serialised: a call while a run is busy queues exactly one more run, which
    * every later caller joins; each promise resolves after the work it asked for.
+   * A rejected run never wedges the chain: the next run starts either way (v0.7).
    */
   refresh(opts: { full?: boolean } = {}): Promise<void> {
     if (opts.full) this.wantFull = true;
     if (this.queued) return this.queued;
-    const run = this.chain.then(() => {
+    const start = (): Promise<void> => {
       this.queued = undefined;
       return this.run();
-    });
+    };
+    const run = this.chain.then(start, start);
     this.queued = run;
     this.chain = run;
     return run;
@@ -264,14 +273,29 @@ export class UsageMonitor {
       }
       this.discoverError = result.error;
       this.candidates = new Map();
+      this.unreadable = new Set();
       return;
     }
     this.discoverError = undefined;
     this.lastDirMtimeMs = result.dirMtimeMs;
-    this.candidates = new Map(result.candidates.map((c) => [c.folderId, c]));
+    const candidates = new Map(result.candidates.map((c) => [c.folderId, c]));
+    // A folder lstat failed on (EMFILE, EIO, EACCES...) may be transient: keep its last
+    // candidate and state, count it unreadable, log each folder once per episode (v0.7).
+    const unreadable = new Set<string>();
+    for (const u of result.unreadable) {
+      unreadable.add(u.folderId);
+      const prev = this.candidates.get(u.folderId);
+      if (prev) candidates.set(u.folderId, prev);
+      if (!this.unreadable.has(u.folderId)) this.log.error("discover", u.code);
+    }
+    this.unreadable = unreadable;
+    this.candidates = candidates;
     // Logs that left the window (e.g. last month's, after the 1st) are forgotten
     // with their records and counters.
-    const keep = new Set(result.candidates.map((c) => c.eventsPath));
+    const keep = new Set([
+      ...result.candidates.map((c) => c.eventsPath),
+      ...result.unreadable.map((u) => u.eventsPath),
+    ]);
     for (const path of [...this.files.keys()]) {
       if (keep.has(path)) continue;
       this.files.delete(path);
@@ -301,7 +325,9 @@ export class UsageMonitor {
   private async readFile(path: string, f: FileState): Promise<{ added: number; changed: boolean }> {
     const r: TailResult = await f.tailer.read();
     if (r.error === "ENOENT") {
+      // Its records go too, so a recreated log is not counted on top of them (v0.7).
       this.files.delete(path);
+      this.store.resetFile(path);
       return { added: 0, changed: true };
     }
     const changed =
@@ -419,7 +445,7 @@ export class UsageMonitor {
     let shutdownOversize = 0;
     /** oversize shutdown lines in logs without per-call records: only there was the total needed */
     let shutdownOversizeNeeded = 0;
-    let unreadableFiles = 0;
+    let unreadableFiles = this.unreadable.size;
     let silentLive = false;
     let sessionsWithoutUsage = 0;
     let sessionsFromTotals = 0;
@@ -432,7 +458,7 @@ export class UsageMonitor {
       overlongOther += f.overlongOther;
       shutdownOversize += f.shutdownOversize;
       if (f.usage === 0) shutdownOversizeNeeded += f.shutdownOversize;
-      if (f.error !== undefined) unreadableFiles++;
+      if (f.error !== undefined && !this.unreadable.has(f.folderId)) unreadableFiles++;
       if ((f.activity === 0 && !f.hasTotals) || f.usage > 0) continue;
       if (fromTotals.has(f.folderId)) {
         sessionsFromTotals++;
@@ -721,7 +747,8 @@ export class UsageMonitor {
     const signature = JSON.stringify({ ...s, generatedAtMs: 0 });
     if (signature === this.lastSignature) return;
     if (this.disposed) return;
-    this.lastSignature = signature;
     this.onSnapshot(s);
+    // Only after delivery: a callback that threw gets the same snapshot next time (v0.7).
+    this.lastSignature = signature;
   }
 }

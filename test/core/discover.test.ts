@@ -159,7 +159,6 @@ describe("discover", () => {
     });
     if (!r.ok) throw new Error("unreachable");
     expect(r.dirMtimeMs).toBe(fs.statSync(join(root, "session-state")).mtimeMs);
-    expect(r.foldersWithoutEvents).toBe(0);
   });
 
   it("dead-pid lock is not live", async () => {
@@ -241,8 +240,6 @@ describe("discover", () => {
     await writeFile(join(ss, "not_a_session", "events.jsonl"), LINES);
     const r = await discover(root, DAY_START, alive);
     expect([...byId(r).keys()]).toEqual([A]);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.foldersWithoutEvents).toBe(0);
   });
 
   it("counts valid folders without a log", async () => {
@@ -253,8 +250,6 @@ describe("discover", () => {
     });
     const r = await discover(root, DAY_START, alive);
     expect([...byId(r).keys()]).toEqual([A]);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.foldersWithoutEvents).toBe(2);
   });
 
   it("skips a symlinked events.jsonl", async () => {
@@ -267,8 +262,6 @@ describe("discover", () => {
     );
     const r = await discover(root, DAY_START, alive);
     expect([...byId(r).keys()]).toEqual([A]);
-    if (!r.ok) throw new Error("unreachable");
-    expect(r.foldersWithoutEvents).toBe(1);
   });
 
   it.skipIf(process.getuid?.() === 0)(
@@ -281,8 +274,11 @@ describe("discover", () => {
       const dirB = join(root, "session-state", B);
       await chmod(dirB, 0o000);
       try {
-        const m = byId(await discover(root, DAY_START, alive));
-        expect([...m.keys()]).toEqual([A]);
+        const r = await discover(root, DAY_START, alive);
+        expect([...byId(r).keys()]).toEqual([A]);
+        // Reported, not dropped: the monitor keeps the session and flags it partial (v0.7).
+        if (!r.ok) throw new Error("unreachable");
+        expect(r.unreadable).toEqual([{ folderId: B, eventsPath: join(dirB, "events.jsonl"), code: "EACCES" }]);
       } finally {
         await chmod(dirB, 0o755);
       }

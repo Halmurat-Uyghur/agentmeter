@@ -4,7 +4,7 @@ The extension reads the session logs that the Copilot CLI and coding agent write
 
 `~/.copilot/session-state/*/events.jsonl`
 
-It uses `COPILOT_HOME` when that is set, or the folder in `copilotUsageMonitor.copilotHome`.
+It uses the folder in `copilotUsageMonitor.copilotHome`, else `COPILOT_HOME`, else `~/.copilot`.
 
 - **Found:** the status bar shows a figure such as `Local today: 1.5M tok`.
 - **Not found:** the status bar says `Copilot logs not found`, and the side bar names the setting.

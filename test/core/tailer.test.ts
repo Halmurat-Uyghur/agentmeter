@@ -6,10 +6,12 @@ import {
   open,
   rename,
   rm,
+  symlink,
   truncate,
   unlink,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LineTailer } from "../../src/core/tailer";
@@ -374,5 +376,88 @@ describe("LineTailer", () => {
     expect(r.shutdownLines).toEqual([]);
     expect(r.overlong + r.overlongOther).toBe(0);
     expect(decodes).toBe(1);
+  });
+});
+
+describe("UTF-8 BOM at the file start (review A5)", () => {
+  const BOM = "\uFEFF";
+  const start = JSON.stringify(otherEvent("session.start", { timestamp: TS, data: { context: { cwd: "/x/proj" } } }));
+
+  it.each([1, 2, 3, 4, 262_144])("BOM + session.start: the start line is found (chunk %i)", async (chunkBytes) => {
+    await writeFile(file, BOM + start + "\n" + usage(1) + "\n");
+    const r = await new LineTailer(file, { decodeStart: true, chunkBytes }).read();
+    expect(r.startLines).toEqual([start]);
+    expect(r.usageLines).toEqual([usage(1)]);
+  });
+
+  it("BOM + usage line: one usage, zero suspect", async () => {
+    await writeFile(file, BOM + usage(1) + "\n");
+    const r = await new LineTailer(file).read();
+    expect({ usage: r.usageLines, suspect: r.suspect }).toEqual({ usage: [usage(1)], suspect: 0 });
+  });
+
+  it("a BOM written in pieces is still skipped, and the cursor survives later appends", async () => {
+    const t = new LineTailer(file);
+    await writeFile(file, Buffer.from([0xef, 0xbb]));
+    expect((await t.read()).usageLines).toEqual([]);
+    await appendFile(file, Buffer.concat([Buffer.from([0xbf]), Buffer.from(usage(1) + "\n")]));
+    let r = await t.read();
+    expect({ usage: r.usageLines, suspect: r.suspect, reset: r.reset }).toEqual({ usage: [usage(1)], suspect: 0, reset: false });
+    await appendFile(file, usage(2) + "\n");
+    r = await t.read();
+    expect({ usage: r.usageLines, reset: r.reset }).toEqual({ usage: [usage(2)], reset: false });
+  });
+
+  it("a BOM later in the file is not skipped", async () => {
+    await writeFile(file, usage(1) + "\n" + BOM + usage(2) + "\n");
+    const r = await new LineTailer(file).read();
+    expect(r.usageLines).toEqual([usage(1)]);
+    expect(r.suspect).toBe(1);
+  });
+});
+
+describe("only a regular file is read (review A7)", () => {
+  it.skipIf(process.platform === "win32")(
+    "events.jsonl swapped for a FIFO after a read: the next read returns an error, not a hang",
+    async () => {
+      const t = new LineTailer(file);
+      await writeFile(file, usage(1) + "\n");
+      expect((await t.read()).usageLines).toEqual([usage(1)]);
+      const fifo = join(dir, "x.fifo");
+      execFileSync("mkfifo", [fifo]);
+      await rename(fifo, file);
+      const r = await t.read();
+      expect(r.error).toBe("OTHER");
+      expect(r.usageLines).toEqual([]);
+    },
+    5000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "events.jsonl swapped for a symlink to a file outside the folder: its lines are not read",
+    async () => {
+      const outsideDir = await mkdtemp(join(tmpdir(), "cum-outside-"));
+      try {
+        const outside = join(outsideDir, "outside.jsonl");
+        await writeFile(outside, usage(1) + "\n" + usage(2, { usageId: CANARY }) + "\n");
+        const t = new LineTailer(file);
+        await writeFile(file, usage(1) + "\n");
+        expect((await t.read()).usageLines).toEqual([usage(1)]);
+        await symlink(outside, file + ".tmp");
+        await rename(file + ".tmp", file);
+        const r = await t.read();
+        expect(r.error).toBe("OTHER");
+        expect(r.usageLines).toEqual([]);
+        expect(JSON.stringify(r)).not.toContain(CANARY);
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("a directory in place of events.jsonl is an error", async () => {
+    await mkdtemp(join(dir, "d-")).then((d) => rename(d, file));
+    const r = await new LineTailer(file).read();
+    expect(r.error).toBeDefined();
   });
 });

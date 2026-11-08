@@ -2,11 +2,51 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.7.0 - 2026-11-07
+
+A review release: ten independent reviews of the whole code base (parsing, discovery, aggregation, formatting, insights, the panel, the VS Code layer, security, docs and an end-to-end run in VS Code 1.90), each finding reproduced before it was fixed, and every fix shipped with its regression test. No new data is read; nothing is stored.
 
 ### Added
 
 - **Currency in the side bar.** The side bar footer shows **Currency: USD** (or CAD, or whichever you chose) next to the unit switch; click it to open the currency picker. The picker is also in the side bar's `…` menu as **Choose Currency…**. While a non-USD rate is still being fetched, the link names the chosen currency and its tooltip says figures stay in USD until the rate arrives.
+
+### Changed
+
+- **Settings scopes.** `copilotUsageMonitor.currency` is now application-scoped and `copilotUsageMonitor.projectNames` machine-scoped (user settings only, like `copilotHome`, `sessionTotals` and `targetAlert`). A repository's workspace settings can no longer turn on the exchange-rate request or turn project-name reading back on. Workspace-level values of these two keys no longer apply.
+- **Unit switch and workspace settings.** The Tokens / USD switch writes `display` at the scope where that setting already has a value (folder, then workspace, then user), the standard VS Code pattern, so a workspace value no longer makes the switch snap back. If the write fails, the unit rolls back. Arguments that are not `tokens` or `cost` are ignored.
+- **Target state on the figures as shown.** The status bar icon and the opt-in alert say "over" (or "under") only when the shown spend differs from the shown target bound. Before, max $150 and a spend of $150.40 showed "🔥 $150 / $20.00–$150" and alerted "over your target: $150".
+- **Money formatting.** The number of decimals is chosen after rounding ($1.00, not $1.000; $100, not $100.00), and an estimated cost that is not zero but rounds to zero shows `<$0.001` (read as "less than 0.001 US dollars") instead of `$0.000`. The Δ columns decide "same" in the display currency, so GBP no longer shows "▲ £0.000" and a JPY change of ¥0.06 is shown.
+- **Screen readers and currencies.** Amounts in a currency whose symbol contains a dollar sign (CA$, A$, NZ$, HK$, MX$, R$) are read as "16.92 CAD", not "CA16.92 US dollars"; a bare `$` is still "US dollars", and €, £, ¥ and CHF amounts are read with their code.
+- **Insights.** The long-context rule needs 3 priced calls and the cache-reuse rule 20, so a rule can no longer fire on a cost that covers a fraction of the calls it names. In the side bar, when the panel is filtered, the Insights row says its count follows the panel's filter (it links to the filtered section). A largest prompt of 999,600 tokens reads "1.0M", not "1000K".
+- **Data health.** A session folder whose log cannot be checked because of a transient error (for example too many open files) keeps its records and marks the data partial, instead of being dropped silently until the next start. A log that stays unreadable (for example owned by another user) keeps Data health partial until it is fixed or removed; before, it was skipped without a word. A log that disappears drops its records at once; a log recreated afterwards counts once.
+- **Ids and timestamps read more strictly.** A usage id is kept only when it is at most 1,024 characters of base64 or id punctuation (real ids are about 500 characters of base64); otherwise the event id is used, and a line with neither is counted as unrecognized. A timestamp must be `YYYY-MM-DDTHH:MM:SS[.fff]Z` (or with an offset); "1" or a zone-less time is a bad timestamp, counted in Data health, instead of a date in 2001 or a time shifted by the local offset. A session start of `0` is no longer a start in 1970.
+- `docs/SCHEMA.md` documents the 1 MiB usage-line cap, the record-key policy, the timestamp rule, the case-insensitive session-id pattern, the UTF-8 BOM rule and the regular-file rule.
+
+### Fixed
+
+- **A session folder copied under another id counted the whole session twice.** The copy's per-call records were deduplicated against the original, so the copy never registered as having per-call records and its session total stayed visible. The store now tracks which folders hold each call, so the total is hidden and stays hidden after either folder's log is removed.
+- **A throwing output sink stopped every later refresh.** If the output channel threw (for example after it was disposed), the refresh chain held a rejected promise for the rest of the session. The logger swallows sink errors, and a rejected run no longer wedges the chain.
+- A UI callback that threw once suppressed later identical snapshots; the snapshot signature is now recorded only after the callback returns.
+- The exchange-rate timer could fire, and fetch again, after the extension was deactivated; two overlapping currency changes left two timers and logged a failure for a currency no longer selected. Each fetch now carries a generation number and stops when superseded or disposed.
+- The viewed month no longer jumps back to a stale month after `historyMonths` is lowered and raised again.
+- A `copilotHome` setting that was not a string crashed activation; it is now treated as unset. `~\` is expanded on Windows.
+- A UTF-8 byte-order mark at the start of a log hid the project label or the first record; one before `name:` in `workspace.yaml` hid the session title.
+- A wall clock set back held a focused panel's redraws for the size of the jump plus 10 s; elapsed time is now clamped.
+- The daily-activity heatmap skipped the label of a month that started within the first weeks of the grid (July, with history back to January).
+- In the tokens view the side bar's `*` (may be incomplete) marker was unstyled; it now matches the USD view.
+- An unknown three-letter currency code in settings caused a 15-minute retry loop; it now falls back to USD. The rate response must carry a real date and a rate of at least 0.000001.
+- "Don't show again" no longer leaves an unhandled rejection when settings cannot be written.
+- README: the side bar has five command links (the fifth chooses the currency) and shows the currency link; the Overview bullet names the Today figure, the daily-activity heatmap, the cache ring and the 30-day bars; the settings table gives the new scopes. The walkthrough's folder page had the folder precedence backwards. The bug-report template's example version was stale.
+- `npm run package` rebuilds the bundle first (`vscode:prepublish`), so a `.vsix` can no longer ship a stale `dist/`. The opt-in perf test takes the median of five steady refreshes against a 75 ms budget instead of one sample against 50 ms. `tools/chat-schema-probe.mjs` says plainly when nothing was found and exits with code 2, like `schema-probe.mjs`.
+
+### Security
+
+- **Logs must be regular files.** `events.jsonl` and `workspace.yaml` are opened with `O_NOFOLLOW | O_NONBLOCK` and checked with `fstat`; a FIFO or a symlink renamed over a log after discovery is counted as unreadable instead of blocking the monitor for the rest of the session or reading a file outside the Copilot folder.
+- **Bounded record keys.** A usage id is capped at 1,024 characters (see Changed), so a crafted log cannot grow memory without bound through its ids.
+- **Bounded rate response.** The exchange-rate body is capped at 4 KB (`MAX_RATE_BYTES`), checked on `content-length` and again on the text, before it is parsed; an oversize or malformed reply is logged as `BAD_RESPONSE`. Redirects are still followed (the provider has moved hosts before); the response is validated as before.
+- A `"type"` key with extra spaces or a tab before the type name is now counted as suspect, as `docs/SCHEMA.md` always said; the check is anchored to the start of the line, so the type name inside another event's data is not matched.
+- The side bar's command allowlist grows from four to five commands (adds `selectCurrency`, which takes no arguments).
+- New gates pin the setting scopes, the tailer's open flags, the response cap and `vscode:prepublish`.
 
 ## 0.6.1 - 2026-11-07
 

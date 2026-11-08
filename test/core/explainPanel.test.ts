@@ -6,6 +6,7 @@ import { cacheStats, modelCacheStats, promptStats, sessionDetail, toolOverhead }
 import { isSessionId } from "../../src/core/extract";
 import { lastPromptLine, LOCAL_BANNER, setDisplayCurrency, tooltipMarkdown } from "../../src/core/format";
 import { LEDGER_SHOWN } from "../../src/core/panel/explain";
+import { sym } from "../../src/core/panel/shared";
 import { PANEL_COMMANDS, renderPanelHtml, type SectionId } from "../../src/core/panelHtml";
 import type { Health, Insight, Metric, Snapshot, Totals, UsageRecord, ViewOptions } from "../../src/core/types";
 
@@ -256,6 +257,23 @@ describe("I1 card (1.4)", () => {
     expect(t).toContain("7 calls in 3 sessions sent more than 100K prompt tokens (the largest: 141K)");
     expect(t).toContain("These calls cost about $2.40 (est.)");
     expect(t).toContain("before 100K keeps calls in the lower price band");
+  });
+});
+
+describe("I1 card: token sizes and tiny figures (review)", () => {
+  it("a largest prompt of 999,600 tokens reads 1.0M, not 1000K", () => {
+    const s = snap();
+    s.month!.insights = { items: [{ ...LONG, maxPromptTokens: 999_600 }], coverage: { callSessions: 1, totalsOnlySessions: 0 } };
+    const t = text(render(s, "insights"));
+    expect(t).toContain("(the largest: 1.0M)");
+    expect(t).not.toContain("1000K");
+  });
+  it("sym(): a '<' before a currency symbol gets its spoken span, the '<' escaped", () => {
+    expect(sym("<$0.001")).toBe('<span aria-hidden="true">&lt;$0.001</span><span class="sr">less than 0.001 US dollars</span>');
+    for (const t of ["<CA$0.001", "<€0.001", "<CHF 0.001", "<2"]) {
+      expect(sym(t)).toMatch(/^<span aria-hidden="true">&lt;.*<\/span><span class="sr">[^<]*<\/span>$/);
+    }
+    expect(sym("CA$0.50")).toBe("CA$0.50");
   });
 });
 

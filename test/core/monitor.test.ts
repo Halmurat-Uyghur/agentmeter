@@ -10,6 +10,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Logger } from "../../src/core/log";
@@ -828,6 +829,111 @@ describe("UsageMonitor", () => {
     expect(snaps.length).toBeGreaterThan(0);
     for (const s of snaps) expect(JSON.stringify(s)).not.toContain(CANARY);
     expect(logLines.join("\n")).not.toContain(CANARY);
+  });
+});
+
+describe("UsageMonitor resilience (v0.7 review)", () => {
+  it("refresh keeps working after a run rejects", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) }]);
+    // A raw logger (not the guarded Logger) that throws during the first refresh: it rejects.
+    let fail = true;
+    const boom = () => {
+      if (fail) throw new Error("sink down");
+    };
+    const log = { count: boom, error: boom, timing: boom } as unknown as Logger;
+    make({ log });
+    await expect(monitor.refresh({ full: true })).rejects.toThrow("sink down");
+    fail = false;
+    await appendFile(events(A), jsonl([rec(A, 2)]));
+    await expect(monitor.refresh({ full: true })).resolves.toBeUndefined();
+    expect(last().today?.records).toBe(2);
+  });
+
+  it("a log that disappears (ENOENT) drops its records", async () => {
+    await sessionTree(root, [
+      { id: A, lines: jsonl([rec(A, 1), rec(A, 2)]) },
+      { id: B, lines: jsonl([rec(B, 3)]) },
+    ]);
+    make();
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    await rm(events(A));
+    await monitor.refresh();
+    clock += 11_000;
+    await monitor.refresh();
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(1);
+    // Recreated with different content: counted once, not on top of the old records.
+    await writeFile(events(A), jsonl([rec(A, 7)]));
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(2);
+  });
+
+  it("a throwing onSnapshot is retried on the next refresh", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([rec(A, 1)]) }]);
+    let calls = 0;
+    make({
+      onSnapshot: (s) => {
+        calls++;
+        if (calls === 1) throw new Error("ui");
+        snaps.push(s);
+      },
+    });
+    await monitor.refresh({ full: true });
+    expect(snaps).toHaveLength(0);
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(1);
+  });
+
+  it("a transient lstat error keeps the session's records", async () => {
+    await sessionTree(root, [
+      { id: A, lines: jsonl([rec(A, 1), rec(A, 2)]) },
+      { id: B, lines: jsonl([rec(B, 3)]) },
+    ]);
+    make();
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    const real = fs.promises.lstat;
+    let armed = true;
+    vi.spyOn(fs.promises, "lstat").mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (armed && String(p) === events(A)) {
+        armed = false;
+        throw Object.assign(new Error("x"), { code: "EMFILE" });
+      }
+      return (real as (...a: unknown[]) => Promise<fs.Stats>)(p, ...rest);
+    }) as typeof real);
+    await monitor.refresh({ full: true });
+    expect(armed).toBe(false);
+    expect(last().today?.records).toBe(3);
+    expect(last().health.partial).toBe(true);
+    expect(logLines).toContain("error discover EMFILE");
+    await monitor.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    expect(last().health.partial).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("a FIFO swapped in for workspace.yaml never blocks the title read", async () => {
+    const ID = "a5ba938d-3495-450d-94f0-cdab4c64c501";
+    const startEv = { type: "session.start", id: "s", parentId: null, timestamp: at(8), data: { context: { cwd: `/srv/${ID}` } } };
+    await sessionTree(root, [{ id: A, lines: jsonl([startEv, rec(A, 1)]) }]);
+    const ws = join(root, "session-state", A, "workspace.yaml");
+    execFileSync("mkfifo", [ws]);
+    // lstat sees a regular file (the race window); the open then meets the FIFO.
+    const real = fs.promises.lstat;
+    const fileStat = await real(events(A));
+    vi.spyOn(fs.promises, "lstat").mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) =>
+      String(p) === ws ? fileStat : (real as (...a: unknown[]) => Promise<fs.Stats>)(p, ...rest)) as typeof real);
+    make({ readProjects: true });
+    let timer: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      monitor.refresh({ full: true }).then(() => "done"),
+      new Promise<string>((r) => (timer = setTimeout(() => r("blocked"), 1000))),
+    ]);
+    clearTimeout(timer);
+    // Unblock a stuck open (if any) so the worker thread is released.
+    if (outcome === "blocked") fsModule.closeSync(fsModule.openSync(ws, fsModule.constants.O_WRONLY | fsModule.constants.O_NONBLOCK));
+    expect(outcome).toBe("done");
+    expect(last().month?.projects.find((p) => p.name === ID)?.label).toBeUndefined();
   });
 });
 

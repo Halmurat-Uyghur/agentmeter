@@ -293,6 +293,44 @@ describe("gates", () => {
     expect(ignore).toEqual(["**", "!dist/extension.js", "!package.json", "!README.md", "!LICENSE", ...WALKTHROUGH_MEDIA.map((f) => `!${f}`)]);
   }, 30_000);
 
+  it("manifest scopes (v0.7): folder, project names and session totals per machine; currency and alert per user", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const scope = (k: string) => pkg.contributes.configuration.properties[`copilotUsageMonitor.${k}`].scope;
+    for (const k of ["copilotHome", "projectNames", "sessionTotals"]) expect(scope(k), k).toBe("machine");
+    // application: a workspace's settings can neither turn on the rate request nor the alert
+    for (const k of ["currency", "targetAlert"]) expect(scope(k), k).toBe("application");
+  });
+
+  it("the rate reply is size-capped before parsing (v0.7)", () => {
+    const src = readFileSync(RATE_FILE, "utf8");
+    expect(src).toMatch(/export const MAX_RATE_BYTES = \d+;/);
+    expect(src).toContain('res.headers.get("content-length")');
+    expect(src).toContain("text.length > MAX_RATE_BYTES");
+    expect(src).not.toContain("res.json()");
+  });
+
+  it("the tailer opens logs without following links or blocking on FIFOs (v0.7)", () => {
+    const src = readFileSync(join(ROOT, "src", "core", "tailer.ts"), "utf8");
+    expect(src).toContain("O_NOFOLLOW");
+    expect(src).toContain("O_NONBLOCK");
+  });
+
+  it("packaging always rebuilds the bundle first (v0.7)", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.scripts["vscode:prepublish"]).toBe("npm run build");
+    expect(pkg.scripts.build).toBe("node esbuild.mjs");
+  });
+
+  it("README and walkthrough facts track the code (v0.7)", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+    expect(readme).toContain(`copilot-usage-monitor-${pkg.version}.vsix`);
+    expect(SIDEBAR_COMMANDS).toHaveLength(5);
+    expect(readme).toContain("only five command links (open the panel, show a section, set the project filter, switch the unit, choose the currency)");
+    expect(readFileSync(join(ROOT, "media", "walkthrough", "folder.md"), "utf8")).toContain("the folder in `copilotUsageMonitor.copilotHome`, else `COPILOT_HOME`, else `~/.copilot`");
+    expect(readFileSync(join(ROOT, ".github", "ISSUE_TEMPLATE", "bug_report.md"), "utf8")).toContain(`e.g. ${pkg.version}`);
+  });
+
   it("walkthrough (v0.6, 2.4): four steps, markdown media only, allowlisted command links, no URLs, copy rules", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const w = pkg.contributes.walkthroughs;

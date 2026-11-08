@@ -2,6 +2,7 @@
 // session logs, never an account statement: "—" means nothing was reported,
 // "*" means some contributing records did not report the field.
 
+import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
 import type { Currency, Counts, Health, LastPrompt, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
 
@@ -101,20 +102,34 @@ export function formatUsd(m: Metric, cur: Currency | undefined = displayCurrency
   return m.missing > 0 ? money(v, cur) + "*" : money(v, cur);
 }
 
-/** Formats a USD amount, converted to the display currency (or `cur`). */
+/** Decimals for a shown amount: 3 under 1, 2 under 100, 0 above; chosen after rounding,
+ * so 0.9995 is "1.00", not "1.000", and 99.995 is "100", not "100.00". */
+function moneyDigits(x: number): number {
+  if (x === 0) return 2;
+  let d = x >= 100 ? 0 : x >= 1 ? 2 : 3;
+  if (d === 3 && +x.toFixed(3) >= 1) d = 2;
+  if (d === 2 && +x.toFixed(2) >= 100) d = 0;
+  return d;
+}
+
+/** Formats a USD amount, converted to the display currency (or `cur`); a non-zero
+ * amount that rounds to 0 is "<$0.001" (spoken() reads "<" as "less than"). */
 export function money(v: number, cur: Currency | undefined = displayCurrency): string {
-  if (!cur || cur.code === "USD") {
-    if (v >= 100) return "$" + Math.round(v).toLocaleString("en-US");
-    if (v >= 1 || v === 0) return "$" + v.toFixed(2);
-    return "$" + v.toFixed(3);
+  const usd = !cur || cur.code === "USD";
+  const x = usd ? v : v * cur.rate;
+  const tiny = x > 0 && +x.toFixed(3) === 0;
+  const y = tiny ? 0.001 : x;
+  const digits = moneyDigits(y);
+  let s: string;
+  if (usd) s = "$" + (digits === 0 ? Math.round(y).toLocaleString("en-US") : y.toFixed(digits));
+  else {
+    try {
+      s = new Intl.NumberFormat("en-US", { style: "currency", currency: cur.code, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(y);
+    } catch {
+      s = `${y.toFixed(digits)} ${cur.code}`;
+    }
   }
-  const x = v * cur.rate;
-  const digits = x >= 100 ? 0 : x >= 1 || x === 0 ? 2 : 3;
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: cur.code, minimumFractionDigits: digits, maximumFractionDigits: digits }).format(x);
-  } catch {
-    return `${x.toFixed(digits)} ${cur.code}`;
-  }
+  return tiny ? "<" + s : s;
 }
 
 /** Usable range bounds: finite, non-negative, min ≤ max; anything else is dropped. */
@@ -131,8 +146,9 @@ export function cleanRange(min: unknown, max: unknown): ViewOptions["range"] {
 export function rangeState(spent: number | undefined, range: ViewOptions["range"]): RangeState {
   if (!range) return "none";
   const v = spent ?? 0;
-  if (range.max !== undefined && v > range.max) return "over";
-  if (range.min !== undefined && v < range.min) return "under";
+  // Compared as shown: spend that displays as the bound is not past it.
+  if (range.max !== undefined && v > range.max && money(v) !== money(range.max)) return "over";
+  if (range.min !== undefined && v < range.min && money(v) !== money(range.min)) return "under";
   return "in";
 }
 
@@ -235,16 +251,40 @@ export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_
   return `$(${p.icon}) Local ${p.place}: ${p.figure}${p.suffix}`;
 }
 
+/** Intl symbol → ISO code for every offered currency ("CA$" → "CAD", "€" → "EUR"); USD keeps "$". */
+const SYMBOL_CODE = new Map<string, string>();
+let symbolRe: RegExp | undefined;
+
+/** Matches a currency symbol and its amount; a bare "$" only when no letter precedes it. */
+function currencyRe(): RegExp {
+  if (!symbolRe) {
+    for (const [code] of CURRENCIES) {
+      if (code === "USD") continue;
+      try {
+        const sym = new Intl.NumberFormat("en-US", { style: "currency", currency: code }).formatToParts(1).find((p) => p.type === "currency")?.value;
+        if (sym && sym !== "$") SYMBOL_CODE.set(sym, code);
+      } catch {
+        // an unknown code keeps its own name in money()'s fallback
+      }
+    }
+    const syms = [...SYMBOL_CODE.keys()].sort((a, b) => b.length - a.length).map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    symbolRe = new RegExp(`(?<![A-Za-z])(${[...syms, "\\$"].join("|")})\\s?(\\d[\\d,]*(?:\\.\\d+)?)`, "g");
+  }
+  symbolRe.lastIndex = 0;
+  return symbolRe;
+}
+
 /**
  * Words for a screen reader (D33): "1.5M* tok" → "1.5 million tokens (may be
- * incomplete)", "—" → "not reported", "$12.40" → "12.40 US dollars". No icon syntax.
+ * incomplete)", "—" → "not reported", "$12.40" → "12.40 US dollars", "CA$16.92" →
+ * "16.92 CAD". No icon syntax.
  */
 export function spoken(text: string): string {
   return text
     .replace(/\$\(([a-z-]+)(~[a-z]+)?\)\s*/g, "")
     .replace(/—/g, "not reported")
     .replace(/([\dMK])\*/g, "$1 (may be incomplete)")
-    .replace(/\$(\d[\d,]*(?:\.\d+)?)/g, "$1 US dollars")
+    .replace(currencyRe(), (_, sym: string, n: string) => `${n} ${sym === "$" ? "US dollars" : SYMBOL_CODE.get(sym)}`)
     .replace(/(\d(?:\.\d)?)M\b/g, "$1 million")
     .replace(/(\d(?:\.\d)?)K\b/g, "$1 thousand")
     .replace(/\btok\b/g, "tokens")
@@ -470,7 +510,8 @@ export function changeAmount(cur: Metric | undefined, prior: Metric | undefined,
   const cost = unit === "cost";
   const d = cost ? (cur.sum - prior.sum) / 1e11 : cur.sum - prior.sum;
   const abs = Math.abs(d);
-  if (cost ? abs < 0.0005 : Math.round(abs) === 0) return { text: "same", dir: "same", said: "about the same" };
+  // "same" at display precision: the threshold is in the display currency.
+  if (cost ? abs * (displayCurrency?.rate ?? 1) < 0.0005 : Math.round(abs) === 0) return { text: "same", dir: "same", said: "about the same" };
   const amt = cost ? money(abs) : formatCount({ sum: Math.round(abs), reported: 1, missing: 0 });
   const starred = partial || cur.missing > 0 || prior.missing > 0;
   const dir = d > 0 ? "up" : "down";

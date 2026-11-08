@@ -13,11 +13,19 @@ export interface Candidate {
   live: boolean;
 }
 
+/** A session folder whose events.jsonl could not be lstat'ed (EACCES, EMFILE, EIO...). */
+export interface Unreadable {
+  folderId: string;
+  eventsPath: string;
+  code: string;
+}
+
 export type DiscoverResult =
   | {
       ok: true;
       candidates: Candidate[];
-      foldersWithoutEvents: number;
+      /** kept by the caller rather than forgotten: the error may be transient (v0.7) */
+      unreadable: Unreadable[];
       dirMtimeMs: number;
     }
   | { ok: false; error: "no-dir" | "permission" | "OTHER" };
@@ -48,6 +56,7 @@ export function isLive(
 type FolderOutcome =
   | { kind: "candidate"; candidate: Candidate }
   | { kind: "no-events" }
+  | { kind: "unreadable"; unreadable: Unreadable }
   | { kind: "skip" };
 
 async function inspectFolder(
@@ -66,7 +75,7 @@ async function inspectFolder(
     const code = codeOf(err);
     return code === "ENOENT" || code === "ENOTDIR"
       ? { kind: "no-events" }
-      : { kind: "skip" };
+      : { kind: "unreadable", unreadable: { folderId, eventsPath, code: code ?? "OTHER" } };
   }
   if (!st.isFile()) return { kind: "no-events" };
   const mtimeMs = st.mtimeMs;
@@ -135,10 +144,10 @@ export async function discover(
   );
 
   const candidates: Candidate[] = [];
-  let foldersWithoutEvents = 0;
+  const unreadable: Unreadable[] = [];
   for (const o of outcomes) {
     if (o.kind === "candidate") candidates.push(o.candidate);
-    else if (o.kind === "no-events") foldersWithoutEvents++;
+    else if (o.kind === "unreadable") unreadable.push(o.unreadable);
   }
-  return { ok: true, candidates, foldersWithoutEvents, dirMtimeMs };
+  return { ok: true, candidates, unreadable, dirMtimeMs };
 }

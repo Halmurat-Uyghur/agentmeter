@@ -59,4 +59,16 @@ describe("currency", () => {
     expect(parseRate(null, "CAD")).toBeUndefined();
   });
 
+  it("parseRate rejects invalid dates and implausibly small rates", () => {
+    expect(parseRate({ base: "USD", date: "2026-99-99", rates: { CAD: 1.4 } }, "CAD")).toBeUndefined();
+    expect(parseRate({ base: "USD", date: "2026-02-30", rates: { CAD: 1.4 } }, "CAD")).toBeUndefined();
+    expect(parseRate({ base: "USD", date: "2026-11-06", rates: { CAD: 1e-12 } }, "CAD")).toBeUndefined();
+    expect(parseRate({ base: "USD", date: "2026-11-06", rates: { CAD: 1e-6 } }, "CAD")).toEqual({ code: "CAD", rate: 1e-6, date: "2026-11-06" });
+    expect(parseRate({ base: "USD", date: "1999-01-01", rates: { CAD: 1.4 } }, "CAD")).toBeDefined();
+  });
+
+  it("cleanCurrencyCode maps unknown codes to USD", () => {
+    expect(cleanCurrencyCode("XYZ")).toBe("USD");
+    expect(cleanCurrencyCode("krw")).toBe("KRW");
+  });
 });

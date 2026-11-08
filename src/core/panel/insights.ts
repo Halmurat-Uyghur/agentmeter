@@ -9,9 +9,10 @@ function list(xs: string[]): string {
   return `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 }
 
-/** "100K", "272K", "1.2M" for a token count. */
+/** "100K", "272K", "1.2M" for a token count; 999,600 rounds to 1000K, so it reads "1.0M". */
 function kTokens(n: number): string {
-  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n);
+  const k = Math.round(n / 1e3);
+  return k >= 1000 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${k}K` : String(n);
 }
 
 function evidence(i: Insight, view: ViewOptions): string {

@@ -265,6 +265,7 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
   const months: string[] = [];
   const rowsForTable: DayRow[] = [];
   let lastMonthCol = -3;
+  let firstIsStart = false;
   let active = 0;
   let peak: { t: number; v: number } | undefined;
   days.forEach((t, i) => {
@@ -281,9 +282,17 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
     const title = dayTitle(t, d, view, partial);
     cells.push(`<g class="hc"><rect class="hm h${level}${now}" x="${LEFT + col * STEP}" y="${TOP + row * STEP}" width="${CELL}" height="${CELL}" rx="2"><title>${escapeHtml(title)}</title></rect><text class="tip" x="0" y="${readY}">${escapeHtml(weekdayTip(t, title))}</text></g>`);
     const date = new Date(t);
-    if ((date.getDate() === 1 || i === 0) && col - lastMonthCol >= 3) {
+    const start = date.getDate() === 1;
+    // A real month start within 3 columns of the column-0 label replaces it (review: "Jun"
+    // over column 0 used to hide July 1 in column 1).
+    if (start && i > 0 && lastMonthCol === 0 && col < 3 && !firstIsStart) {
+      months.pop();
+      lastMonthCol = -3;
+    }
+    if ((start || i === 0) && col - lastMonthCol >= 3) {
       months.push(`<text class="ax" x="${LEFT + col * STEP}" y="11">${MONTHS[date.getMonth()]!.slice(0, 3)}</text>`);
       lastMonthCol = col;
+      if (i === 0) firstIsStart = start;
     }
   });
   const rows = [

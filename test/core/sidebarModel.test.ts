@@ -275,6 +275,36 @@ describe("sidebar model: groups and rows", () => {
     const html = renderSidebarHtml(two, "x");
     expect(text(html)).toMatch(/Insights 2 findings Review/);
   });
+  it("insights: with a panel filter the title says the count follows the filter", () => {
+    const month = { monthStartMs: MONTH0, isCurrent: true, days: [], sessions: [], projects: [], tools: [], insights: { items: [insight()], coverage: { callSessions: 1, totalsOnlySessions: 0 } } };
+    const plain = buildSidebarModel(snap({ month }), TOKENS).insights!;
+    expect(plain.title).not.toMatch(/filter/);
+    expect(plain.spoken).not.toMatch(/filter/);
+    for (const filter of [{ project: "acme/web" }, { tool: "edit" }]) {
+      const ins = buildSidebarModel(snap({ month, filter }), TOKENS).insights!;
+      expect(ins.title).toMatch(/for the panel's filter/);
+      expect(ins.spoken).toMatch(/for the panel's filter/);
+    }
+  });
+  it("tokens view: '*' is styled like USD", () => {
+    for (const view of [TOKENS, COST]) {
+      const model = buildSidebarModel(snap({ health: health({ partial: true, malformed: 1 }) }), view);
+      const li = renderSidebarHtml(model, "x").split("<li>").find((x) => x.includes(">Today<"))!;
+      expect(li).toContain('class="star"');
+      expect(li).toContain("(may be incomplete)");
+      if (view === TOKENS) expect(li).toMatch(/<span class="star" aria-hidden="true">\*<\/span><span class="sr"> \(may be incomplete\)<\/span> tok/);
+    }
+  });
+  it("cost view in CAD: spoken labels never say US dollars", () => {
+    const cad = { code: "CAD", rate: 1.4, date: "2026-11-06" };
+    setDisplayCurrency(cad);
+    try {
+      const model = buildSidebarModel(snap(), { unit: "cost", currency: cad });
+      for (const x of sidebarRows(model)) expect(x.spoken).not.toMatch(/US dollars/);
+    } finally {
+      setDisplayCurrency(undefined);
+    }
+  });
 });
 
 describe("sidebar model: links", () => {

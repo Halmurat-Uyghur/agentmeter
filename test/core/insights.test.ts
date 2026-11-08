@@ -102,6 +102,14 @@ describe("I1 long-context", () => {
     expect(run({ monthRecords: longCalls(3), monthNanoAiu: 1000 * USD }).items).toHaveLength(1);
   });
 
+  it("long-context: unpriced calls do not count toward the $0.50 floor", () => {
+    // 3 calls over the threshold, 1 priced at $0.50: the card would state one call's cost as "these calls"
+    const one = longCalls(3).map((r, i) => ({ ...r, nanoAiu: i === 0 ? 0.5 * USD : undefined }));
+    expect(run({ monthRecords: one }).items).toEqual([]);
+    const three = [...one, ...longCalls(2, "claude-haiku-5.5", 100_001, 0.01)];
+    expect(run({ monthRecords: three }).items).toMatchObject([{ id: "long-context", calls: 5 }]);
+  });
+
   it("separate convention adds cache to the prompt; the costliest model wins", () => {
     const sep = [call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD }), call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD }), call({ model: "gpt-6-sol", input: 100, cacheRead: 272_000, sessionId: "x", nanoAiu: 1 * USD })];
     expect(promptConventions(sep).get("gpt-6-sol")).toBe("separate");
@@ -179,6 +187,12 @@ describe("I3 cache-reuse", () => {
     expect(run({ monthRecords: cacheMonth(3, 7, { nanoAiu: undefined }) }).items).toEqual([]);
     const missing = cacheMonth(3, 7).map((r) => ({ ...r, tokens: { input: r.tokens.input } }));
     expect(run({ monthRecords: missing }).items).toEqual([]);
+  });
+
+  it("cache-reuse: fewer than 20 priced calls do not fire", () => {
+    const recs = cacheMonth(3, 7).map((r, i) => (i % 8 === 1 ? { ...r, nanoAiu: undefined } : { ...r, nanoAiu: 0.2 * USD }));
+    expect(run({ monthRecords: recs }).items).toEqual([]);
+    expect(run({ monthRecords: cacheMonth(3, 7, { nanoAiu: 0.2 * USD }) }).items.map((i) => i.id)).toEqual(["cache-reuse"]);
   });
 
   it("session totals are excluded", () => {

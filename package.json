@@ -11,7 +11,7 @@
     "status bar"
   ],
   "publisher": "local",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -33,6 +33,7 @@
     "test:integration": "vscode-test",
     "test:perf": "PERF=1 vitest run test/core/perf.test.ts",
     "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build",
     "probe": "node tools/schema-probe.mjs",
     "probe:chat": "node tools/chat-schema-probe.mjs"
   },
@@ -233,6 +234,7 @@
         "copilotUsageMonitor.currency": {
           "type": "string",
           "default": "USD",
+          "scope": "application",
           "enum": [
             "USD",
             "CAD",
@@ -253,7 +255,7 @@
             "BRL",
             "KRW"
           ],
-          "description": "Currency for estimated cost. USD needs no network. Any other currency is converted at the daily European Central Bank USD reference rate, fetched from api.frankfurter.dev at start-up and every 6 hours (the request carries only the currency code). Monthly targets are then entered in this currency."
+          "description": "Currency for estimated cost. USD needs no network. Any other currency is converted at the daily European Central Bank USD reference rate, fetched from api.frankfurter.dev at start-up, when the currency changes and every 6 hours (a failed fetch is retried after 15 minutes). The request carries only the currency code. Monthly targets are then entered in this currency."
         },
         "copilotUsageMonitor.monthlyTargetMin": {
           "type": [
@@ -282,6 +284,7 @@
         "copilotUsageMonitor.projectNames": {
           "type": "boolean",
           "default": true,
+          "scope": "machine",
           "description": "Read each session's start line to label it with a project: the GitHub repository name, else the folder name. A folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading both."
         },
         "copilotUsageMonitor.sessionTotals": {

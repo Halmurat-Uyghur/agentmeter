@@ -70,3 +70,12 @@ describe("target-crossed alert", () => {
     );
   });
 });
+
+describe("target-crossed alert at display precision", () => {
+  it("no alert when the rounded spend equals the target max", () => {
+    const view: ViewOptions = { unit: "cost", range: { min: 20, max: 150 } };
+    const a = new TargetAlertState();
+    expect(a.next(snap(150.4), view, true)).toBeUndefined();
+    expect(a.next(snap(151), view, true)).toBe("Copilot usage this month is over your target: $151 est. (target $20.00–$150). Locally observed from Copilot session logs on this computer.");
+  });
+});

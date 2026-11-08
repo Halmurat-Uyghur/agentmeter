@@ -351,6 +351,33 @@ describe("session totals (D29)", () => {
     expect(s.totals(all)!.sessionTotals).toBe(1);
   });
 
+  it("a duplicate call key from another folder hides that folder's session total (D29), and keeps hiding it after the first folder's file resets", () => {
+    const s = new UsageStore();
+    // folder B is a copy of folder A: same usageId, plus B's own shutdown total
+    s.add(rec("u1", { sessionId: "A", folderId: "A" }), "A/events.jsonl");
+    s.add(rec("u1", { sessionId: "B", folderId: "B" }), "B/events.jsonl");
+    s.setSessionTotals("B", "B/events.jsonl", [total("B", "model-a")]);
+    expect(s.totals(all)).toMatchObject({ records: 1, calls: 1, sessionTotals: 0 });
+    expect(s.sessionTotalSessions().size).toBe(0);
+    s.resetFile("A/events.jsonl");
+    expect(s.totals(all)).toMatchObject({ records: 1, calls: 1, sessionTotals: 0 });
+    s.resetFile("B/events.jsonl");
+    expect(s.totals(all)).toBeUndefined();
+  });
+
+  it("a folder holding a call key in two of its files keeps holding it until both reset (D29)", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { sessionId: "A", folderId: "A" }), "A/a.jsonl");
+    s.add(rec("u1", { sessionId: "B", folderId: "B" }), "B/1.jsonl");
+    s.add(rec("u1", { sessionId: "B", folderId: "B" }), "B/2.jsonl");
+    s.setSessionTotals("B", "B/t.jsonl", [total("B", "model-a")]);
+    s.resetFile("A/a.jsonl");
+    s.resetFile("B/1.jsonl");
+    expect(s.totals(all)!.sessionTotals).toBe(0);
+    s.resetFile("B/2.jsonl");
+    expect(s.totals(all)!.sessionTotals).toBe(1);
+  });
+
   it("latest() and records() skip hidden totals", () => {
     const s = new UsageStore();
     s.add(rec("u1", { sessionId: "f", folderId: "f", timestampMs: T0 - 1000 }), "a");

@@ -41,13 +41,15 @@ export class RedrawThrottle {
    * `focused` is whether the panel is the active editor. */
   request(key: string, focused: boolean): void {
     const userChange = this.lastKey !== undefined && key !== this.lastKey;
-    if (this.lastKey === undefined || userChange || !focused || this.clock.now() - this.lastDrawMs >= this.intervalMs) {
+    // A wall clock set back gives a negative elapsed: count that as the interval passed.
+    const elapsed = this.clock.now() - this.lastDrawMs;
+    if (this.lastKey === undefined || userChange || !focused || elapsed < 0 || elapsed >= this.intervalMs) {
       this.flush(key);
       return;
     }
     this.pendingKey = key;
     if (this.timer !== undefined) return;
-    const wait = Math.max(0, this.lastDrawMs + this.intervalMs - this.clock.now());
+    const wait = Math.min(this.intervalMs, Math.max(0, this.intervalMs - elapsed));
     this.timer = this.clock.setTimeout(() => {
       this.timer = undefined;
       if (this.pendingKey !== undefined) this.flush(this.pendingKey);
