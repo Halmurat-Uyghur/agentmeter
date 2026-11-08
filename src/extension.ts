@@ -75,11 +75,17 @@ function readHistory(): number {
   return clampHistory(vscode.workspace.getConfiguration(SECTION).get<unknown>("historyMonths") ?? 12);
 }
 
+/** `copilotUsageMonitor.panelNavCollapsed`: the panel's section nav shows as an icon rail. */
+function readNavCollapsed(): boolean {
+  return vscode.workspace.getConfiguration(SECTION).get<unknown>("panelNavCollapsed") === true;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const { sink, channel } = createOutputSink();
   const log = new Logger(sink);
   const status = new StatusBar("copilotUsageMonitor.showDetails");
   const panel = new DetailsPanel();
+  panel.setNavCollapsed(readNavCollapsed());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */
   const alert = new TargetAlert(() => panel.show());
@@ -210,6 +216,14 @@ export function activate(context: vscode.ExtensionContext): void {
     if (isSectionId(arg)) panel.show(arg);
   };
 
+  /** Collapses or expands the panel's section nav (takes no argument); remembered in the
+   * user setting, like the tokens / cost switch. */
+  const toggleNav = async () => {
+    const collapsed = !panel.navCollapsed;
+    panel.setNavCollapsed(collapsed);
+    await vscode.workspace.getConfiguration(SECTION).update("panelNavCollapsed", collapsed, vscode.ConfigurationTarget.Global);
+  };
+
   const setUnit = async (arg?: unknown) => {
     const unit = arg === "cost" || arg === "tokens" ? arg : view.unit === "cost" ? "tokens" : "cost";
     view = { ...view, unit };
@@ -313,6 +327,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.filter", () => setFilter()),
     vscode.commands.registerCommand("copilotUsageMonitor.showSection", showSection),
     vscode.commands.registerCommand("copilotUsageMonitor.showSession", showSession),
+    vscode.commands.registerCommand("copilotUsageMonitor.toggleNav", toggleNav),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       folders = readFolders();
       render();
@@ -323,6 +338,7 @@ export function activate(context: vscode.ExtensionContext): void {
         render();
       }
       if (e.affectsConfiguration(`${SECTION}.currency`)) void refreshRate();
+      if (e.affectsConfiguration(`${SECTION}.panelNavCollapsed`)) panel.setNavCollapsed(readNavCollapsed());
       const h = readHistory();
       let rootChanged = false;
       if (e.affectsConfiguration(SETTING)) {
@@ -349,6 +365,7 @@ export function activate(context: vscode.ExtensionContext): void {
         panelOpen: panel.isOpen,
         panelTitle: panel.title,
         panelSection: panel.section,
+        panelNavCollapsed: panel.navCollapsed,
         panelRenders: panel.renders,
         panelActive: panel.active,
         panelHeld: panel.held,

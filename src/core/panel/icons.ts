@@ -15,6 +15,8 @@ const PATHS = {
   week: `<path d="M2 12.5l4-4 3 3 5-6"/><path d="M10.5 5.5H14V9"/>`,
   session: `<path d="M3 3.5h10v7H3z"/><path d="M5.5 13.5h5M8 10.5v3"/>`,
   bars: `<path d="M2.5 14V9.5M6.5 14V5M10.5 14V8M14 14V2.5"/>`,
+  navCollapse: `<rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M10.5 2v12M7 6 5 8l2 2"/>`,
+  navExpand: `<rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M5.5 2v12M9 6l2 2-2 2"/>`,
   trend: `<path d="M2 14h12"/><path d="M3.5 11.5V9M6.5 11.5V6.5M9.5 11.5V8M12.5 11.5V4"/>`,
 } as const;
 

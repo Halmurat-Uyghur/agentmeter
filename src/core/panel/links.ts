@@ -10,6 +10,7 @@ export const PANEL_COMMANDS = [
   "copilotUsageMonitor.setFilter",
   "copilotUsageMonitor.showSection",
   "copilotUsageMonitor.showSession",
+  "copilotUsageMonitor.toggleNav",
 ] as const;
 
 export type PanelCommand = (typeof PANEL_COMMANDS)[number];
@@ -33,4 +34,9 @@ export function sectionHref(id: SectionId): string {
  * the handler checks that shape again. */
 export function sessionCallsHref(sessionId: string): string {
   return commandHref("copilotUsageMonitor.showSession", sessionId);
+}
+
+/** A link that collapses or expands the section nav; the handler takes no argument. */
+export function navToggleHref(): string {
+  return commandHref("copilotUsageMonitor.toggleNav");
 }

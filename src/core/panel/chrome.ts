@@ -5,7 +5,7 @@ import { costLabel, costNotes, estWord, LOCAL_BANNER, STREAMING_NOTE } from "../
 import { PANEL_CSS } from "../panelCss";
 import type { Health, Snapshot, ViewOptions } from "../types";
 import { icon, logo } from "./icons";
-import { commandHref, filterHref, sectionHref } from "./links";
+import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
 import { clock, escapeHtml, monthKey, monthTitle, plural, projectLabel, viewedStart } from "./shared";
 
@@ -124,11 +124,14 @@ function navExtra(s: Snapshot | undefined, id: SectionId): string {
 }
 
 /** The section menu (A2): Overview on top, then the Usage, Insight and Health groups,
- * each a labelled list; an inline icon and the label on every link. */
-export function sideNav(s: Snapshot | undefined, active: SectionId): string {
+ * each a labelled list; an inline icon and the label on every link. A toggle at the top
+ * collapses it to an icon rail (labels stay for screen readers, and each link keeps a
+ * tooltip), or expands it again; the choice is the extension's, sent as `collapsed`. */
+export function sideNav(s: Snapshot | undefined, active: SectionId, collapsed = false): string {
   const item = (d: SectionDef) => {
     const current = d.id === active ? ' aria-current="page"' : "";
-    return `<li><a href="${escapeHtml(sectionHref(d.id))}"${current}>${icon(d.icon)}${escapeHtml(d.label)}${navExtra(s, d.id)}</a></li>`;
+    const tip = collapsed ? ` title="${escapeHtml(d.label)}"` : "";
+    return `<li><a href="${escapeHtml(sectionHref(d.id))}"${current}${tip}>${icon(d.icon)}<span class="lbl">${escapeHtml(d.label)}</span>${navExtra(s, d.id)}</a></li>`;
   };
   const lists: string[] = [];
   const groups: string[] = [];
@@ -145,13 +148,15 @@ export function sideNav(s: Snapshot | undefined, active: SectionId): string {
     const id = `nav-${g.toLowerCase()}`;
     lists.push(`<p class="grp" id="${id}">${escapeHtml(g)}</p><ul aria-labelledby="${id}">${items}</ul>`);
   }
-  return `<nav class="sidenav" aria-label="Sections">${lists.join("")}</nav>`;
+  const label = collapsed ? "Expand side navigation" : "Collapse side navigation";
+  const toggle = `<div class="navtop"><a class="navtoggle" href="${escapeHtml(navToggleHref())}" title="${label}" aria-label="${label}" aria-expanded="${collapsed ? "false" : "true"}">${icon(collapsed ? "navExpand" : "navCollapse")}</a></div>`;
+  return `<nav class="sidenav${collapsed ? " collapsed" : ""}" aria-label="Sections">${toggle}${lists.join("")}</nav>`;
 }
 
 /** Skip link (first focusable element) and the nav + main shell around a section body. */
-export function shell(s: Snapshot | undefined, def: SectionDef, description: string, body: string): string {
-  return `<div class="shell">
-${sideNav(s, def.id)}
+export function shell(s: Snapshot | undefined, def: SectionDef, description: string, body: string, navCollapsed = false): string {
+  return `<div class="shell${navCollapsed ? " navcollapsed" : ""}">
+${sideNav(s, def.id, navCollapsed)}
 <main id="main" class="content" aria-labelledby="section-title">
 <h2 id="section-title" class="sec">${escapeHtml(def.label)}</h2>
 <p class="secdesc">${escapeHtml(description)}</p>

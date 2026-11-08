@@ -218,7 +218,7 @@ describe("gates", () => {
     expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
-  it("settings writes: display and currency from extension.ts, targetAlert (to false) only from the alert", () => {
+  it("settings writes: panelNavCollapsed, display and currency from extension.ts, targetAlert (to false) only from the alert", () => {
     const writes = new Map<string, string[]>();
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
       const src = readFileSync(f, "utf8");
@@ -228,19 +228,20 @@ describe("gates", () => {
       if (keys.length) writes.set(f.slice(ROOT.length + 1), keys);
     }
     expect(Object.fromEntries(writes)).toEqual({
-      [join("src", "extension.ts")]: ["display", "currency"],
+      [join("src", "extension.ts")]: ["panelNavCollapsed", "display", "currency"],
       [join("src", "vscode", "targetAlert.ts")]: ["targetAlert"],
     });
     expect(readFileSync(join(ROOT, "src", "vscode", "targetAlert.ts"), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
   });
 
-  it("the panel allows exactly five commands, wired as the webview's allowlist (D30; showSession v0.6)", () => {
+  it("the panel allows exactly six commands, wired as the webview's allowlist (D30; showSession v0.6; toggleNav)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.showSection",
       "copilotUsageMonitor.showSession",
+      "copilotUsageMonitor.toggleNav",
     ]);
     const panel = readFileSync(join(ROOT, "src", "vscode", "panel.ts"), "utf8");
     expect(panel).toContain("enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: []");
