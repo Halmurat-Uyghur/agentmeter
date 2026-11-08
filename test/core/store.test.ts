@@ -581,6 +581,38 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect(s.totals(all)!.records).toBe(1);
   });
 
+  it("when the owner is reset, the earliest remaining holder owns the record (its repeats merge, later holders' do not)", () => {
+    const s = new UsageStore();
+    s.add(cc("x", { tokens: { input: 10 } }), "A");
+    s.add(cc("x", { tokens: { input: 10 } }), "B");
+    s.add(cc("x", { tokens: { input: 10 } }), "C");
+    s.resetFile("A");
+    expect(s.add(cc("x", { tokens: { input: 30 } }), "C")).toBe(false);
+    expect(s.add(cc("x", { tokens: { input: 20 } }), "B")).toBe(true);
+    expect(s.records(all)[0]!.tokens).toStrictEqual({ input: 20 });
+    s.resetFile("B");
+    expect(s.add(cc("x", { tokens: { input: 40 } }), "C")).toBe(true);
+    expect(s.records(all)[0]!.tokens).toStrictEqual({ input: 40 });
+    s.resetFile("C");
+    expect(s.totals(all)).toBeUndefined();
+  });
+
+  it("a folder keeps holding a call key while any of three holders from it remains, across owner changes (D29)", () => {
+    const s = new UsageStore();
+    s.add(rec("u1", { sessionId: "s", folderId: "f" }), "f/a");
+    s.add(rec("u1", { sessionId: "s", folderId: "g" }), "g/a");
+    s.add(rec("u1", { sessionId: "s", folderId: "f" }), "f/b");
+    s.setSessionTotals("f", "f/t", [total("f", "m")]);
+    s.setSessionTotals("g", "g/t", [total("g", "m")]);
+    s.resetFile("f/a");
+    s.resetFile("g/a");
+    // f/b still holds u1, so folder f's total stays hidden; folder g holds nothing any more
+    expect(s.totals(all)!.sessionTotals).toBe(1);
+    expect([...s.sessionTotalSessions()]).toEqual(["g"]);
+    s.resetFile("f/b");
+    expect(s.totals(all)!.sessionTotals).toBe(2);
+  });
+
   it("a merged record keeps hiding its session's totals; resetFile deletes it once", () => {
     const s = new UsageStore();
     s.add(rec("u1", { sessionId: "f", folderId: "f", tools: { bash: 1 } }), "a");

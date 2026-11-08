@@ -11,16 +11,62 @@ import type { Activity, Counts, DayStats, DayTotals, GroupSummary, Metric, Month
 
 export const UNKNOWN_MODEL = "(unknown model)";
 
+/** One stored record and the files holding its key. Most keys have one holder, so the first
+ * holder sits in two fields and a Map is built only when a second file holds the key
+ * (a per-record Map costs ~190 bytes; D50 heap budget). */
 interface Entry {
   record: UsageRecord;
-  /** file → folderId of the file; a call key counts as held by every folder here (D29) */
-  files: Map<string, string>;
+  /** the first (owning) holder and its folderId; a call key counts as held by every folder of its holders (D29) */
+  file: string;
+  folderId: string;
+  /** later holders, file → folderId, in the order they arrived; undefined while there are none */
+  more: Map<string, string> | undefined;
+}
+
+function newEntry(record: UsageRecord, file: string, folderId: string): Entry {
+  return { record, file, folderId, more: undefined };
+}
+
+function hasFile(e: Entry, file: string): boolean {
+  return e.file === file || (e.more?.has(file) ?? false);
 }
 
 function holds(e: Entry, folderId: string): boolean {
-  for (const f of e.files.values()) if (f === folderId) return true;
+  if (e.folderId === folderId) return true;
+  if (e.more) for (const f of e.more.values()) if (f === folderId) return true;
   return false;
 }
+
+/** Drops `file` from `e`'s holders. Returns the folderId it held the key for (undefined if it
+ * did not hold it) and whether no holder is left. A removed first holder is replaced by the
+ * earliest later one, as the first key of an insertion-ordered Map would be. */
+function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean } {
+  if (e.file === file) {
+    const folderId = e.folderId;
+    const next = e.more?.entries().next();
+    if (next === undefined || next.done) return { folderId, empty: true };
+    const [f, id] = next.value;
+    e.more!.delete(f);
+    e.file = f;
+    e.folderId = id;
+    if (e.more!.size === 0) e.more = undefined;
+    return { folderId, empty: false };
+  }
+  const folderId = e.more?.get(file);
+  if (folderId === undefined) return { folderId, empty: false };
+  e.more!.delete(file);
+  if (e.more!.size === 0) e.more = undefined;
+  return { folderId, empty: false };
+}
+
+/** Records keyed by kind and source, then by record key: call keys and session-total keys
+ * never share a namespace, so a log-supplied usageId can never equal (and drop) a
+ * "shutdown:…" key (N10), and an id from one source's log can never equal another
+ * source's (D40). Keying the inner Map by `r.key` itself stores no second key string. */
+type Namespace = Map<string, Entry>;
+
+/** Most distinct strings the store's pool keeps before starting over. */
+const POOL_MAX = 50_000;
 
 function emptyMetric(): Metric {
   return { sum: 0, reported: 0, missing: 0 };
@@ -103,13 +149,6 @@ function accumulateTotals(totals: Totals, r: UsageRecord): void {
   accumulate((bySource[r.source] ??= emptyCounts()), r);
 }
 
-/** Store key of a record: call keys and session-total keys never share a namespace,
- * so a log-supplied usageId can never equal (and drop) a "shutdown:…" key (N10), and
- * an id from one source's log can never equal another source's (D40). */
-function entryKey(r: UsageRecord): string {
-  return `${r.kind === "call" ? "c" : "t"}|${r.source}|${r.key}`;
-}
-
 /** Fields a later line of the same call in the same file replaces (D42 repeats). */
 const REPEAT_FIELDS = [
   "tokens", "timestampMs", "model", "finishReason", "sequence", "durationMs", "nanoAiu", "typeCost", "initiator", "toolTokens", "availableTools",
@@ -150,36 +189,79 @@ function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
 }
 
 export class UsageStore {
-  private readonly entries = new Map<string, Entry>();
+  /** kind ("c" or "t") + "|" + source → that namespace's records */
+  private readonly spaces = new Map<string, Namespace>();
   /** sessionId → call records held; a session in here hides its session totals */
   private readonly callsPerSession = new Map<string, number>();
   /** folderId → call keys held by its files; a folder in here hides its session totals,
    * whatever sessionId its call records carry (a resumed, forked or copied session) */
   private readonly callsPerFolder = new Map<string, number>();
-  /** folderId → store keys of its current session-total records */
-  private readonly totalKeys = new Map<string, string[]>();
+  /** folderId → its current session-total records (each the record of its own entry) */
+  private readonly totalKeys = new Map<string, UsageRecord[]>();
+  /** One shared copy of each session id, folder id and model id: a reader decodes them afresh
+   * per line, and thousands of records of one session would otherwise each keep a copy (D50).
+   * Bounded: cleared when full, which only costs sharing, never correctness. */
+  private readonly pool = new Map<string, string>();
+
+  private intern(s: string): string {
+    const known = this.pool.get(s);
+    if (known !== undefined) return known;
+    if (this.pool.size >= POOL_MAX) this.pool.clear();
+    this.pool.set(s, s);
+    return s;
+  }
+
+  /** Points `r`'s repeated strings at the pooled copies (equal strings, so nothing observable changes). */
+  private share(r: UsageRecord): void {
+    const sessionId = this.intern(r.sessionId);
+    r.folderId = r.folderId === r.sessionId ? sessionId : this.intern(r.folderId);
+    r.sessionId = sessionId;
+    if (r.model !== undefined) r.model = this.intern(r.model);
+  }
+
+  /** The namespace of `r`'s kind and source; created when `create`. */
+  private space(r: UsageRecord, create: true): Namespace;
+  private space(r: UsageRecord, create: false): Namespace | undefined;
+  private space(r: UsageRecord, create: boolean): Namespace | undefined {
+    const name = `${r.kind === "call" ? "c" : "t"}|${r.source}`;
+    let m = this.spaces.get(name);
+    if (m === undefined && create) this.spaces.set(name, (m = new Map()));
+    return m;
+  }
+
+  private entry(r: UsageRecord): Entry | undefined {
+    return this.space(r, false)?.get(r.key);
+  }
+
+  /** Calls `fn` with every record, visible or not, in no particular order. */
+  private forEachRecord(fn: (r: UsageRecord) => void): void {
+    for (const m of this.spaces.values()) for (const e of m.values()) fn(e.record);
+  }
 
   /** Returns whether the store changed. A key already known from another file counts once
    * (`file` is still recorded for it); a later call line of the same key in the file that
    * owns the record (its first holder) replaces the record's figures and adds its tools (D42 repeats). */
   add(r: UsageRecord, file: string): boolean {
-    const key = entryKey(r);
-    const existing = this.entries.get(key);
+    const existing = this.entry(r);
     // Only the owning (first) holder's later lines merge; another holder's repeat counts once,
     // so tool names never merge twice (D42).
-    if (existing && r.kind === "call" && existing.files.keys().next().value === file) {
+    if (existing && r.kind === "call" && existing.file === file) {
       const merged = mergeRepeat(existing.record, r);
       if (JSON.stringify(merged) === JSON.stringify(existing.record)) return false;
+      this.share(merged);
       existing.record = merged;
       return true;
     }
     if (existing) {
-      // A copied folder delivers the same key: that folder holds it too (D29).
-      if (r.kind === "call" && !existing.files.has(file) && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
-      if (!existing.files.has(file)) existing.files.set(file, r.folderId);
+      if (!hasFile(existing, file)) {
+        // A copied folder delivers the same key: that folder holds it too (D29).
+        if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, r.folderId, 1);
+        (existing.more ??= new Map()).set(file, r.folderId);
+      }
       return false;
     }
-    this.entries.set(key, { record: r, files: new Map([[file, r.folderId]]) });
+    this.share(r);
+    this.space(r, true).set(r.key, newEntry(r, file, r.folderId));
     if (r.kind === "call") {
       bump(this.callsPerSession, r.sessionId, 1);
       bump(this.callsPerFolder, r.folderId, 1);
@@ -197,19 +279,25 @@ export class UsageStore {
     const same =
       old.length === records.length &&
       records.every((r, i) => {
-        const e = this.entries.get(old[i]!);
-        return e !== undefined && entryKey(r) === old[i] && e.files.size === 1 && e.files.has(file) && JSON.stringify(e.record) === JSON.stringify(r);
+        const o = old[i]!;
+        const e = this.entry(o);
+        return (
+          e !== undefined && r.kind === o.kind && r.source === o.source && r.key === o.key &&
+          e.more === undefined && e.file === file && JSON.stringify(e.record) === JSON.stringify(r)
+        );
       });
     if (same) return false;
-    for (const key of old) this.entries.delete(key);
-    const keys: string[] = [];
+    for (const o of old) this.space(o, false)?.delete(o.key);
+    const kept: UsageRecord[] = [];
     for (const r of records) {
-      const key = entryKey(r);
-      if (r.kind !== "sessionTotal" || this.entries.has(key)) continue;
-      this.entries.set(key, { record: r, files: new Map([[file, folderId]]) });
-      keys.push(key);
+      if (r.kind !== "sessionTotal") continue;
+      const m = this.space(r, true);
+      if (m.has(r.key)) continue;
+      this.share(r);
+      m.set(r.key, newEntry(r, file, folderId));
+      kept.push(r);
     }
-    if (keys.length > 0) this.totalKeys.set(folderId, keys);
+    if (kept.length > 0) this.totalKeys.set(folderId, kept);
     else this.totalKeys.delete(folderId);
     return true;
   }
@@ -217,20 +305,21 @@ export class UsageStore {
   /** Forgets `file`; records no other file holds are deleted. A folder stops holding a
    * call key once none of its files does. */
   resetFile(file: string): void {
-    for (const [key, entry] of this.entries) {
-      const folderId = entry.files.get(file);
-      if (folderId === undefined) continue;
-      entry.files.delete(file);
-      const r = entry.record;
-      if (r.kind === "call" && !holds(entry, folderId)) bump(this.callsPerFolder, folderId, -1);
-      if (entry.files.size === 0) {
-        this.entries.delete(key);
-        if (r.kind === "call") {
-          bump(this.callsPerSession, r.sessionId, -1);
-        } else {
-          const keys = this.totalKeys.get(r.folderId)?.filter((k) => k !== key) ?? [];
-          if (keys.length > 0) this.totalKeys.set(r.folderId, keys);
-          else this.totalKeys.delete(r.folderId);
+    for (const m of this.spaces.values()) {
+      for (const [key, entry] of m) {
+        const { folderId, empty } = dropFile(entry, file);
+        if (folderId === undefined) continue;
+        const r = entry.record;
+        if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, folderId, -1);
+        if (empty) {
+          m.delete(key);
+          if (r.kind === "call") {
+            bump(this.callsPerSession, r.sessionId, -1);
+          } else {
+            const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
+            if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
+            else this.totalKeys.delete(r.folderId);
+          }
         }
       }
     }
@@ -245,9 +334,9 @@ export class UsageStore {
   /** Session ids with at least one visible session-total record. */
   sessionTotalSessions(): Set<string> {
     const out = new Set<string>();
-    for (const keys of this.totalKeys.values()) {
-      for (const key of keys) {
-        const r = this.entries.get(key)?.record;
+    for (const recs of this.totalKeys.values()) {
+      for (const o of recs) {
+        const r = this.entry(o)?.record;
         if (r && this.visible(r)) out.add(r.sessionId);
       }
     }
@@ -257,10 +346,9 @@ export class UsageStore {
   /** Aggregates matching records; undefined iff none match. */
   totals(filter: (r: UsageRecord) => boolean): Totals | undefined {
     const totals = emptyTotals();
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record) || !filter(record)) continue;
-      accumulateTotals(totals, record);
-    }
+    this.forEachRecord((record) => {
+      if (this.visible(record) && filter(record)) accumulateTotals(totals, record);
+    });
     return totals.records === 0 ? undefined : totals;
   }
 
@@ -268,37 +356,41 @@ export class UsageStore {
    * undefined to skip). Entries are undefined for buckets with no record. */
   totalsByBucket(n: number, bucket: (r: UsageRecord) => number | undefined): (Totals | undefined)[] {
     const out: (Totals | undefined)[] = new Array(n).fill(undefined);
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record)) continue;
+    this.forEachRecord((record) => {
+      if (!this.visible(record)) return;
       const i = bucket(record);
-      if (i === undefined || i < 0 || i >= n) continue;
+      if (i === undefined || i < 0 || i >= n) return;
       accumulateTotals((out[i] ??= emptyTotals()), record);
-    }
+    });
     return out;
   }
 
   /** Calls `fn` for every visible record, in no particular order, without building an array. */
   each(fn: (r: UsageRecord) => void): void {
-    for (const { record } of this.entries.values()) if (this.visible(record)) fn(record);
+    this.forEachRecord((record) => {
+      if (this.visible(record)) fn(record);
+    });
   }
 
   /** Every record matching `filter`, in no particular order. */
   records(filter: (r: UsageRecord) => boolean): UsageRecord[] {
     const out: UsageRecord[] = [];
-    for (const { record } of this.entries.values()) if (this.visible(record) && filter(record)) out.push(record);
+    this.forEachRecord((record) => {
+      if (this.visible(record) && filter(record)) out.push(record);
+    });
     return out;
   }
 
   /** folderId → newest timestampMs over all records. */
   latest(): Map<string, number> {
     const out = new Map<string, number>();
-    for (const { record } of this.entries.values()) {
-      if (!this.visible(record)) continue;
+    this.forEachRecord((record) => {
+      if (!this.visible(record)) return;
       const prev = out.get(record.folderId);
       if (prev === undefined || record.timestampMs > prev) {
         out.set(record.folderId, record.timestampMs);
       }
-    }
+    });
     return out;
   }
 }
