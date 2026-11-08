@@ -9,7 +9,7 @@ The extension reads the session logs that these tools write on this computer:
 From Claude Code and Codex logs only token counts, model ids, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. A folder that is absent is not opened.
 
 - **Found:** the status bar shows a figure such as `Local today: 1.5M tok`.
-- **Not found:** the status bar says no usage logs were found, and the side bar names the settings.
+- **Not found:** the status bar reads `Local: no usage logs found`, and the side bar names the folder setting of each enabled source.
 
 Copilot Chat in VS Code is not counted (only Copilot CLI logs are read), so if you use Chat the figures are a lower bound.
 
