@@ -7,6 +7,8 @@
 // per-thread usage copies are never requested, so they are never decoded.
 // archived_sessions/ is counted by name and never opened; nothing else under
 // the Codex home is listed.
+// Session totals (token_count, D45) carry the file's session id (the line has
+// no session_id) and the latest model seen in the file, when one is known.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isSessionId } from "./extract";
@@ -114,18 +116,33 @@ const TOKEN_FIELDS: readonly [string, keyof Tokens][] = [
 
 const isCount = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
-/** Needle pre-gate on raw bytes (native Buffer.indexOf); the scanner later confirms the depth-1 type. */
+/**
+ * Needle pre-gate on raw bytes (native Buffer.indexOf), bounded to the line: buf is often a
+ * whole read chunk, so the search runs on a zero-copy view of buf[start, end) and never past
+ * the line's end. The scanner later confirms the depth-1 type; parseCodexLine re-dispatches
+ * when the confirmed type is another of the four (a nested needle picked the wrong class).
+ */
 export function classifyCodexLine(buf: Buffer, start: number, end: number): CodexLineClass {
-  const has = (n: Buffer): boolean => {
-    const i = buf.indexOf(n, start);
-    return i !== -1 && i + n.length <= end;
-  };
-  if (has(RECORD_NEEDLE)) return "record";
-  if (has(TURN_NEEDLE)) return "turn";
-  if (has(META_NEEDLE)) return "meta";
-  if (has(EVENT_NEEDLE)) return "event";
+  const line = buf.subarray(start, end);
+  if (line.indexOf(RECORD_NEEDLE) !== -1) return "record";
+  if (line.indexOf(TURN_NEEDLE) !== -1) return "turn";
+  if (line.indexOf(META_NEEDLE) !== -1) return "meta";
+  if (line.indexOf(EVENT_NEEDLE) !== -1) return "event";
   return "skip";
 }
+
+/** The depth-1 type confirmed by the scanner is another gated class: parse the line as that. */
+interface Redirect {
+  redirect: CodexLineClass;
+}
+type Parsed = CodexParse | Redirect;
+
+const CLASS_OF_TYPE: ReadonlyMap<string, CodexLineClass> = new Map([
+  [RECORD_TYPE, "record"],
+  [TURN_TYPE, "turn"],
+  [META_TYPE, "meta"],
+  [EVENT_TYPE, "event"],
+]);
 
 /** True when any requested path matched more than once (a duplicate key). */
 function hasDuplicate(res: ScanResult): boolean {
@@ -154,16 +171,20 @@ function tokensAt(buf: Buffer, res: ScanResult, key: string): Tokens | "too-larg
 }
 
 /** Scans buf[start, end) for `paths`; undefined when the line is truncated, has a duplicate key, or its depth-1 type is not `type`. */
-function scanTyped(buf: Buffer, start: number, end: number, paths: readonly ScanPath[], type: string): ScanResult | "malformed" | "other" {
+function scanTyped(buf: Buffer, start: number, end: number, paths: readonly ScanPath[], type: string): ScanResult | "malformed" | "other" | Redirect {
   const res = scanJson(buf, start, end, paths);
   if (!res.complete || hasDuplicate(res)) return "malformed";
-  return stringAt(buf, res, "type") === type ? res : "other";
+  const actual = stringAt(buf, res, "type");
+  if (actual === type) return res;
+  const cls = actual === undefined ? undefined : CLASS_OF_TYPE.get(actual);
+  return cls === undefined ? "other" : { redirect: cls };
 }
 
-function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): CodexParse {
+function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): Parsed {
   const res = scanTyped(buf, start, end, RECORD_PATHS, RECORD_TYPE);
   if (res === "malformed") return { kind: "malformed" };
   if (res === "other") return { kind: "ignored" };
+  if ("redirect" in res) return res;
   const key = stringAt(buf, res, "payload.response_id");
   if (!safeKey(key, RESPONSE_ID)) return { kind: "unrecognized", reason: "no-key" };
   const timestampMs = timestampOf(stringAt(buf, res, "timestamp"));
@@ -189,10 +210,11 @@ function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileSt
   return { kind: "usage", record };
 }
 
-function parseTurn(buf: Buffer, start: number, end: number, state: CodexFileState): CodexParse {
+function parseTurn(buf: Buffer, start: number, end: number, state: CodexFileState): Parsed {
   const res = scanTyped(buf, start, end, TURN_PATHS, TURN_TYPE);
   if (res === "malformed") return { kind: "malformed" };
   if (res === "other") return { kind: "ignored" };
+  if ("redirect" in res) return res;
   state.sawTurn = true;
   const model = stringAt(buf, res, "payload.model");
   if (!safeKey(model, MODEL_ID)) return { kind: "turn" };
@@ -210,24 +232,27 @@ function parseTurn(buf: Buffer, start: number, end: number, state: CodexFileStat
   return { kind: "turn" };
 }
 
-function parseMeta(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): CodexParse {
+function parseMeta(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): Parsed {
   // Only the file's first label is wanted: once one is known, cwd is not requested.
   const want = o.wantLabel && state.label === undefined;
   const res = scanTyped(buf, start, end, want ? META_LABEL_PATHS : META_PATHS, META_TYPE);
   if (res === "malformed") return { kind: "malformed" };
   if (res === "other") return { kind: "ignored" };
+  if ("redirect" in res) return res;
   if (!want) return { kind: "meta" };
   const cwd = stringAt(buf, res, "payload.cwd");
   const label = cwd === undefined ? undefined : folderLabel(cwd);
   return label === undefined ? { kind: "meta" } : { kind: "meta", label };
 }
 
-function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): CodexParse {
+function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileState, o: CodexParseOptions): Parsed {
   // Only token_count totals are wanted from event lines; without them the line is not scanned.
   if (!o.readTotals) return { kind: "ignored" };
   const res = scanTyped(buf, start, end, EVENT_TOTAL_PATHS, EVENT_TYPE);
   if (res === "malformed") return { kind: "malformed" };
-  if (res === "other" || stringAt(buf, res, "payload.type") !== TOKEN_COUNT) return { kind: "ignored" };
+  if (res === "other") return { kind: "ignored" };
+  if ("redirect" in res) return res;
+  if (stringAt(buf, res, "payload.type") !== TOKEN_COUNT) return { kind: "ignored" };
   const timestampMs = timestampOf(stringAt(buf, res, "timestamp"));
   if (Number.isNaN(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
   const tokens = tokensAt(buf, res, "payload.info.total_token_usage");
@@ -261,6 +286,14 @@ export function parseCodexLine(
   state: CodexFileState,
   o: CodexParseOptions,
 ): CodexParse {
+  const first = dispatch(buf, start, end, cls, state, o);
+  if (!("redirect" in first)) return first;
+  // Re-dispatch once on the confirmed type; a second mismatch cannot happen, but is ignored.
+  const second = dispatch(buf, start, end, first.redirect, state, o);
+  return "redirect" in second ? { kind: "ignored" } : second;
+}
+
+function dispatch(buf: Buffer, start: number, end: number, cls: CodexLineClass, state: CodexFileState, o: CodexParseOptions): Parsed {
   switch (cls) {
     case "record":
       return parseRecord(buf, start, end, state, o);
@@ -333,8 +366,12 @@ export async function discoverCodex(root: string, windowStartMs: number, dayStar
     if (code === "EACCES" || code === "EPERM") return { ok: false, error: "permission" };
     return { ok: false, error: "OTHER" };
   }
+  // Date folders are assumed to be named by the local calendar day the session started. One
+  // day of slack keeps a session begun the evening before the window's first day (or a folder
+  // named by the UTC day) in reach; records dated before the window are harmless to the buckets.
   const w = new Date(windowStartMs);
-  const first = w.getFullYear() * 10_000 + (w.getMonth() + 1) * 100 + w.getDate();
+  const slack = new Date(w.getFullYear(), w.getMonth(), w.getDate() - 1);
+  const first = slack.getFullYear() * 10_000 + (slack.getMonth() + 1) * 100 + slack.getDate();
   const liveFrom = Math.max(dayStartMs, nowMs - RECENT_MS);
   const candidates: SourceCandidate[] = [];
   const unreadable: SourceUnreadable[] = [];
@@ -351,7 +388,9 @@ export async function discoverCodex(root: string, windowStartMs: number, dayStar
         try {
           const entries = await fs.promises.readdir(dir, { withFileTypes: true });
           names = entries.filter((e) => e.isFile() && ROLLOUT.test(e.name)).map((e) => e.name);
-        } catch {
+        } catch (e) {
+          const code = errCode(e);
+          if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push({ folderId: `${y}/${m}/${d}`, path: dir, code });
           continue;
         }
         for (const name of names) {

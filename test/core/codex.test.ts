@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +28,7 @@ import {
 } from "../fixtures/codex";
 
 const OTHER_SESSION = "11111111-2222-3333-4444-555555555555";
+const ids0 = (n: number) => `bbbbbbbb-0000-0000-0000-${String(n).padStart(12, "0")}`;
 const o = { fileSessionId: OTHER_SESSION, wantLabel: true, readTotals: true };
 
 function fresh(): CodexFileState {
@@ -67,6 +68,37 @@ describe("classifyCodexLine (D45 gate)", () => {
   it("a needle as escaped text inside a string is skipped", () => {
     const text = JSON.stringify({ type: "token_usage_record", payload: {} });
     expect(cls(codexOther("response_item", "message", { text }))).toBe("skip");
+  });
+
+  it("classification is bounded to the line inside a large multi-line chunk", () => {
+    const kinds = [codexRecord(), codexTurn(), codexMeta(), codexTokenCount(), codexOther("response_item", "message")];
+    const expected = ["record", "turn", "meta", "event", "skip"];
+    const lines: string[] = [];
+    for (let i = 0; i < 2000; i++) lines.push(kinds[i % kinds.length]!);
+    // A plain line whose only needle-bearing neighbour comes later in the same chunk.
+    lines.push(codexOther("response_item", "message"), codexMeta());
+    const chunk = Buffer.from(lines.map((l) => `${l}\n`).join(""));
+    const got: string[] = [];
+    let pos = 0;
+    for (let nl = chunk.indexOf(0x0a, pos); nl !== -1; nl = chunk.indexOf(0x0a, pos)) {
+      got.push(classifyCodexLine(chunk, pos, nl));
+      pos = nl + 1;
+    }
+    expect(got).toHaveLength(2002);
+    for (let i = 0; i < 2000; i++) expect(got[i]).toBe(expected[i % expected.length]);
+    expect(got[2000]).toBe("skip");
+    expect(got[2001]).toBe("meta");
+  });
+
+  it("a nested record needle in a turn, meta or event line is parsed as its real type", () => {
+    const nest = (l: string) => l.replace('"payload":{', '"payload":{"x":{"type":"token_usage_record","response_id":"resp_n","usage":{"input_tokens":5}},');
+    const state = fresh();
+    expect(cls(nest(codexTurn({ turnId: "t1", model: "gpt-5" })))).toBe("record");
+    expect(parse(nest(codexTurn({ turnId: "t1", model: "gpt-5" })), state)).toEqual({ kind: "turn" });
+    expect(state.models.get("t1")).toBe("gpt-5");
+    expect(parse(nest(codexMeta()))).toEqual({ kind: "meta", label: "codex-proj" });
+    const t = parse(nest(codexTokenCount({ total: { input_tokens: 9 } })));
+    expect(t.kind === "total" && t.record.tokens).toEqual({ input: 9 });
   });
 
   it("a needle in a nested payload does not make a record", () => {
@@ -387,12 +419,13 @@ describe("discoverCodex (D45)", () => {
     expect(await discoverCodex(join(root, "missing"), windowStart, dayStart, now)).toEqual({ ok: false, error: "no-dir" });
   });
 
-  it("prunes date folders before the window's first day and keeps that day", async () => {
-    const ids = ["aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003", "aaaaaaaa-0000-0000-0000-000000000004"];
+  it("prunes date folders before the window's first day less one day of slack, and keeps the slack day", async () => {
+    const ids = ["aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003", "aaaaaaaa-0000-0000-0000-000000000004", "aaaaaaaa-0000-0000-0000-000000000005"];
     const mtime = new Date(now - 3_600_000);
     await codexTree(root, [
       { date: "2025/01/01", sessionId: ids[0]!, lines: [codexMeta()], mtime },
-      { date: "2026/09/30", sessionId: ids[1]!, lines: [codexMeta()], mtime },
+      { date: "2026/09/29", sessionId: ids[1]!, lines: [codexMeta()], mtime },
+      { date: "2026/09/30", sessionId: ids[4]!, lines: [codexMeta()], mtime },
       { date: "2026/10/01", sessionId: ids[2]!, lines: [codexMeta()], mtime },
       { date: "2026/11/08", sessionId: ids[3]!, lines: [codexMeta()], mtime: new Date(now - 1000) },
     ]);
@@ -401,7 +434,7 @@ describe("discoverCodex (D45)", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const byId = new Map(res.candidates.map((c) => [c.sessionId, c]));
-    expect([...byId.keys()].sort()).toEqual([ids[2], ids[3]]);
+    expect([...byId.keys()].sort()).toEqual([ids[2], ids[3], ids[4]]);
     const c = byId.get(ids[3]!)!;
     expect(c).toMatchObject({ source: "codex", folderId: ids[3], live: true, mtimeMs: now - 1000 });
     expect(c.files).toHaveLength(1);
@@ -411,7 +444,32 @@ describe("discoverCodex (D45)", () => {
     expect(typeof res.dirMtimeMs).toBe("number");
     const listed = readdir.mock.calls.map((a) => String(a[0]));
     expect(listed.some((p) => p.includes(`${sep}2025`))).toBe(false);
-    expect(listed.some((p) => p.endsWith(join("2026", "09")) || p.endsWith(join("09", "30")))).toBe(false);
+    expect(listed.some((p) => p.endsWith(join("09", "29")))).toBe(false);
+    expect(listed.some((p) => p.endsWith(join("09", "30")))).toBe(true);
+  });
+
+  it("the slack day crosses a month and year boundary", async () => {
+    const jan1 = new Date(2027, 0, 1).getTime();
+    await codexTree(root, [
+      { date: "2026/12/30", sessionId: ids0(1), lines: [codexMeta()], mtime: new Date(jan1 + 1000) },
+      { date: "2026/12/31", sessionId: ids0(2), lines: [codexMeta()], mtime: new Date(jan1 + 1000) },
+    ]);
+    const res = await discoverCodex(root, jan1, jan1, jan1 + 2000);
+    expect(res.ok && res.candidates.map((c) => c.sessionId)).toEqual([ids0(2)]);
+  });
+
+  it("an unreadable day folder is reported, not swallowed", async () => {
+    const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta()], mtime: new Date(now - 1000) }]);
+    const dir = join(root, "sessions", "2026", "11", "08");
+    await chmod(dir, 0o000);
+    try {
+      const res = await discoverCodex(root, windowStart, dayStart, now);
+      expect(res.ok && res.unreadable).toEqual([{ folderId: "2026/11/08", path: dir, code: expect.stringMatching(/^E(ACCES|PERM)$/) }]);
+      expect(res.ok && res.candidates).toEqual([]);
+    } finally {
+      await chmod(dir, 0o755);
+    }
+    expect(p).toBeDefined();
   });
 
   it("skips non-digit folders, non-rollout files, and uses the stem when no UUID ends the name", async () => {
