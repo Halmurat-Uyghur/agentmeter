@@ -45,6 +45,9 @@ export interface FileReadResult {
   /** Copilot only: workspace.yaml title; null clears */
   title?: string | null;
   activity: number;
+  /** lines whose gate class could have yielded a record or total (assistant-class, record-class, token_count) in this read;
+   * a session with activity but no candidates never called a model and is not "without usage" (D42). Copilot leaves it unset. */
+  candidates?: number;
   suspect: number;
   unrecognized: number;
   malformed: number;
