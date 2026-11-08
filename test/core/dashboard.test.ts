@@ -146,7 +146,12 @@ describe("activity heatmap (A2)", () => {
     const heat = html.slice(html.indexOf('<svg class="heat"'), html.indexOf("</svg>", html.indexOf('<svg class="heat"')));
     // Oct 1 .. Nov 6 = 37 days; Oct 1 2026 is a Thursday → 6 week columns (Sep 28 .. Nov 2 weeks)
     expect(heat.match(/<rect class="hm/g)).toHaveLength(37);
-    expect(heat).toContain('viewBox="0 0 120 121"');
+    // 120 wide for six weeks, widened to 220 for the readout row (20 tall) under the grid
+    expect(heat).toContain('viewBox="0 0 220 141"');
+    // hovering a square reveals its weekday and date at once (no script, no native tooltip)
+    expect(heat).toContain('<text class="hint" x="0" y="137">Hover a square to see its date</text>');
+    expect(heat).toContain('<title>Nov 4: 6.0M tokens</title></rect><text class="tip" x="0" y="137">Wed Nov 4: 6.0M tokens</text></g>');
+    expect(heat.match(/<g class="hc">/g)).toHaveLength(37);
     expect(heat.match(/class="hm h\d now"/g)).toHaveLength(1);
     expect(heat.match(/class="hm h4/g)).toHaveLength(1); // the busiest day
     expect(heat.match(/class="hm h[1-4]/g)).toHaveLength(5);
@@ -209,7 +214,11 @@ describe("Month to date (A2)", () => {
 describe("last 30 days bars (A2)", () => {
   it("30 slots, today in the accent, a dashed average line and the Avg/day, Peak and Yesterday chips", () => {
     const card = between(render(snap()), 'class="card bars"');
-    expect(card.match(/class="bar-hit"/g)).toHaveLength(30);
+    // 30 HTML hover targets over the plot, each with an instant weekday + date readout
+    expect(card.match(/<span class="hit[^"]*" data-tip="/g)).toHaveLength(30);
+    expect(card.match(/class="hit tip-l"/g)).toHaveLength(6);
+    expect(card.match(/class="hit tip-r"/g)).toHaveLength(6);
+    expect(card).toContain('data-tip="Wed Nov 4: 6.0M tokens"');
     expect(card.match(/<rect class="dbar"/g)).toHaveLength(3);
     expect(card.match(/<rect class="dbar-today"/g)).toHaveLength(1);
     expect(card).toMatch(/<line class="bar-avg" x1="0" x2="300" y1="[\d.]+" y2="[\d.]+" vector-effect="non-scaling-stroke"\/>/);
@@ -220,7 +229,7 @@ describe("last 30 days bars (A2)", () => {
     expect(v).toMatch(/Yesterday 1\.0M/);
     expect(v).toContain("Daily tokens last 30 days");
     expect(card).toMatch(/role="img" aria-label="Daily tokens, last 30 days: 4 of 30 days read had usage, average 3\.0M per active day, peak 6\.0M on Nov 4, today 3\.0M\. Not filtered\."/);
-    expect(v).toContain("Oct 8: no usage records");
+    expect(card).toContain('data-tip="Thu Oct 8: no usage records"');
     expect(card).toMatch(/<span>Today<\/span><\/div>/);
   });
 
@@ -229,7 +238,7 @@ describe("last 30 days bars (A2)", () => {
     const card = between(render(s, { unit: "cost" }), 'class="card bars"');
     const v = text(card);
     expect(v).toContain("Daily USD (est.) last 30 days · not filtered");
-    expect(v).toContain("Oct 31: before the history window");
+    expect(card).toContain('data-tip="Sat Oct 31: before the history window"');
     expect(v).toContain("Days before Nov 1 are outside the history window and have no bar.");
     expect(v).toMatch(/Peak \$0\.600 · Nov 4/);
   });
@@ -304,8 +313,8 @@ describe("v0.4 review fixes (dashboard)", () => {
     expect(heat).not.toContain("Nov 2: no usage records");
     expect(heat).toContain("<title>Nov 3: no usage records</title>");
     const bars = between(html, 'class="card bars"');
-    expect(bars).toContain("<title>Nov 2: — (estimated USD not reported) (includes 3 session totals)</title>");
-    expect(bars).toContain("<title>Nov 3: no usage records</title>");
+    expect(bars).toContain('data-tip="Mon Nov 2: — (estimated USD not reported) (includes 3 session totals)"');
+    expect(bars).toContain('data-tip="Tue Nov 3: no usage records"');
     // Hero Yesterday (Nov 5) has records but no cost: "—", and its note says why
     const hero = between(html, 'class="card hero"');
     expect(hero).toContain('title="Yesterday has usage records, but estimated USD not reported. (includes 3 session totals)"');

@@ -7,6 +7,7 @@ import type { Metric, Snapshot, Totals, ViewOptions } from "../types";
 import {
   card,
   DASH,
+  dataTip,
   DOW,
   escapeHtml,
   headlineMetric,
@@ -15,11 +16,13 @@ import {
   plural,
   shortDate,
   tilesBox,
+  tipSide,
   titleAttr,
   tokens,
   unitWord,
   val,
   viewedName,
+  weekdayTip,
   withStar,
 } from "./shared";
 
@@ -71,7 +74,8 @@ export function dailyTrend(s: Snapshot, view: ViewOptions): string {
     const d = mv.days[day - 1];
     const label = day === 1 || day % 5 === 0 ? String(day) : "";
     if (!d) {
-      cols.push(`<span class="col later" title="${escapeHtml(`${MONTHS[mo]!.slice(0, 3)} ${day}: not yet`)}"><span class="track"></span><span class="m">${label}</span></span>`);
+      const later = weekdayTip(new Date(y, mo, day).getTime(), `${MONTHS[mo]!.slice(0, 3)} ${day}: not yet`);
+      cols.push(`<span class="col later${tipSide(day - 1, daysInMonth)}"${dataTip(later)}><span class="track"></span><span class="m">${label}</span></span>`);
       continue;
     }
     const v = values[day - 1];
@@ -80,7 +84,7 @@ export function dailyTrend(s: Snapshot, view: ViewOptions): string {
     const bar = v !== undefined && v > 0 ? `<span class="fill${day - 1 === peakIdx ? " peak" : ""}" style="height:${pct(v)}%"></span>` : "";
     const now = d.dayStartMs === todayStart ? " sel" : "";
     rows.push(m ? { label: shortDate(d.dayStartMs), value: text, totals: d.totals?.sessionTotals ?? 0 } : { label: shortDate(d.dayStartMs) });
-    cols.push(`<span class="col${now}" title="${escapeHtml(dayTip(d.dayStartMs, m, text, word, view, d.totals))}"><span class="track">${bar}</span><span class="m">${label}</span></span>`);
+    cols.push(`<span class="col${now}${tipSide(day - 1, daysInMonth)}"${dataTip(weekdayTip(d.dayStartMs, dayTip(d.dayStartMs, m, text, word, view, d.totals)))}><span class="track">${bar}</span><span class="m">${label}</span></span>`);
   }
 
   const title = "Daily trend";
@@ -137,7 +141,8 @@ export function calendar(s: Snapshot, view: ViewOptions): string {
     const title = dayTip(days[day - 1]!.dayStartMs, m, text, ` ${word}`, view, days[day - 1]!.totals);
     // A day with no record stays blank (design #7); the title still says so.
     const shown = m ? val(text) : `<span class="sr">no usage records</span>`;
-    cells.push(`<div class="d${level ? ` h${level}` : ""}${isToday ? " now" : ""}" title="${escapeHtml(title)}">${day}${isToday ? `<span class="sr"> (today)</span>` : ""}<small>${shown}</small></div>`);
+    const side = (lead + day - 1) % 7 < 2 ? " tip-l" : (lead + day - 1) % 7 > 4 ? " tip-r" : "";
+    cells.push(`<div class="d${level ? ` h${level}` : ""}${isToday ? " now" : ""}${side}"${dataTip(weekdayTip(days[day - 1]!.dayStartMs, title))}>${day}${isToday ? `<span class="sr"> (today)</span>` : ""}<small>${shown}</small></div>`);
   }
   const mt = s.month?.totals;
   const swatches = [0, 1, 2, 3, 4].map((l) => `<b class="${l ? `h${l}` : ""}"></b>`).join("");
