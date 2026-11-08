@@ -2,7 +2,7 @@
 // the reader contract, with the folder-name project key of D44.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
-import { appendFile, mkdtemp, rm, unlink, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotSourceReader } from "../../src/core/copilot";
@@ -240,6 +240,18 @@ describe("CopilotSourceReader.open: parity with the v0.7 monitor read", () => {
     const res = await r.open(eventsPath(), await candidate(r)).read();
     expect(res.label).toBe("0123456789abcdef0123");
     expect(res.title).toBe("o/repo");
+  });
+
+  it.skipIf(process.platform === "win32")("a workspace.yaml that is a symlink is no title (the bounded read refuses non-regular files)", async () => {
+    await sessionTree(root, [{ id: A, lines: jsonl([startEvent({ cwd: "/x/0123456789abcdef0123" })]) }]);
+    const target = join(root, "elsewhere.yaml");
+    await writeFile(target, "name: Linked\n");
+    await symlink(target, join(root, "session-state", A, "workspace.yaml"));
+    const r = reader();
+    const res = await r.open(eventsPath(), await candidate(r)).read();
+    expect(res.label).toBe("0123456789abcdef0123");
+    expect(res.title).toBeUndefined();
+    expect(JSON.stringify(res)).not.toContain("Linked");
   });
 
   it("an oversize or non-regular workspace.yaml is no title", async () => {

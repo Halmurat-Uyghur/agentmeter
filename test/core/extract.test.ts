@@ -543,6 +543,13 @@ describe("parseStartLabel: folder-name key, owner/repo label (D44)", () => {
     expect(parseStartLabel("not json")).toBeUndefined();
     expect(parseStartLabel(JSON.stringify({ type: "other", data: { context: { cwd: "/x/a" } } }))).toBeUndefined();
   });
+  it("repository o/.. with no gitRoot or cwd is undefined (the repo part is not a folder name)", () => {
+    expect(parseStartLabel(start({ repository: "o/.." }))).toBeUndefined();
+    expect(parseStartLabel(start({ repository: "o/." }))).toBeUndefined();
+  });
+  it("a gitRoot whose last segment fails the folder-name rule falls back to cwd", () => {
+    expect(parseStartLabel(start({ gitRoot: `/x/${"a".repeat(90)}`, cwd: "/x/beta" }))).toStrictEqual({ key: "beta" });
+  });
   it("the canary never reaches key or label", () => {
     const r = parseStartLabel(start({ gitRoot: `/x/${CANARY}/../repo`, cwd: CANARY, repository: "o/repo", branch: CANARY }));
     expect(JSON.stringify(r)).not.toContain(CANARY);

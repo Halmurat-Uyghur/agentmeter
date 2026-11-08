@@ -12,7 +12,7 @@ import type { UsageRecord } from "./types";
 
 export interface CopilotSourceOptions {
   root: string;
-  rootSource: "setting" | "env" | "default";
+  rootSource: SourceReader["rootSource"];
   /** decode session.start lines for the project key (D25) */
   readProjects: boolean;
   /** decode session.shutdown lines for session totals (D29) */
@@ -157,7 +157,7 @@ class CopilotFileReader implements FileReader {
 export class CopilotSourceReader implements SourceReader {
   readonly source = "copilot" as const;
   readonly root: string;
-  readonly rootSource: "setting" | "env" | "default";
+  readonly rootSource: SourceReader["rootSource"];
   private readonly readProjects: boolean;
   private readonly readTotals: boolean;
   private readonly isLive: typeof realIsLive;

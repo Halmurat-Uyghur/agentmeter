@@ -312,6 +312,9 @@ export function activate(context: vscode.ExtensionContext): void {
     stop();
     const r = resolve();
     rootKey = keyOf(r);
+    // A source filter naming a source that is now off would show an empty month: drop it,
+    // like a project filter when readProjects is off.
+    if ((filter.source === "claude-code" && !r.claude) || (filter.source === "codex" && !r.codex)) delete filter.source;
     const sources: NonNullable<MonitorOptions["sources"]> = {
       ...(r.claude && { claude: { root: r.claude.root, rootSource: r.claude.source } }),
       ...(r.codex && { codex: { root: r.codex.root, rootSource: r.codex.source } }),

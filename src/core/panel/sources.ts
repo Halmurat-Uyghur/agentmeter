@@ -4,9 +4,8 @@
 // appear only when a source other than Copilot has records in scope.
 import { COST_SOURCES_NOTE, costLabel, enabledSources, formatCount, formatUsd, mixedSources, SOURCE_HOME_SETTING, SOURCE_TOGGLE_SETTING } from "../format";
 import { type Snapshot, type Source, SOURCE_LABEL, SOURCES, type SourceHealth, type ViewOptions } from "../types";
-import { fact } from "./health";
 import { filterHref } from "./links";
-import { callsCell, card, DASH, escapeHtml, foldedTable, monthTitle, plural, tokens, val, viewedStart, withStar } from "./shared";
+import { callsCell, card, DASH, escapeHtml, fact, foldedTable, monthTitle, plural, tokens, val, viewedStart, withStar } from "./shared";
 
 /** One chip per source with records, in SOURCES order; "" when none. */
 export function sourceChips(sources: Partial<Record<Source, number>> | undefined): string {

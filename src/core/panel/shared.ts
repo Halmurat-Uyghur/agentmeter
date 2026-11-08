@@ -24,6 +24,11 @@ export function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** One labelled count; `warn` stars a non-zero value. */
+export function fact(k: string, v: number, warn = false): string {
+  return `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
+}
+
 export function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }

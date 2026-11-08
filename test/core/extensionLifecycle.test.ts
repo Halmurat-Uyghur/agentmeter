@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MonitorOptions } from "../../src/core/monitor";
-import type { Snapshot, ViewOptions } from "../../src/core/types";
+import { SOURCE_LABEL, type Snapshot, type ViewOptions } from "../../src/core/types";
+import { codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex";
 
 /** Every UsageMonitor the extension constructs, with its options (survives vi.resetModules). */
 const built = vi.hoisted(() => [] as { sources?: MonitorOptions["sources"] }[]);
@@ -230,6 +231,68 @@ describe("extension lifecycle: Claude Code and Codex sources (D48, D49)", () => 
     fake.state.global[`${SECTION}.codex`] = false;
     fake.fireConfigChange(`${SECTION}.codex`);
     await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("claude-code"));
+    deactivate();
+  });
+});
+
+describe("extension lifecycle: source filter, batched config events, pinSession items", () => {
+  it("turning codex off drops a codex source filter on the one restart", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    await cmd("setFilter")("source", "codex");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("codex"));
+    expect(built).toHaveLength(1);
+    fake.state.global[`${SECTION}.codex`] = false;
+    fake.fireConfigChange(`${SECTION}.codex`);
+    expect(built).toHaveLength(2);
+    expect(built[1]!.sources?.codex).toBeUndefined();
+    await vi.waitFor(() => expect(testState().snapshot).toBeDefined());
+    expect(testState().snapshot?.filter?.source).toBeUndefined();
+    deactivate();
+  });
+
+  it("one config event changing two watched keys constructs exactly one new monitor", async () => {
+    const { fake, deactivate } = await load();
+    expect(built).toHaveLength(1);
+    // The fake's section form: one event for the whole section. Its affectsConfiguration
+    // reports only the section itself, so the value-compared settings drive this restart.
+    fake.state.global[`${SECTION}.historyMonths`] = 3;
+    fake.state.global[`${SECTION}.projectNames`] = false;
+    fake.fireConfigChange(SECTION);
+    expect(built).toHaveLength(2);
+    // An event naming two source keys at once (as VS Code sends for a multi-key settings.json edit).
+    fake.state.global[`${SECTION}.claudeCode`] = false;
+    fake.state.global[`${SECTION}.codex`] = false;
+    const keys = [`${SECTION}.claudeCode`, `${SECTION}.codex`];
+    const e = { affectsConfiguration: (x: string) => x === SECTION || keys.includes(x) };
+    for (const l of [...fake.state.configListeners]) l(e);
+    expect(built).toHaveLength(3);
+    expect(built[2]!.sources).toEqual({});
+    deactivate();
+  });
+
+  it("pinSession items carry the source label and say idle, not ended, for a non-Copilot session", async () => {
+    const now = Date.now();
+    const ms = now - 10 * 60 * 1000; // past the live window, so the session is idle
+    const d = new Date(ms);
+    const date = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+    const id = "c0de0000-0000-4000-8000-000000000001";
+    const ts = new Date(ms).toISOString();
+    await codexTree(join(home, "codex"), [{ date, sessionId: id, lines: [codexMeta({ id, timestamp: ts }), codexTurn({ timestamp: ts }), codexRecord({ sessionId: id, timestamp: ts })], mtime: new Date(ms) }]);
+    const { fake, cmd, testState, deactivate } = await load();
+    await vi.waitFor(() => expect(testState().snapshot?.sessions.some((x) => x.source === "codex")).toBe(true));
+    let captured: { label: string; description?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; description?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("pinSession")();
+    const row = captured.find((x) => x.label === id.slice(0, 8));
+    expect(row).toBeDefined();
+    const parts = row!.description!.split(" · ");
+    expect(parts[0]).toBe(SOURCE_LABEL.codex);
+    expect(parts).toContain("idle");
+    expect(parts).not.toContain("ended");
+    expect(parts).not.toContain("live");
     deactivate();
   });
 });

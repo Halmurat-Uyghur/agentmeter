@@ -536,6 +536,43 @@ describe("ByteTailer", () => {
     expect(t.carryLength).toBe(0);
   });
 
+  it("an over-long line whose head spans a carry shorter than headBytes passes exactly headBytes", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler, { maxLineBytes: 100, headBytes: 40 });
+    await writeFile(file, "ok1\nab");
+    await t.read();
+    expect(seen.lines).toEqual(["ok1"]);
+    expect(t.carryLength).toBe(2); // the carry is non-empty and shorter than headBytes
+    const body = Array.from({ length: 50 }, (_, i) => String(i).padStart(4, "0")).join("");
+    await appendFile(file, body); // no \n yet: carry + rest overflows, the concat branch builds the head
+    await t.read();
+    expect(seen.overlong).toEqual([{ text: ("ab" + body).slice(0, 40), whole: false }]);
+    expect(Buffer.byteLength(seen.overlong[0]!.text)).toBe(40);
+    expect(t.carryLength).toBe(0);
+    await appendFile(file, "tail\nok2\n");
+    await t.read();
+    expect(seen.lines).toEqual(["ok1", "ok2"]);
+    expect(seen.overlong).toHaveLength(1);
+  });
+
+  it("after a reset an over-long line still reports whole=false with its own head", async () => {
+    const { seen, handler } = recorder();
+    const t = new ByteTailer(file, handler, { maxLineBytes: 100, chunkBytes: 16, headBytes: 40 });
+    const a = "A".repeat(30) + Array.from({ length: 50 }, (_, i) => String(i).padStart(4, "0")).join("");
+    await writeFile(file, a); // over-long and unfinished: the tailer is left skipping
+    await t.read();
+    expect(seen.overlong).toEqual([{ text: a.slice(0, 40), whole: false }]);
+    await truncate(file, 0);
+    const b = Array.from({ length: 60 }, (_, i) => `b${String(i).padStart(3, "0")}`).join("");
+    await writeFile(file, b + "\nok\n");
+    expect(await t.read()).toEqual({ reset: true });
+    expect(seen.overlong).toEqual([
+      { text: a.slice(0, 40), whole: false },
+      { text: b.slice(0, 40), whole: false },
+    ]);
+    expect(seen.lines).toEqual(["ok"]);
+  });
+
   it.skipIf(process.platform === "win32")(
     "a FIFO path yields error OTHER without blocking",
     async () => {

@@ -38,6 +38,11 @@ export interface TailResult {
   error?: ReadErrorCode;
 }
 
+/**
+ * Receives each line ByteTailer reads. Neither method may throw: a throw mid-chunk
+ * aborts read() before the cursor advances past that chunk, so the next read()
+ * re-delivers the lines already handed over from it.
+ */
 export interface LineHandler {
   /** one complete line buf[start, end) without its \n (a trailing \r may be present) */
   line(buf: Buffer, start: number, end: number): void;

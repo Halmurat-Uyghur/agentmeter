@@ -1,13 +1,8 @@
 // Data health (D32): what was read, what was skipped and what is not counted.
 import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE } from "../format";
 import type { Snapshot } from "../types";
-import { escapeHtml } from "./shared";
+import { escapeHtml, fact } from "./shared";
 import { sourcesHealthBox } from "./sources";
-
-/** One labelled count; `warn` stars a non-zero value. */
-export function fact(k: string, v: number, warn = false): string {
-  return `<div class="fact"><span>${escapeHtml(k)}</span><span class="num${warn && v > 0 ? " star" : ""}">${v}</span></div>`;
-}
 
 export function healthBox(s: Snapshot): string {
   const h = s.health;
