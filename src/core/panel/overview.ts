@@ -1,7 +1,7 @@
 // Overview (D32, laid out by A2): the Today hero (with the activity heatmap and the
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
-import { costLabel, formatCount, formatRange, formatUsd, mixedSources, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
+import { costLabel, formatCount, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
 import type { MonthSummary, Snapshot, ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
@@ -81,7 +81,11 @@ function kpis(s: Snapshot, view: ViewOptions): string {
 
   const empty = mt
     ? ""
-    : `<p class="muted">${escapeHtml(`No Copilot usage logged in ${monthName}${s.filter ? " for this filter" : ""}. Figures appear here after Copilot finishes a model call, or when an older Copilot session ends.`)}</p>`;
+    : `<p class="muted">${escapeHtml(
+        multiSource(s.health) || s.filter?.source !== undefined
+          ? `No usage logged in ${monthName}${s.filter ? " for this filter" : ""}. Figures appear here after a model call finishes, or when an older Copilot session ends.`
+          : `No Copilot usage logged in ${monthName}${s.filter ? " for this filter" : ""}. Figures appear here after Copilot finishes a model call, or when an older Copilot session ends.`,
+      )}</p>`;
   // The session-total explanation appears once per section (design #1): a short footnote
   // whose title holds the full O3 text.
   const totalsNote =
@@ -104,6 +108,8 @@ export function trend(s: Snapshot, view: ViewOptions): string {
   const viewed = s.month?.monthStartMs;
   const values = hist.map((h) => headlineValue(h.totals, view));
   const range = view.unit === "cost" ? view.range : undefined;
+  // The target is in estimated USD, which only Copilot logs (D46).
+  const only = mixedSources(s.month?.totals?.sources) ? " (Copilot only)" : "";
   const top = Math.max(0, ...values.map((v) => v ?? 0), range?.max ?? 0, range?.min ?? 0);
   const scale = top > 0 ? top * 1.08 : 1;
   const pct = (v: number) => Math.max(0, Math.min(100, (100 * v) / scale)).toFixed(1);
@@ -133,10 +139,10 @@ export function trend(s: Snapshot, view: ViewOptions): string {
   if (range) {
     const lo = range.min ?? 0;
     const hi = range.max ?? scale;
-    band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}`)}"></span>`;
+    band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}${only}`)}"></span>`;
   }
   const legend = range
-    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range))}</span>`
+    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`
     : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : `Switch to ${costLabel()} to compare against a target.`}</span>`;
   const filtered = s.filter ? " · filtered" : "";
   return `<section class="card" aria-labelledby="trend-title"><h3 id="trend-title" class="ch">${icon("trend")}<span>Monthly trend</span><small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h3><div class="trend"><div class="plot">${band}<ol class="tcols" role="list" aria-label="Months, oldest first">${cols.join("")}</ol></div></div><div class="scale">${legend}</div></section>`;

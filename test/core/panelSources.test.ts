@@ -1,7 +1,7 @@
 // v0.8 (D40, D46, D49): the source dimension in the panel. Snapshots are built by hand;
 // nothing here reads a log. A Copilot-only snapshot shows no chip, card or note.
 import { describe, expect, it } from "vitest";
-import { COST_SOURCES_NOTE, INSIGHTS_SOURCES_NOTE } from "../../src/core/format";
+import { COST_SOURCES_NOTE, INSIGHTS_SOURCES_NOTE, LOCAL_BANNER } from "../../src/core/format";
 import { filterHref } from "../../src/core/panel/links";
 import { renderSourcesCard, sourceChips, sourcesHealthBox } from "../../src/core/panel/sources";
 import { escapeHtml, renderPanelHtml } from "../../src/core/panelHtml";
@@ -250,5 +250,108 @@ describe("Sources health box", () => {
     s.month!.projects[0]!.name = `<b>${CANARY}</b>`;
     const html = renderPanelHtml(s, "csp", TOKENS, "projects");
     expect(html).not.toContain(`<b>${CANARY}`);
+  });
+});
+
+// Fix wave F3a: wording and a11y once more than one source is read.
+describe("multi-source panel wording (F3a)", () => {
+  const multi = (o: Partial<Health> = {}) => health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh({ state: "off" }) }, ...o });
+  const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
+  // LOCAL_BANNER's disclaimer ("not your remaining allowance") is the one sanctioned use.
+  const words = (html: string) => html.replace(/<style>[\s\S]*?<\/style>/, " ").replace(/<[^>]*>/g, " ").replace(/&[a-z#0-9]+;/g, " ").split(LOCAL_BANNER.replace(/'/g, " ")).join(" ");
+
+  it("format-changed note names the source whose format changed; Copilot-only keeps the 0.7 text", () => {
+    const fc = renderPanelHtml(snap(mixedTotals(), { health: multi({ state: "format-changed", unrecognized: 2, sources: { copilot: sh(), "claude-code": sh({ state: "format-changed" }) } }) }), "csp", TOKENS, "overview");
+    expect(fc).toContain("Claude Code may have changed its log format, so figures may be incomplete.");
+    expect(fc).not.toContain("Copilot may have changed");
+    const cp = renderPanelHtml(snap(copilotTotals(), { health: health({ state: "format-changed", unrecognized: 2 }) }), "csp", TOKENS, "overview");
+    expect(cp).toContain("Copilot may have changed its log format, so figures may be incomplete.");
+  });
+
+  it("empty month and no current session are neutral when another source is on or a source filter is set", () => {
+    const empty = (o: Partial<Snapshot>) => {
+      const s = snap(copilotTotals(), { current: undefined, ...o });
+      s.month!.totals = undefined;
+      return s;
+    };
+    const multiHtml = renderPanelHtml(empty({ health: multi() }), "csp", TOKENS, "overview");
+    expect(multiHtml).toContain("No usage logged in November. Figures appear here after a model call finishes, or when an older Copilot session ends.");
+    const filtered = renderPanelHtml(empty({ filter: { source: "codex" } }), "csp", TOKENS, "overview");
+    expect(filtered).toContain("No usage logged in November for this filter. Figures appear here after a model call finishes");
+    expect(renderPanelHtml(empty({}), "csp", TOKENS, "overview")).toContain("No Copilot usage logged in November.");
+    expect(renderPanelHtml(empty({ health: multi() }), "csp", TOKENS, "sessions")).toContain("A session becomes current when a model call is logged in it.");
+    expect(renderPanelHtml(empty({ filter: { source: "copilot" } }), "csp", TOKENS, "sessions")).toContain("A session becomes current when a model call is logged in it.");
+    expect(renderPanelHtml(empty({}), "csp", TOKENS, "sessions")).toContain("A session becomes current when Copilot logs a model call in it.");
+  });
+
+  it("the loading page and streaming note are neutral", () => {
+    const html = renderPanelHtml(undefined, "csp", TOKENS, "overview");
+    expect(html).toContain("Reading session logs…");
+    expect(html).not.toContain("Reading Copilot");
+    expect(html).toContain("Updates when a model call finishes, not token by token.");
+  });
+
+  it("trend band title and legend say Copilot only when the month mixes sources", () => {
+    const view: ViewOptions = { unit: "cost", range: { min: 20, max: 60 } };
+    const hist = (t: Totals) => [{ monthStartMs: new Date(2026, 9, 1).getTime() }, { monthStartMs: MONTH0, totals: t }];
+    const mixed = renderPanelHtml(snap(mixedTotals(), { history: hist(mixedTotals()) }), "csp", view, "overview");
+    const trend = mixed.slice(mixed.indexOf('id="trend-title"'));
+    expect(trend).toMatch(/class="band"[^>]*title="Target \$20\.00–\$60\.00 \(Copilot only\)"/);
+    expect(trend).toMatch(/Target \$20\.00–\$60\.00 \(Copilot only\)<\/span>/);
+    const cp = renderPanelHtml(snap(copilotTotals(), { history: hist(copilotTotals()) }), "csp", view, "overview");
+    expect(cp.slice(cp.indexOf('id="trend-title"'))).not.toContain("(Copilot only)");
+  });
+
+  it("row chips are spaced and introduced for screen readers", () => {
+    expect(sourceChips({ copilot: 1, codex: 1 })).toBe('<span class="srcchip src-copilot">Copilot</span> <span class="srcchip src-codex">Codex</span>');
+    const html = renderPanelHtml(snap(mixedTotals()), "csp", TOKENS, "models");
+    const row = html.slice(html.indexOf('title="shared-model"'));
+    expect(row.slice(0, row.indexOf("</tr>"))).toContain('<span class="srcchips"><span class="sr">Source: </span><span class="srcchip src-copilot">Copilot</span> <span class="srcchip src-claude-code">Claude Code</span></span>');
+  });
+
+  it("Sources box iterates SOURCES: a source missing from health.sources reads Off with its setting; Copilot is never off", () => {
+    const html = sourcesHealthBox(snap(copilotTotals(), { health: health({ sources: { copilot: sh({ files: 3, sessions: 1 }) } }) }));
+    expect(html).toContain("Off (copilotUsageMonitor.claudeCode)");
+    expect(html).toContain("Off (copilotUsageMonitor.codex)");
+    expect(html).toContain("3 files, 1 session read");
+    expect(html.indexOf("Claude Code")).toBeLessThan(html.indexOf("Codex"));
+    const noCopilot = sourcesHealthBox(snap(copilotTotals(), { health: health({ sources: { codex: sh() } }) }));
+    expect(noCopilot).not.toContain("src-copilot");
+    expect(noCopilot).toContain("Off (copilotUsageMonitor.claudeCode)");
+  });
+
+  it("By source card: a copilot filter with nothing else in scope omits the cost-sources note", () => {
+    const s = snap(copilotTotals(), { filter: { source: "copilot" } });
+    const html = renderSourcesCard(s, COST);
+    expect(html).toContain("By source");
+    expect(html).not.toContain(COST_SOURCES_NOTE);
+    expect(renderSourcesCard(snap(mixedTotals(), { filter: { source: "claude-code" } }), COST)).toContain(COST_SOURCES_NOTE);
+  });
+
+  it("prompts card names Claude Code and Codex for calls without an initiator when another source is on", () => {
+    const prompts = { prompts: 0, agentCalls: 0, notLinked: 0, unknown: 3, nanoAiu: none(), tokens: none() };
+    const s = snap(mixedTotals(), { health: multi() });
+    s.month!.prompts = prompts;
+    const html = renderPanelHtml(s, "csp", TOKENS, "sessions");
+    expect(html).toContain("3 calls that logged no initiator (older Copilot, Claude Code and Codex) are not counted here.");
+    expect(html).toContain("The calls in November logged no initiator, so prompts cannot be counted.");
+    const cp = snap(copilotTotals());
+    cp.month!.prompts = prompts;
+    const old = renderPanelHtml(cp, "csp", TOKENS, "sessions");
+    expect(old).toContain("3 calls did not log who started them (older Copilot), so they are not counted here.");
+    expect(old).toContain("Copilot did not log who started the calls in November");
+  });
+
+  it("sessions table bar note says Copilot calls only when mixed", () => {
+    expect(renderPanelHtml(snap(mixedTotals()), "csp", TOKENS, "sessions")).toContain("Bar = share of the month's estimated cost (Copilot calls only).");
+    const cp = snap(copilotTotals());
+    cp.month!.sessions = [cp.month!.sessions[1]!];
+    expect(renderPanelHtml(cp, "csp", TOKENS, "sessions")).toContain("Bar = share of the month's estimated cost. Started");
+  });
+
+  it("the new wording follows the copy rule", () => {
+    const s = snap(mixedTotals(), { health: multi({ state: "format-changed", unrecognized: 1, sources: { copilot: sh(), "claude-code": sh({ state: "format-changed" }) } }) });
+    s.month!.prompts = { prompts: 0, agentCalls: 0, notLinked: 0, unknown: 3, nanoAiu: none(), tokens: none() };
+    for (const sec of ["overview", "sessions", "health"] as const) expect(words(renderPanelHtml(s, "csp", { unit: "cost", range: { max: 60 } }, sec)), sec).not.toMatch(COPY_RE);
   });
 });

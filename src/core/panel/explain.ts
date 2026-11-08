@@ -2,7 +2,7 @@
 // cost by model (1.3) and the tool-definition share of input (1.5). Every figure is a
 // number or a fixed enum from the snapshot; every string is escaped; money goes through
 // the display-currency formatters and is labelled "est."; "—" means not reported.
-import { costLabel, formatAiu, formatCount, formatUsd } from "../format";
+import { costLabel, formatAiu, formatCount, formatUsd, multiSource } from "../format";
 import { modelFamily } from "../store";
 import type { CacheStats, CallRow, FinishReason, Initiator, Metric, PromptStats, SessionDetail, Snapshot, ToolOverhead, ViewOptions } from "../types";
 import { sessionCallsHref } from "./links";
@@ -65,10 +65,12 @@ function promptTiles(p: PromptStats, view: ViewOptions): string {
   return `<div class="tiles">${tile("Prompts", val(p.prompts > 0 || p.unknown === 0 ? String(p.prompts) : DASH))}${tile("Agent calls they triggered", val(p.prompts > 0 || p.unknown === 0 ? String(p.agentCalls) : DASH))}${tile("Agent calls per prompt", val(ratio))}${tile(perLabel, val(perPrompt), note)}</div>`;
 }
 
-function promptNotes(p: PromptStats, scope: string): string[] {
+function promptNotes(p: PromptStats, scope: string, multi = false): string[] {
   const out = [`A prompt is a call you started. The agent calls after it in the same session, up to your next prompt, belong to it; per prompt = the prompt's own call plus those agent calls, ${scope}.`];
   if (p.notLinked > 0) out.push(`${plural(p.notLinked, "call")} ${p.notLinked === 1 ? "is" : "are"} not linked to a prompt (made before the first prompt in view, or started by something other than you or the agent).`);
-  if (p.unknown > 0) out.push(`${plural(p.unknown, "call")} did not log who started ${p.unknown === 1 ? "it" : "them"} (older Copilot), so ${p.unknown === 1 ? "it is" : "they are"} not counted here.`);
+  // Claude Code and Codex log no initiator either (D43): name them once they are read.
+  if (p.unknown > 0 && multi) out.push(`${plural(p.unknown, "call")} that logged no initiator (older Copilot, Claude Code and Codex) ${p.unknown === 1 ? "is" : "are"} not counted here.`);
+  else if (p.unknown > 0) out.push(`${plural(p.unknown, "call")} did not log who started ${p.unknown === 1 ? "it" : "them"} (older Copilot), so ${p.unknown === 1 ? "it is" : "they are"} not counted here.`);
   return out;
 }
 
@@ -81,9 +83,11 @@ export function promptsCard(s: Snapshot, view: ViewOptions): string {
     p.prompts > 0
       ? `${plural(p.prompts, "prompt")} triggered ${plural(p.agentCalls, "agent call")} in ${name}.`
       : p.unknown > 0
-        ? `Copilot did not log who started the calls in ${name}, so prompts cannot be counted.`
+        ? multiSource(s.health)
+          ? `The calls in ${name} logged no initiator, so prompts cannot be counted.`
+          : `Copilot did not log who started the calls in ${name}, so prompts cannot be counted.`
         : `No prompts logged in ${name}.`;
-  const notes = promptNotes(p, `in ${name}`);
+  const notes = promptNotes(p, `in ${name}`, multiSource(s.health));
   if (s.filter?.tool) notes.push("The tool filter does not apply here: it would split prompts from their agent calls.");
   return card("prompts-title", "sessions", "Prompts and agent calls", name, `<p>${escapeHtml(lead)}</p>${promptTiles(p, view)}<div class="fine">${notes.map((n) => `<p>${escapeHtml(n)}</p>`).join("")}</div>`);
 }
@@ -127,7 +131,7 @@ export function sessionDetailCard(s: Snapshot, view: ViewOptions): string {
     `Uncached input + cache read + cache write = the call's input tokens. Reasoning is part of Output, not added to it. Tool definitions = the tool descriptions sent with the prompt, out of every 100 input tokens: part of input, not an extra cost.`,
     `Started by: You = a prompt you sent; Agent = a call the agent made on its own. Ended with: Answer = the model replied and stopped; Tool calls = it asked to run tools. AIU is as logged; ${costLabel()} is estimated from it, as everywhere in this panel.`,
     `Uncached input and its cache-read price come from the per-token-type AI credits Copilot logs with each call; "—" where a call did not log them. The cache-read price is not a saving you could have had: a session's first call, and any call after a change of model or tools or a long break, has to send its input uncached.`,
-    ...promptNotes(d.prompts, "in this session"),
+    ...promptNotes(d.prompts, "in this session", multiSource(s.health)),
   ];
   if (d.omitted > 0) notes.unshift(`Showing the newest ${plural(d.rows.length, "call")}; ${plural(d.omitted, "earlier call")} ${d.omitted === 1 ? "is" : "are"} counted in the figures above but not listed.`);
   notes.push(`Only calls in ${name}${s.filter?.tool ? "; the tool filter does not apply to this list" : ""}.`);

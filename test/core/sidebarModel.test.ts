@@ -266,6 +266,15 @@ describe("sidebar model: groups and rows", () => {
     expect(partial.text).toBe("Partial data · 1 log could not be read");
   });
 
+  it("format-changed title names the source whose format changed; Copilot without per-source health (F3a)", () => {
+    const sh = (state: "ok" | "format-changed") => ({ state, rootSource: "default" as const, files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 });
+    const cc = buildSidebarModel(snap({ health: health({ state: "format-changed", unrecognized: 2, sources: { copilot: sh("ok"), "claude-code": sh("format-changed") } }) }), TOKENS).health!;
+    expect(cc.title).toContain("Claude Code may have changed its log format, so figures may be incomplete.");
+    expect(cc.title).not.toContain("Copilot may have changed");
+    const cp = buildSidebarModel(snap({ health: health({ state: "format-changed", unrecognized: 2 }) }), TOKENS).health!;
+    expect(cp.title).toContain("Copilot may have changed its log format, so figures may be incomplete.");
+  });
+
   it("insights: 'N findings · Review' only when the panel's month has findings", () => {
     expect(buildSidebarModel(snap(), TOKENS).insights).toBeUndefined();
     const month = { monthStartMs: MONTH0, isCurrent: true, days: [], sessions: [], projects: [], tools: [] };
@@ -402,7 +411,7 @@ describe("sidebar html: page, states, escaping, copy", () => {
   it("loading, no-dir and permission: in-page states naming the setting; no groups", () => {
     const loading = buildSidebarModel(undefined, TOKENS);
     expect(loading).toMatchObject({ state: "loading", groups: [] });
-    expect(text(renderSidebarHtml(loading, "x"))).toContain("Reading Copilot session logs on this computer…");
+    expect(text(renderSidebarHtml(loading, "x"))).toContain("Reading session logs on this computer…");
     for (const st of ["no-dir", "permission"] as const) {
       const model = buildSidebarModel(snap({ health: health({ state: st }) }), TOKENS);
       expect(model).toMatchObject({ state: st, groups: [] });

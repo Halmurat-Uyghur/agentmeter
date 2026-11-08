@@ -1,7 +1,7 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { costLabel, costNotes, estWord, homeSettings, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, estWord, formatChangedSentence, homeSettings, LOADING_NOTE, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
 import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
@@ -57,7 +57,7 @@ export function topBar(s: Snapshot | undefined, view: ViewOptions, fullNote = fa
     chips.push(`<span class="chip">${escapeHtml(origins ? `Folders: ${origins}` : rootLabel(s.health))}</span>`);
   }
   const reading = s ? readingLine(s.health) : undefined;
-  const when = !s ? "Reading Copilot session logs…" : reading ?? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`;
+  const when = !s ? LOADING_NOTE : reading ?? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`;
   return `<header class="top">
   <div><h1 class="wordmark">${logo()}<span class="wm">Copilot Usage</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
@@ -75,7 +75,7 @@ export function stateNote(h: Health): string {
     return box(`No Copilot session logs were found. Set <b>copilotUsageMonitor.copilotHome</b> if Copilot keeps them somewhere other than COPILOT_HOME or the default folder in your home directory.`);
   if (h.state === "permission") return box(`${escapeHtml(PERMISSION_NOTE)} Check the folder's permissions, or set ${settings(true)}.`);
   if (h.state === "format-changed")
-    return box(escapeHtml(`${h.unrecognized > 0 ? `${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ` : ""}Copilot may have changed its log format, so figures may be incomplete.`));
+    return box(escapeHtml(`${h.unrecognized > 0 ? `${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ` : ""}${formatChangedSentence(h)}, so figures may be incomplete.`));
   return "";
 }
 

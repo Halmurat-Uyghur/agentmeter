@@ -82,8 +82,19 @@ export function notLiveWord(source: Source | undefined): string {
   return source !== undefined && source !== "copilot" ? "idle" : "ended";
 }
 
-export const STREAMING_NOTE =
-  "Updates when Copilot finishes each model call, not token by token.";
+export const STREAMING_NOTE = "Updates when a model call finishes, not token by token.";
+
+/** Loading text everywhere (no snapshot yet, so no source is known). */
+export const LOADING_NOTE = "Reading session logs…";
+
+/** "Claude Code may have changed its log format": the sources whose state is format-changed
+ * (per-source health), else Copilot as in 0.7. */
+export function formatChangedSentence(h: Health): string {
+  const per = h.sources;
+  const names = per ? SOURCES.filter((x) => per[x]?.state === "format-changed").map((x) => SOURCE_LABEL[x]) : [];
+  if (names.length <= 1) return `${names[0] ?? SOURCE_LABEL.copilot} may have changed its log format`;
+  return `${orList(names, "and")} may have changed their log formats`;
+}
 
 export const COST_NOTE =
   "Cost is an estimate: Copilot's own logged AI credits × $0.01, GitHub's published rate. It matches GitHub's per-model token prices, but it is not an invoice.";
@@ -105,7 +116,7 @@ export const CHAT_NOT_COVERED =
 export const CHAT_NOT_COVERED_SHORT = "Copilot Chat in VS Code not counted";
 
 export const NOT_COVERED: string[] = [
-  "Only Copilot clients that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted. Inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
+  "Of Copilot's clients, only those that write session-state/*/events.jsonl (the Copilot CLI and coding agent, including agent sessions started from VS Code) are counted; inline completions, Copilot Chat surfaces without these logs, github.com, mobile, JetBrains and other computers are not.",
   "Sessions from Copilot before 1.0.99 have no per-call records; they are counted from the session total Copilot writes when the session ends (one figure per model, dated at that moment, no estimated amount), unless copilotUsageMonitor.sessionTotals is off. A session that is still open or that crashed adds nothing until it ends.",
   '"Today" starts at local midnight on this computer; GitHub\'s own day may follow UTC.',
 ];
@@ -383,7 +394,7 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   const mode = view.statusBar ?? "today";
   const period = mode === "session" ? "current session" : mode === "month" || view.unit === "cost" ? "this month" : "today";
   const place = view.unit === "cost" ? `${period}, estimated` : period;
-  const parts = [`Copilot usage, local ${place}: ${spoken(p.figure)}`];
+  const parts = [multiSource(s.health) ? `Local usage, ${place}: ${spoken(p.figure)}` : `Copilot usage, local ${place}: ${spoken(p.figure)}`];
   // The target is monthly: name the month when the figure is today or the session (review fix 5).
   if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
@@ -422,7 +433,7 @@ function healthLines(h: Health): string[] {
     out.push(`${PERMISSION_NOTE} Check the folder's permissions, or set ${homeSettings(h, true).replace(/copilotUsageMonitor\.\w+/g, (x) => `\`${x}\``)}.`);
   } else if (h.state === "format-changed") {
     out.push(
-      `Data health: ${h.unrecognized} line(s) in a format this version doesn't recognize. Copilot may have changed its log format, so figures may be incomplete.`,
+      `Data health: ${h.unrecognized} line(s) in a format this version doesn't recognize. ${formatChangedSentence(h)}, so figures may be incomplete.`,
     );
   } else if (h.state === "no-data") {
     out.push("No per-call records dated today yet.");
@@ -466,7 +477,7 @@ export function lastPromptLine(lp: LastPrompt | undefined, view: ViewOptions = D
 export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   const parts: string[] = [LOCAL_BANNER, STREAMING_NOTE];
   if (!s) {
-    parts.push("Reading Copilot session logs…");
+    parts.push(LOADING_NOTE);
     return parts.join("\n\n");
   }
 

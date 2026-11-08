@@ -20,12 +20,15 @@ import {
   tooltipMarkdown,
   weekChange,
   weekCoverage,
+  formatChangedSentence,
+  LOADING_NOTE,
 } from "../../src/core/format";
 import type {
   Counts,
   Health,
   Metric,
   Snapshot,
+  SourceHealth,
   Totals,
 } from "../../src/core/types";
 
@@ -806,5 +809,47 @@ describe("sources (D46, D49)", () => {
     expect(md).toContain("Current session (idle)");
     const cp = tooltipMarkdown(snap({ current: { folderId: "x", live: false, pinned: false, source: "copilot" } }));
     expect(cp).toContain("Current session (ended)");
+  });
+});
+
+// Fix wave F3a: neutral wording once more than one source is read.
+describe("v0.8: multi-source wording (F3a)", () => {
+  const sh = (state: SourceHealth["state"] = "ok"): SourceHealth => ({ state, rootSource: "default", files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0 });
+  const multi = (o: Partial<Health> = {}) => health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh("off") }, ...o });
+
+  it("format-changed names the sources whose state is format-changed", () => {
+    const one = formatChangedSentence(health({ state: "format-changed", sources: { copilot: sh(), "claude-code": sh("format-changed") } }));
+    expect(one).toBe("Claude Code may have changed its log format");
+    const two = formatChangedSentence(health({ state: "format-changed", sources: { copilot: sh("format-changed"), "claude-code": sh(), codex: sh("format-changed") } }));
+    expect(two).toBe("Copilot and Codex may have changed their log formats");
+    expect(formatChangedSentence(health({ state: "format-changed" }))).toBe("Copilot may have changed its log format");
+    const md = tooltipMarkdown(snap({ health: health({ state: "format-changed", unrecognized: 2, sources: { copilot: sh(), "claude-code": sh("format-changed") } }) }));
+    expect(md).toContain("Claude Code may have changed its log format, so figures may be incomplete.");
+    expect(md).not.toContain("Copilot may have changed");
+    expect(tooltipMarkdown(snap({ health: health({ state: "format-changed", unrecognized: 2 }) }))).toContain("Copilot may have changed its log format, so figures may be incomplete.");
+  });
+
+  it("the spoken status label says Local usage when another source is enabled; Copilot-only keeps 0.7", () => {
+    expect(statusAccessibilityLabel(snap({ health: multi() }))).toBe("Local usage, today: 1.5 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(snap({ health: multi() }), { unit: "tokens", statusBar: "month" })).toMatch(/^Local usage, this month: /);
+    expect(statusAccessibilityLabel(snap({ health: multi() }), { unit: "tokens", statusBar: "session" })).toMatch(/^Local usage, current session: /);
+    expect(statusAccessibilityLabel(snap({ health: health({ sources: { copilot: sh() } }) }))).toBe("Copilot usage, local today: 1.5 million tokens. Opens details.");
+    expect(statusAccessibilityLabel(snap({ health: health({ sources: { copilot: sh(), codex: sh("off") } }) }))).toMatch(/^Copilot usage, local today: /);
+  });
+
+  it("NOT_COVERED[0] is scoped to Copilot's clients", () => {
+    expect(NOT_COVERED[0]).toMatch(/^Of Copilot's clients, only those that write session-state\/\*\/events\.jsonl/);
+  });
+
+  it("loading and streaming notes are neutral", () => {
+    expect(STREAMING_NOTE).toBe("Updates when a model call finishes, not token by token.");
+    expect(LOADING_NOTE).toBe("Reading session logs…");
+    expect(tooltipMarkdown(undefined)).toContain("Reading session logs…");
+    expect(tooltipMarkdown(undefined)).not.toContain("Copilot session logs");
+  });
+
+  it("the new strings follow the copy rule", () => {
+    const re = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
+    for (const x of [NOT_COVERED[0]!, STREAMING_NOTE, LOADING_NOTE, statusAccessibilityLabel(snap({ health: multi() }))]) expect(x).not.toMatch(re);
   });
 });

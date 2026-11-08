@@ -10,7 +10,7 @@ import { resolveRoot, type ResolvedRoot } from "./core/config";
 import { Logger } from "./core/log";
 import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
 import { isSessionId } from "./core/extract";
-import { cleanRange, money, setDisplayCurrency } from "./core/format";
+import { cleanRange, enabledSources, money, setDisplayCurrency } from "./core/format";
 import { clampHistory, UsageMonitor, type MonitorOptions } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
@@ -190,7 +190,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const items: Item[] = [{ label: "Clear all filters", filterKind: undefined }];
       for (const p of month?.projects ?? []) items.push({ label: p.label ?? p.name, description: `project · ${callsPhrase(p.calls, p.callsMissing)}`, filterKind: "project", value: p.name });
       for (const t of month?.tools ?? []) items.push({ label: t.name, description: `tool · ${t.builtIn ? "built-in" : "added"} · ${t.uses} uses`, filterKind: "tool", value: t.name });
-      for (const s of SOURCES) {
+      // Only the enabled sources (every source before per-source health is known).
+      for (const s of (snapshot && enabledSources(snapshot.health)) ?? SOURCES) {
         const t = month?.totals?.bySource?.[s];
         items.push({ label: SOURCE_LABEL[s], description: t ? `source · ${callsPhrase(t.calls, t.callsMissing)}` : "source", filterKind: "source", value: s });
       }
@@ -203,6 +204,9 @@ export function activate(context: vscode.ExtensionContext): void {
     } else if (kind === "source") {
       // "" clears; anything that is not one of SOURCES is ignored (D49)
       if (value !== "" && !isSource(value)) return;
+      // A source that is off would show an empty month: ignore it once per-source health is known.
+      const on = snapshot && enabledSources(snapshot.health);
+      if (value !== "" && on && !on.includes(value)) return;
       const next: Filter = { ...filter };
       if (value === "") delete next.source;
       else next.source = value;
@@ -368,13 +372,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("copilotUsageMonitor.pinSession", async () => {
       const m = monitor;
       const sessions = snapshot?.sessions ?? [];
+      // The source label only when more than one source is read; Copilot-only keeps 0.7's description.
+      const several = Object.keys(snapshot?.health.sources ?? {}).length >= 2;
       type Item = vscode.QuickPickItem & { folderId?: string };
       const items: Item[] = [
         { label: "Automatic", description: "live session with the newest record" },
         ...sessions.map((x) => ({
           label: x.folderId.slice(0, 8),
           // mtime-based sources have no end marker: "idle", never "ended" (D43)
-          description: [x.source ? SOURCE_LABEL[x.source] : "", x.live ? "live" : x.source && x.source !== "copilot" ? "idle" : "ended", x.lastMs ? new Date(x.lastMs).toLocaleString() : "no per-call records"].filter(Boolean).join(" · "),
+          description: [several && x.source ? SOURCE_LABEL[x.source] : "", x.live ? "live" : x.source && x.source !== "copilot" ? "idle" : "ended", x.lastMs ? new Date(x.lastMs).toLocaleString() : "no per-call records"].filter(Boolean).join(" · "),
           folderId: x.folderId,
         })),
       ];

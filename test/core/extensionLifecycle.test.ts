@@ -302,6 +302,42 @@ describe("extension lifecycle: source filter, batched config events, pinSession 
   });
 });
 
+describe("extension lifecycle: enabled sources only (F3a)", () => {
+  it("the filter quick pick lists only enabled sources, and setFilter ignores a source that is off", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ codex: false });
+    await vi.waitFor(() => expect(testState().snapshot?.health.sources).toBeDefined());
+    expect(Object.keys(testState().snapshot!.health.sources!)).toEqual(["copilot", "claude-code"]);
+    let captured: { label: string; filterKind?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; filterKind?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("setFilter")();
+    expect(captured.filter((x) => x.filterKind === "source").map((x) => x.label)).toEqual([SOURCE_LABEL.copilot, SOURCE_LABEL["claude-code"]]);
+    await cmd("setFilter")("source", "codex");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(testState().snapshot?.filter?.source).toBeUndefined();
+    await cmd("setFilter")("source", "claude-code");
+    await vi.waitFor(() => expect(testState().snapshot?.filter?.source).toBe("claude-code"));
+    deactivate();
+  });
+
+  it("pinSession items have no source label when Copilot is the only source", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ claudeCode: false, codex: false });
+    await vi.waitFor(() => expect(testState().snapshot?.health.sources).toBeDefined());
+    // A session list as the monitor would report it; only its description is under test.
+    testState().snapshot!.sessions = [{ folderId: "aaaa0000-0000-4000-8000-000000000001", live: false, source: "copilot" }];
+    let captured: { label: string; description?: string }[] = [];
+    fake.window.showQuickPick = (async (items: { label: string; description?: string }[]) => {
+      captured = items;
+      return undefined;
+    }) as typeof fake.window.showQuickPick;
+    await cmd("pinSession")();
+    expect(captured.find((x) => x.label === "aaaa0000")?.description).toBe("ended · no per-call records");
+    deactivate();
+  });
+});
+
 describe("target alert: Don't show again (F3)", () => {
   it("a rejected targetAlert write is logged, with no unhandled rejection", async () => {
     vi.resetModules();

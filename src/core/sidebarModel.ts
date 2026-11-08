@@ -11,6 +11,7 @@ import {
   costNotes,
   currencyCode,
   DEFAULT_VIEW,
+  formatChangedSentence,
   formatCount,
   formatRange,
   enabledSourceNames,
@@ -119,7 +120,7 @@ export function sidebarRows(m: SidebarModel): SidebarRow[] {
 }
 
 const NOTICES: Record<Exclude<SidebarState, "ready">, string[]> = {
-  loading: ["Reading Copilot session logs on this computer…"],
+  loading: ["Reading session logs on this computer…"],
   "no-dir": [
     "No Copilot session logs were found on this computer.",
     "Only Copilot clients that write session-state/*/events.jsonl are counted (the Copilot CLI and coding agent). If Copilot keeps its folder elsewhere, set copilotUsageMonitor.copilotHome in Settings, then use Refresh in this view's title bar.",
@@ -248,7 +249,7 @@ function healthNote(h: Health): SidebarModel["health"] {
   else return undefined;
   const title: string[] = [SIDEBAR_BANNER];
   if (h.state === "format-changed")
-    title.push(`${plural(h.unrecognized, "line")} in a format this version doesn't recognize. Copilot may have changed its log format, so figures may be incomplete.`);
+    title.push(`${plural(h.unrecognized, "line")} in a format this version doesn't recognize. ${formatChangedSentence(h)}, so figures may be incomplete.`);
   if (h.partial) title.push(partialReasons(h));
   title.push("Opens Data health.");
   return { text, title: title.join("\n"), link: section("health") };
