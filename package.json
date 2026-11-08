@@ -1,0 +1,432 @@
+{
+  "name": "copilot-usage-monitor",
+  "displayName": "Copilot Usage Monitor (Local)",
+  "description": "Shows your own Copilot, Claude Code and Codex CLI usage, in tokens (and Copilot's estimated USD), as observed in their local session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.",
+  "keywords": [
+    "copilot",
+    "claude",
+    "codex",
+    "usage",
+    "tokens",
+    "local",
+    "privacy",
+    "status bar"
+  ],
+  "publisher": "local",
+  "icon": "media/icon.png",
+  "version": "0.8.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "pretest:integration": "npm run build && tsc -p tsconfig.test.json",
+    "test:integration": "vscode-test",
+    "test:perf": "PERF=1 NODE_OPTIONS=--expose-gc vitest run test/core/perf.test.ts",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build",
+    "probe": "node tools/schema-probe.mjs",
+    "probe:chat": "node tools/chat-schema-probe.mjs",
+    "probe:claude": "node tools/claude-schema-probe.mjs",
+    "probe:codex": "node tools/codex-schema-probe.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/mocha": "10.0.10",
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-cli": "0.0.15",
+    "@vscode/test-electron": "3.1.0",
+    "@vscode/vsce": "4.1.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "4.1.12"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor/issues"
+  },
+  "homepage": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor#readme",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "copilotUsageMonitor",
+          "title": "Copilot Usage (Local)",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "copilotUsageMonitor": [
+        {
+          "type": "webview",
+          "id": "copilotUsageMonitor.summary",
+          "name": "Summary",
+          "contextualTitle": "Copilot Usage (Local)",
+          "icon": "media/activity.svg",
+          "visibility": "visible"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "copilotUsageMonitor.showDetails",
+        "title": "Show Local Details",
+        "shortTitle": "Open panel",
+        "category": "Copilot Usage",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "copilotUsageMonitor.pinSession",
+        "title": "Pin Session…",
+        "category": "Copilot Usage",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "copilotUsageMonitor.refresh",
+        "title": "Refresh",
+        "category": "Copilot Usage",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "copilotUsageMonitor.selectMonth",
+        "title": "Show Month…",
+        "category": "Copilot Usage",
+        "icon": "$(calendar)"
+      },
+      {
+        "command": "copilotUsageMonitor.toggleUnit",
+        "title": "Switch Tokens / USD (est.)",
+        "shortTitle": "Switch unit",
+        "category": "Copilot Usage",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "copilotUsageMonitor.setUnit",
+        "title": "Set Unit",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.filter",
+        "title": "Filter by Project, Tool or Source…",
+        "category": "Copilot Usage",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "copilotUsageMonitor.setFilter",
+        "title": "Set Filter",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.showSection",
+        "title": "Show Section…",
+        "category": "Copilot Usage",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "copilotUsageMonitor.showSession",
+        "title": "Show Session Calls",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.toggleNav",
+        "title": "Collapse or Expand Panel Navigation",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.selectCurrency",
+        "title": "Choose Currency…",
+        "category": "Copilot Usage",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "copilotUsageMonitor.selectPalette",
+        "title": "Choose Colours…",
+        "category": "Copilot Usage",
+        "icon": "$(symbol-color)"
+      }
+    ],
+    "walkthroughs": [
+      {
+        "id": "gettingStarted",
+        "title": "Get started with Copilot Usage Monitor (Local)",
+        "description": "Check that your usage logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
+        "steps": [
+          {
+            "id": "folder",
+            "title": "Check that your usage logs are found",
+            "description": "The status bar shows a figure when session logs are found in the Copilot folder (~/.copilot), the Claude Code folder (~/.claude) or the Codex folder (~/.codex). If a tool keeps them elsewhere, set copilotHome, claudeHome or codexHome.\n[Set the Copilot folder](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/folder.md"
+            }
+          },
+          {
+            "id": "unit",
+            "title": "Choose tokens or estimated cost, and a currency",
+            "description": "Show figures as input + output tokens or as estimated cost. USD needs no network; another currency fetches its daily exchange rate.\n[Switch tokens / USD (est.)](command:copilotUsageMonitor.toggleUnit)\n[Choose currency](command:copilotUsageMonitor.selectCurrency)",
+            "media": {
+              "markdown": "media/walkthrough/unit.md"
+            }
+          },
+          {
+            "id": "target",
+            "title": "Set a monthly target range",
+            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency. The status bar icon then shows under, in range or over.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
+            "media": {
+              "markdown": "media/walkthrough/target.md"
+            }
+          },
+          {
+            "id": "open",
+            "title": "Open the side bar and the panel",
+            "description": "The side bar gives a compact summary; the panel has the month, sessions, models, projects, tools and data health.\n[Open the side bar](command:workbench.view.extension.copilotUsageMonitor)\n[Open the panel](command:copilotUsageMonitor.showDetails)",
+            "media": {
+              "markdown": "media/walkthrough/open.md"
+            }
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Copilot Usage Monitor",
+      "properties": {
+        "copilotUsageMonitor.copilotHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains Copilot's session-state. Empty: use COPILOT_HOME, else ~/.copilot."
+        },
+        "copilotUsageMonitor.claudeCode": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Also read Claude Code's local session logs: the projects folder under claudeHome, else under CLAUDE_CONFIG_DIR, else under ~/.claude. Only token counts, model ids, tool names, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
+        },
+        "copilotUsageMonitor.claudeHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains Claude Code's projects folder. Empty: use CLAUDE_CONFIG_DIR, else ~/.claude."
+        },
+        "copilotUsageMonitor.codex": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Also read the Codex CLI's local session logs: the sessions folder under codexHome, else under CODEX_HOME, else under ~/.codex. Only token counts, model ids, timestamps, session ids and folder names are kept; prompts, replies, thinking and tool inputs are never decoded. Nothing is opened when the folder is absent."
+        },
+        "copilotUsageMonitor.codexHome": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Folder that contains the Codex CLI's sessions folder. Empty: use CODEX_HOME, else ~/.codex."
+        },
+        "copilotUsageMonitor.historyMonths": {
+          "type": "integer",
+          "default": 12,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "How many months of session logs to read for the month picker and trend chart, this month included. Older logs are read once at start-up; nothing is stored."
+        },
+        "copilotUsageMonitor.display": {
+          "type": "string",
+          "enum": [
+            "tokens",
+            "cost"
+          ],
+          "default": "tokens",
+          "enumDescriptions": [
+            "Input + output tokens.",
+            "Estimated USD: Copilot's logged AI credits × $0.01."
+          ],
+          "description": "Unit for the status bar and panel figures."
+        },
+        "copilotUsageMonitor.panelNavCollapsed": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Show the details panel's section navigation as a narrow icon rail. The toggle at the top of the navigation sets this."
+        },
+        "copilotUsageMonitor.palette": {
+          "type": "string",
+          "default": "theme",
+          "scope": "application",
+          "enum": [
+            "theme",
+            "ember",
+            "ocean",
+            "forest",
+            "violet",
+            "rose",
+            "graphite"
+          ],
+          "enumDescriptions": [
+            "Follow the colour theme: its chart colours set the accent and the model colours.",
+            "Orange accent: the panel's classic look, the same on every theme.",
+            "Blue accent.",
+            "Green accent.",
+            "Purple accent.",
+            "Rose accent.",
+            "Slate-grey accent, for a quieter panel."
+          ],
+          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Colours… button and \"Copilot Usage: Choose Colours…\" set this."
+        },
+        "copilotUsageMonitor.statusBar": {
+          "type": "string",
+          "enum": [
+            "today",
+            "month",
+            "session"
+          ],
+          "default": "today",
+          "enumDescriptions": [
+            "Today's tokens; in the estimated-cost view, this month against your target (the layout before 0.6).",
+            "This month so far, in tokens or estimated cost; the target range follows the figure in the cost view.",
+            "The current session, in tokens or estimated cost."
+          ],
+          "description": "What the status bar text shows. The tooltip keeps every figure, and the icon always shows this month's target state."
+        },
+        "copilotUsageMonitor.currency": {
+          "type": "string",
+          "default": "USD",
+          "scope": "application",
+          "enum": [
+            "USD",
+            "CAD",
+            "EUR",
+            "GBP",
+            "AUD",
+            "NZD",
+            "JPY",
+            "CHF",
+            "INR",
+            "CNY",
+            "SGD",
+            "HKD",
+            "SEK",
+            "NOK",
+            "DKK",
+            "MXN",
+            "BRL",
+            "KRW"
+          ],
+          "description": "Currency for estimated cost. USD needs no network. Any other currency is converted at the daily European Central Bank USD reference rate, fetched from api.frankfurter.dev at start-up, when the currency changes and every 6 hours (a failed fetch is retried after 15 minutes). The request carries only the currency code. Monthly targets are then entered in this currency."
+        },
+        "copilotUsageMonitor.monthlyTargetMin": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the least estimated cost (in the chosen currency) you want to use per month. Below it, the status bar shows a down arrow."
+        },
+        "copilotUsageMonitor.monthlyTargetMax": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the most estimated cost (in the chosen currency) you want to use per month. Above it, the status bar turns amber with a flame icon."
+        },
+        "copilotUsageMonitor.targetAlert": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Opt-in: show one notification when this month's estimated cost first goes above monthlyTargetMax (in the chosen currency, once its exchange rate is known). At most once per calendar month per window, remembered in memory only. \"Don't show again\" turns this setting off. User settings only."
+        },
+        "copilotUsageMonitor.projectNames": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Group sessions by project folder name: from each Copilot session's start line (its GitHub repository is shown as a label), a Claude Code log's cwd and a Codex log's session_meta cwd. A Copilot folder named by an ID shows the session title (the name: line of workspace.yaml) instead. Full paths are never kept. Turn off to stop reading all of them."
+        },
+        "copilotUsageMonitor.sessionTotals": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Count sessions from Copilot before 1.0.99, which have no per-call records, from the per-model total Copilot writes when a session ends. Only the token counts, call count and logged AI credits are kept; file paths and other fields on that line are dropped while reading. With it on, a Codex log that has no per-call records counts once from its last token_count total. Turn off to skip those lines without reading them."
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "copilotUsageMonitor.setUnit",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.setFilter",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.showSession",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "copilotUsageMonitor.showDetails",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@1"
+        },
+        {
+          "command": "copilotUsageMonitor.toggleUnit",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@2"
+        },
+        {
+          "command": "copilotUsageMonitor.selectCurrency",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@0"
+        },
+        {
+          "command": "copilotUsageMonitor.refresh",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "navigation@3"
+        },
+        {
+          "command": "copilotUsageMonitor.filter",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@1"
+        },
+        {
+          "command": "copilotUsageMonitor.selectMonth",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@2"
+        },
+        {
+          "command": "copilotUsageMonitor.showSection",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@3"
+        },
+        {
+          "command": "copilotUsageMonitor.pinSession",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@4"
+        },
+        {
+          "command": "copilotUsageMonitor.selectPalette",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@5"
+        }
+      ]
+    }
+  }
+}
