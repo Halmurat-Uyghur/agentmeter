@@ -323,7 +323,7 @@ describe("panel: navigation, trend, target, sessions", () => {
   it("copy check: no account-statement words or % in any unit", () => {
     for (const view of [undefined, COST, RANGE]) {
       for (const section of SECTIONS) {
-        const t = text(renderPanelHtml(snap(), "x", view, section)).replace(LOCAL_BANNER, "");
+        const t = text(renderPanelHtml(snap(), "x", view, section)).split(LOCAL_BANNER).join("");
         expect(t, section).not.toMatch(/\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i);
       }
     }
