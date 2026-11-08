@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import { appendFile, mkdtemp, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Logger } from "../../src/core/log";
+import { ClaudeSourceReader } from "../../src/core/claude";
 import { UsageMonitor, SESSION_ROWS } from "../../src/core/monitor";
 import { emptyReadResult, type FileReader, type SourceCandidate, type SourceDiscoverResult, type SourceReader } from "../../src/core/source";
 import type { Snapshot } from "../../src/core/types";
@@ -385,5 +386,120 @@ describe("multi-source monitor", () => {
     expect(all).not.toContain(CLAUDE_CANARY);
     expect(all).not.toContain(CODEX_CANARY);
     expect(all).not.toContain(dir);
+  });
+  it("a directory that fails to list keeps the records of every file under it", async () => {
+    const paths = await claudeTree(claudeRoot, [
+      { sessionId: cs(1), lines: [cRec(cs(1), 1)], subagents: [{ id: "a1", lines: [cRec(cs(1), 2)] }], mtime: COLD },
+      { sessionId: cs(2), lines: [cRec(cs(2), 1)], mtime: COLD },
+    ]);
+    const slugDir = dirname(paths[0]!);
+    const real = new ClaudeSourceReader({ root: claudeRoot, rootSource: "default", readProjects: true });
+    let failSlug = false;
+    const wrapped: SourceReader = {
+      source: real.source,
+      root: real.root,
+      rootSource: real.rootSource,
+      rootDirMtime: () => real.rootDirMtime(),
+      pathAllowed: (p) => real.pathAllowed(p),
+      open: (p, c) => real.open(p, c),
+      discover: async (w, d, n) => {
+        const r = await real.discover(w, d, n);
+        if (!failSlug || !r.ok) return r;
+        // As the reader reports a slug directory it could not list: no candidates under it.
+        return { ...r, candidates: r.candidates.filter((c) => c.files.every((f) => !f.path.startsWith(slugDir + sep))), unreadable: [{ folderId: "", path: slugDir, code: "EACCES" }] };
+      },
+    };
+    make({ readers: [wrapped] }, false);
+    await monitor!.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    failSlug = true;
+    await monitor!.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    expect(last().health.partial).toBe(true);
+    expect(last().health.sources?.["claude-code"]).toMatchObject({ files: 3, unreadableFiles: 1 });
+    expect(logLines).toContain("error discover EACCES");
+    failSlug = false;
+    await monitor!.refresh({ full: true });
+    expect(last().today?.records).toBe(3);
+    expect(last().health.partial).toBe(false);
+    expect(logLines.join("\n")).not.toContain(dir);
+  });
+
+  it("a file whose read fails is not reopened on idle ticks, only after discovery sees it change", async () => {
+    const reads = new Map<string, number>();
+    let mtimeMs = COLD;
+    const paths = Array.from({ length: 50 }, (_, i) => join(dir, "stub", `${i}.jsonl`));
+    const stub: SourceReader = {
+      source: "claude-code",
+      root: join(dir, "stub"),
+      rootSource: "default",
+      rootDirMtime: async () => 1,
+      discover: async (): Promise<SourceDiscoverResult> => ({
+        ok: true,
+        candidates: paths.map((p, i) => ({ source: "claude-code", sessionId: cs(i), folderId: cs(i), files: [{ path: p, mtimeMs, size: 10 }], mtimeMs, live: false })),
+        unreadable: [],
+        dirMtimeMs: 1,
+      }),
+      pathAllowed: () => true,
+      open: (p: string): FileReader => ({
+        read: async () => {
+          reads.set(p, (reads.get(p) ?? 0) + 1);
+          return { ...emptyReadResult(), error: "EACCES" };
+        },
+      }),
+    };
+    make({ readers: [stub] }, false);
+    await monitor!.refresh({ full: true });
+    for (const p of paths) expect(reads.get(p)).toBe(1);
+    expect(last().health.unreadableFiles).toBe(50);
+    for (let i = 0; i < 20; i++) {
+      clock += 500;
+      await monitor!.refresh();
+    }
+    for (const p of paths) expect(reads.get(p)).toBe(1);
+    // A changed mtime seen by the next discovery retries each file once.
+    mtimeMs = COLD + 1000;
+    clock += 10_000;
+    await monitor!.refresh();
+    for (const p of paths) expect(reads.get(p)).toBe(2);
+    clock += 500;
+    await monitor!.refresh();
+    for (const p of paths) expect(reads.get(p)).toBe(2);
+    expect(logLines.filter((l) => l === "error read EACCES")).toHaveLength(50);
+  });
+
+  it("dispose during the first read stops reading and emits nothing", async () => {
+    const calls: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const paths = Array.from({ length: 20 }, (_, i) => join(dir, "stub", `${i}.jsonl`));
+    const stub: SourceReader = {
+      source: "claude-code",
+      root: join(dir, "stub"),
+      rootSource: "default",
+      rootDirMtime: async () => 1,
+      discover: async (): Promise<SourceDiscoverResult> => ({
+        ok: true,
+        candidates: paths.map((p, i) => ({ source: "claude-code", sessionId: cs(i), folderId: cs(i), files: [{ path: p, mtimeMs: COLD - i, size: 10 }], mtimeMs: COLD - i, live: false })),
+        unreadable: [],
+        dirMtimeMs: 1,
+      }),
+      pathAllowed: () => true,
+      open: (p: string): FileReader => ({
+        read: async () => {
+          calls.push(p);
+          await gate;
+          return emptyReadResult();
+        },
+      }),
+    };
+    make({ readers: [stub] }, false);
+    const run = monitor!.refresh({ full: true });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    monitor!.dispose();
+    release();
+    await run;
+    expect(calls).toEqual([paths[0]]);
+    expect(snaps).toHaveLength(0);
   });
 });

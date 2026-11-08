@@ -8,6 +8,7 @@ import { CopilotSourceReader } from "./copilot";
 import { isLive as realIsLive } from "./discover";
 import { parseUsageLine } from "./extract";
 import type { Logger } from "./log";
+import { sep } from "node:path";
 import { cacheStats, lastPrompt, modelCacheStats, promptStats, sessionDetail, toolOverhead } from "./explain";
 import { computeInsights, promptConventions } from "./insights";
 import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceReader } from "./source";
@@ -256,13 +257,15 @@ export class UsageMonitor {
         }
       }
       // The first read of the window goes newest file first (D50); the rest keep their order.
-      const due = [...this.files].filter(([, f]) => this.isDue(f));
+      const due = [...this.files].filter(([, f]) => this.isDue(f, full));
       const fresh = due.filter(([, f]) => !f.tried).sort(([, a], [, b]) => b.lastMtimeMs - a.lastMtimeMs);
       const order = [...fresh, ...due.filter(([, f]) => f.tried)];
       let lastProgressMs = nowMs;
       let progressed = false;
       let added = 0;
       for (const [path, f] of order) {
+        // A disposed monitor stops reading at once and emits nothing more.
+        if (this.disposed) return;
         // A file dropped earlier in this run (ENOENT) is not read again.
         if (this.files.get(path) !== f) continue;
         const r = await this.readFile(path, f);
@@ -288,9 +291,13 @@ export class UsageMonitor {
     this.log.timing("refresh", performance.now() - started);
   }
 
-  /** Copilot files are always read (they are few); others when new, hot, or changed at the last discovery (D50). */
-  private isDue(f: FileState): boolean {
-    return !f.tried || !f.primed || f.source === "copilot" || f.hot || f.changed;
+  /**
+   * Copilot files are always read (they are few); others when never read, hot, or changed
+   * at the last discovery (D50). A file whose read failed is retried only then, or on a
+   * full refresh, so an unreadable tree is not reopened every tick.
+   */
+  private isDue(f: FileState, full: boolean): boolean {
+    return f.source === "copilot" || !f.tried || f.hot || f.changed || (full && !f.primed);
   }
 
   /** First-read progress, while any file of the window has not been read yet. */
@@ -319,14 +326,16 @@ export class UsageMonitor {
         this.log.error("discover", "OTHER");
         return; // keep the last known candidates and state
       }
+      const entering = rs.error === undefined;
       rs.error = result.error;
       rs.candidates = new Map();
       rs.unreadable = new Set();
       rs.refused = new Set();
       delete rs.capped;
       delete rs.archived;
-      // Files of a vanished or locked folder are read once more: ENOENT drops them, other errors show.
-      for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
+      // Files of a vanished or locked folder are read once more when the error starts:
+      // ENOENT drops them, other errors show (not again on every tick while it lasts).
+      if (entering) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
       return;
     }
     rs.error = undefined;
@@ -346,18 +355,22 @@ export class UsageMonitor {
         prev.live = prev.live || c.live;
       }
     }
-    // A file lstat failed on (EMFILE, EIO, EACCES...) may be transient: keep its last
-    // candidate entry and state, count it unreadable, log each file once per episode (v0.7).
+    // A file or directory lstat or listing failed on (EMFILE, EIO, EACCES...) may be
+    // transient: keep the last candidate entry of every file at or under that path, with its
+    // state and records, count it unreadable, log each path once per episode (v0.7).
     const unreadable = new Set<string>();
     for (const u of result.unreadable) {
       unreadable.add(u.path);
       if (!rs.unreadable.has(u.path)) this.log.error("discover", safeCode(u.code));
-      const prev = rs.candidates.get(u.folderId);
-      const prevFile = prev?.files.find((x) => x.path === u.path);
-      if (prev === undefined || prevFile === undefined) continue;
-      const now = candidates.get(u.folderId);
-      if (now === undefined) candidates.set(u.folderId, { ...prev, files: [prevFile] });
-      else if (!now.files.some((x) => x.path === u.path)) now.files.push(prevFile);
+      const under = u.path + sep;
+      for (const prev of rs.candidates.values()) {
+        for (const prevFile of prev.files) {
+          if (prevFile.path !== u.path && !prevFile.path.startsWith(under)) continue;
+          const now = candidates.get(prev.sessionId);
+          if (now === undefined) candidates.set(prev.sessionId, { ...prev, files: [prevFile] });
+          else if (!now.files.some((x) => x.path === prevFile.path)) now.files.push(prevFile);
+        }
+      }
     }
     rs.unreadable = unreadable;
     rs.candidates = candidates;
@@ -481,10 +494,9 @@ export class UsageMonitor {
       f.windowActivity += r.activity;
       f.windowUsage += r.usage;
     }
-    if (r.error === undefined) {
-      f.primed = true;
-      f.changed = false;
-    }
+    // A read attempt answers the change discovery saw, whether or not it succeeded.
+    f.changed = false;
+    if (r.error === undefined) f.primed = true;
     return { added, changed };
   }
 
@@ -510,7 +522,10 @@ export class UsageMonitor {
         state: "ok",
         rootSource: rs.reader.rootSource,
         files: 0,
+        // Candidates of the last discovery, including ones whose files were all refused or
+        // dropped on ENOENT since (until the next discovery).
         sessions: rs.candidates.size,
+        // An unreadable directory (a listing that failed) counts as one file here.
         unreadableFiles: rs.unreadable.size + rs.refused.size,
         unrecognized: 0,
         malformed: 0,
