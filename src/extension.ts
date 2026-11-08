@@ -1,4 +1,4 @@
-// VS Code wiring: resolve the Copilot folder, run the monitor on a 500 ms
+// VS Code wiring: resolve the Copilot, Claude Code and Codex folders, run the monitor on a 500 ms
 // poll, and show snapshots in the status bar, the details panel and the side bar. Reads
 // local files only; nothing is written or persisted. The one network call is
 // the opt-in exchange rate (src/vscode/exchangeRate.ts), made only when a
@@ -6,17 +6,17 @@
 import * as os from "node:os";
 import { posix } from "node:path";
 import * as vscode from "vscode";
-import { resolveCopilotRoot } from "./core/config";
+import { resolveRoot, type ResolvedRoot } from "./core/config";
 import { Logger } from "./core/log";
 import { CURRENCIES, cleanCurrencyCode, DEFAULT_CURRENCY, rangeToUsd } from "./core/currency";
 import { isSessionId } from "./core/extract";
 import { cleanRange, money, setDisplayCurrency } from "./core/format";
-import { clampHistory, UsageMonitor } from "./core/monitor";
+import { clampHistory, UsageMonitor, type MonitorOptions } from "./core/monitor";
 import { callsPhrase } from "./core/panel/shared";
 import { isSectionId, monthKey, sectionPickItems } from "./core/panelHtml";
 import { sidebarRows } from "./core/sidebarModel";
 import { monthStarts, nextLocalMidnight } from "./core/store";
-import { STATUS_BAR_CONTENTS, type Currency, type Filter, type Snapshot, type StatusBarContent, type ViewOptions } from "./core/types";
+import { isSource, SOURCE_LABEL, SOURCES, STATUS_BAR_CONTENTS, type Currency, type Filter, type Snapshot, type StatusBarContent, type ViewOptions } from "./core/types";
 import { fetchUsdRate } from "./vscode/exchangeRate";
 import { createOutputSink } from "./vscode/outputSink";
 import { DetailsPanel } from "./vscode/panel";
@@ -27,6 +27,8 @@ import { StatusBar } from "./vscode/statusBar";
 const POLL_MS = 500;
 const SETTING = "copilotUsageMonitor.copilotHome";
 const SECTION = "copilotUsageMonitor";
+/** settings that turn a source on or off or move its folder; a change re-resolves the roots (D48) */
+const SOURCE_SETTINGS = ["claudeCode", "codex", "claudeHome", "codexHome"].map((k) => `${SECTION}.${k}`);
 const RATE_REFRESH_MS = 6 * 60 * 60 * 1000;
 const RATE_RETRY_MS = 15 * 60 * 1000;
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -114,9 +116,19 @@ export function activate(context: vscode.ExtensionContext): void {
   /** session whose calls the Sessions section lists, kept across monitor restarts; in memory only (v0.6) */
   let session: string | undefined;
 
+  /** Copilot's folder, and Claude Code's and Codex's unless their setting is false (D48). */
   const resolve = () => {
-    const setting = vscode.workspace.getConfiguration("copilotUsageMonitor").get<string>("copilotHome");
-    return resolveCopilotRoot({ setting, env: process.env, homedir: os.homedir() });
+    const c = vscode.workspace.getConfiguration(SECTION);
+    const at = { env: process.env, homedir: os.homedir() };
+    const copilot = resolveRoot("copilot", { setting: c.get<unknown>("copilotHome"), ...at });
+    const claude = c.get<unknown>("claudeCode") !== false ? resolveRoot("claude", { setting: c.get<unknown>("claudeHome"), ...at }) : undefined;
+    const codex = c.get<unknown>("codex") !== false ? resolveRoot("codex", { setting: c.get<unknown>("codexHome"), ...at }) : undefined;
+    return { copilot, claude, codex };
+  };
+  /** One string per resolved state: each root, its origin and whether the source is on. */
+  const keyOf = (r: ReturnType<typeof resolve>) => {
+    const one = (x: ResolvedRoot | undefined) => (x ? `${x.source}\u0000${x.root}` : "off");
+    return [one(r.copilot), one(r.claude), one(r.codex)].join("\u0001");
   };
 
   const onSnapshot = (s: Snapshot) => {
@@ -167,23 +179,34 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.show();
   };
 
-  /** ("project" | "tool", value, section?); an empty value clears that filter; no args opens a
+  /** ("project" | "tool" | "source", value, section?); an empty value clears that filter; no args opens a
    * picker. A valid section id (the side bar's project rows) also switches the panel to it. */
   const setFilter = async (kind?: unknown, value?: unknown, section?: unknown) => {
     const m = monitor;
     if (!m) return;
     if (kind === undefined) {
-      type Item = vscode.QuickPickItem & { filterKind?: "project" | "tool"; value?: string };
+      type Item = vscode.QuickPickItem & { filterKind?: "project" | "tool" | "source"; value?: string };
       const month = snapshot?.month;
       const items: Item[] = [{ label: "Clear all filters", filterKind: undefined }];
       for (const p of month?.projects ?? []) items.push({ label: p.label ?? p.name, description: `project · ${callsPhrase(p.calls, p.callsMissing)}`, filterKind: "project", value: p.name });
       for (const t of month?.tools ?? []) items.push({ label: t.name, description: `tool · ${t.builtIn ? "built-in" : "added"} · ${t.uses} uses`, filterKind: "tool", value: t.name });
-      const pick = await vscode.window.showQuickPick(items, { placeHolder: "Filter the month view by project or tool" });
+      for (const s of SOURCES) {
+        const t = month?.totals?.bySource?.[s];
+        items.push({ label: SOURCE_LABEL[s], description: t ? `source · ${callsPhrase(t.calls, t.callsMissing)}` : "source", filterKind: "source", value: s });
+      }
+      const pick = await vscode.window.showQuickPick(items, { placeHolder: "Filter the month view by project, tool or source" });
       if (!pick || monitor !== m) return;
       if (pick.filterKind === undefined) filter = {};
       else filter = { ...filter, [pick.filterKind]: pick.value };
     } else if (kind === "clear") {
       filter = {};
+    } else if (kind === "source") {
+      // "" clears; anything that is not one of SOURCES is ignored (D49)
+      if (value !== "" && !isSource(value)) return;
+      const next: Filter = { ...filter };
+      if (value === "") delete next.source;
+      else next.source = value;
+      filter = next;
     } else if (kind === "project" || kind === "tool") {
       const v = filterValue(value);
       const next: Filter = { ...filter };
@@ -287,14 +310,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const start = () => {
     stop();
-    const { root, source } = resolve();
-    rootKey = `${source}\u0000${root}`;
+    const r = resolve();
+    rootKey = keyOf(r);
+    const sources: NonNullable<MonitorOptions["sources"]> = {
+      ...(r.claude && { claude: { root: r.claude.root, rootSource: r.claude.source } }),
+      ...(r.codex && { codex: { root: r.codex.root, rootSource: r.codex.source } }),
+    };
     // A viewed month outside the (possibly shorter) window is dropped, so raising
     // historyMonths again later does not jump back to it (v0.7).
     if (selected !== undefined && selected < monthStarts(new Date(), history)[0]!) selected = undefined;
-    const m = new UsageMonitor({ root, rootSource: source, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
+    const m = new UsageMonitor({ root: r.copilot.root, rootSource: r.copilot.source, sources, log, onSnapshot, historyMonths: history, readProjects: projectsOn, readTotals: totalsOn });
     if (selected !== undefined) m.selectMonth(selected);
-    if (filter.project !== undefined || filter.tool !== undefined) m.setFilter(filter);
+    if (filter.project !== undefined || filter.tool !== undefined || filter.source !== undefined) m.setFilter(filter);
     if (session !== undefined) m.selectSession(session);
     monitor = m;
     snapshot = undefined;
@@ -343,7 +370,8 @@ export function activate(context: vscode.ExtensionContext): void {
         { label: "Automatic", description: "live session with the newest record" },
         ...sessions.map((x) => ({
           label: x.folderId.slice(0, 8),
-          description: [x.live ? "live" : "ended", x.lastMs ? new Date(x.lastMs).toLocaleString() : "no per-call records"].join(" · "),
+          // mtime-based sources have no end marker: "idle", never "ended" (D43)
+          description: [x.source ? SOURCE_LABEL[x.source] : "", x.live ? "live" : x.source && x.source !== "copilot" ? "idle" : "ended", x.lastMs ? new Date(x.lastMs).toLocaleString() : "no per-call records"].filter(Boolean).join(" · "),
           folderId: x.folderId,
         })),
       ];
@@ -372,10 +400,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration(`${SECTION}.panelNavCollapsed`)) panel.setNavCollapsed(readNavCollapsed());
       const h = readHistory();
       let rootChanged = false;
-      if (e.affectsConfiguration(SETTING)) {
-        const { root, source } = resolve();
-        rootChanged = `${source}\u0000${root}` !== rootKey;
-      }
+      if (e.affectsConfiguration(SETTING) || SOURCE_SETTINGS.some((k) => e.affectsConfiguration(k))) rootChanged = keyOf(resolve()) !== rootKey;
       const p = readProjects();
       const t = readTotals();
       if (rootChanged || h !== history || p !== projectsOn || t !== totalsOn) {
