@@ -11,7 +11,7 @@ import type { Logger } from "./log";
 import { sep } from "node:path";
 import { cacheStats, lastPrompt, modelCacheStats, promptStats, sessionDetail, toolOverhead } from "./explain";
 import { computeInsights, promptConventions } from "./insights";
-import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceReader } from "./source";
+import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceFile, type SourceReader } from "./source";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import type { ReadErrorCode } from "./tailer";
 import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type UsageRecord } from "./types";
@@ -105,6 +105,8 @@ interface ReaderState {
   /** candidate paths the reader refused (pathAllowed false): never opened, partial */
   refused: Set<string>;
   capped?: number;
+  /** the last discovery's outcome; a rediscovery with the same one changes nothing shown */
+  fingerprint?: string;
   archived?: number;
 }
 
@@ -248,12 +250,12 @@ export class UsageMonitor {
     try {
       const nowMs = this.now().getTime();
       const dayStartMs = localDayStart(new Date(nowMs));
-      let changed = this.dirty || dayStartMs !== this.lastDayStartMs;
+      // A full refresh (a command, a settings change) always rebuilds the snapshot.
+      let changed = full || this.dirty || dayStartMs !== this.lastDayStartMs;
       this.dirty = false;
       for (const rs of this.readers) {
         if (await this.shouldDiscover(rs, full, nowMs, dayStartMs)) {
-          await this.rediscover(rs, nowMs, dayStartMs);
-          changed = true;
+          if (await this.rediscover(rs, nowMs, dayStartMs)) changed = true;
         }
       }
       // The first read of the window goes newest file first (D50); the rest keep their order.
@@ -297,7 +299,7 @@ export class UsageMonitor {
    * full refresh, so an unreadable tree is not reopened every tick.
    */
   private isDue(f: FileState, full: boolean): boolean {
-    return f.source === "copilot" || !f.tried || f.hot || f.changed || (full && !f.primed);
+    return f.source === "copilot" || !f.tried || f.hot || f.changed || (full && (!f.primed || f.error !== undefined));
   }
 
   /** First-read progress, while any file of the window has not been read yet. */
@@ -314,10 +316,26 @@ export class UsageMonitor {
     return (await rs.reader.rootDirMtime()) !== rs.lastDirMtimeMs;
   }
 
-  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<void> {
-    const windowStartMs = monthStarts(new Date(nowMs), this.historyMonths)[0]!;
+  /** What a discovery found, as one string: error, candidate files, unreadable and refused paths, extras. */
+  private fingerprint(rs: ReaderState): string {
+    if (rs.error !== undefined) return rs.error;
+    const files: string[] = [];
+    for (const c of rs.candidates.values()) for (const f of c.files) files.push(`${f.path}\0${c.sessionId}\0${f.mtimeMs}\0${f.size}\0${c.live ? 1 : 0}`);
+    files.sort();
+    return JSON.stringify([files, [...rs.unreadable].sort(), [...rs.refused].sort(), rs.capped ?? null, rs.archived ?? null]);
+  }
+
+  /** Discovers one reader's files; true when the outcome differs from the last discovery's. */
+  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<boolean> {
+    this.discoverOnce(rs, await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs), nowMs);
+    const fp = this.fingerprint(rs);
+    if (fp === rs.fingerprint) return false;
+    rs.fingerprint = fp;
+    return true;
+  }
+
+  private discoverOnce(rs: ReaderState, result: SourceDiscoverResult, nowMs: number): void {
     const reader = rs.reader;
-    const result = await reader.discover(windowStartMs, dayStartMs, nowMs);
     rs.discovered = true;
     rs.lastDiscoverAt = nowMs;
     if (!result.ok) {
@@ -326,18 +344,21 @@ export class UsageMonitor {
         this.log.error("discover", "OTHER");
         return; // keep the last known candidates and state
       }
-      const entering = rs.error === undefined;
+      // A new or different error (permission → no-dir and back) re-reads the files once.
+      const entering = rs.error !== result.error;
       rs.error = result.error;
       rs.candidates = new Map();
       rs.unreadable = new Set();
       rs.refused = new Set();
       delete rs.capped;
       delete rs.archived;
-      // Files of a vanished or locked folder are read once more when the error starts:
-      // ENOENT drops them, other errors show (not again on every tick while it lasts).
+      // Files of a vanished or locked folder are read once more when the error starts or
+      // changes: ENOENT drops them, other errors show (not again on every tick while it lasts).
       if (entering) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
       return;
     }
+    // A root that recovers re-reads its files once, so errors of the locked period clear.
+    if (rs.error !== undefined) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
     rs.error = undefined;
     rs.lastDirMtimeMs = result.dirMtimeMs;
     if (result.capped !== undefined) rs.capped = result.capped;
@@ -359,18 +380,24 @@ export class UsageMonitor {
     // transient: keep the last candidate entry of every file at or under that path, with its
     // state and records, count it unreadable, log each path once per episode (v0.7).
     const unreadable = new Set<string>();
+    const prevFiles = new Map<string, { c: SourceCandidate; f: SourceFile }>();
+    if (result.unreadable.length > 0) for (const c of rs.candidates.values()) for (const f of c.files) prevFiles.set(f.path, { c, f });
+    const carry = (prev: SourceCandidate, prevFile: SourceFile): void => {
+      const now = candidates.get(prev.sessionId);
+      if (now === undefined) candidates.set(prev.sessionId, { ...prev, files: [prevFile] });
+      else if (!now.files.some((x) => x.path === prevFile.path)) now.files.push(prevFile);
+    };
     for (const u of result.unreadable) {
       unreadable.add(u.path);
       if (!rs.unreadable.has(u.path)) this.log.error("discover", safeCode(u.code));
-      const under = u.path + sep;
-      for (const prev of rs.candidates.values()) {
-        for (const prevFile of prev.files) {
-          if (prevFile.path !== u.path && !prevFile.path.startsWith(under)) continue;
-          const now = candidates.get(prev.sessionId);
-          if (now === undefined) candidates.set(prev.sessionId, { ...prev, files: [prevFile] });
-          else if (!now.files.some((x) => x.path === prevFile.path)) now.files.push(prevFile);
-        }
+      const exact = prevFiles.get(u.path);
+      if (exact !== undefined) {
+        carry(exact.c, exact.f);
+        continue;
       }
+      // Not a known file: a directory that failed to list; keep every file under it.
+      const under = u.path + sep;
+      for (const [path, { c, f }] of prevFiles) if (path.startsWith(under)) carry(c, f);
     }
     rs.unreadable = unreadable;
     rs.candidates = candidates;
@@ -443,8 +470,9 @@ export class UsageMonitor {
       r.records.length > 0 ||
       r.totals !== undefined ||
       r.hasTotals ||
-      r.label !== undefined ||
-      r.title !== undefined ||
+      // A reader may repeat a label or title it already gave: only a different one counts.
+      (r.label !== undefined && r.label !== f.label) ||
+      (r.title !== undefined && (r.title ?? undefined) !== f.title) ||
       r.usage > 0 ||
       r.shutdownOversize > 0 ||
       r.activity > 0 ||
@@ -906,7 +934,13 @@ export class UsageMonitor {
     const signature = JSON.stringify({ ...s, generatedAtMs: 0 });
     if (signature === this.lastSignature) return;
     if (this.disposed) return;
-    this.onSnapshot(s);
+    try {
+      this.onSnapshot(s);
+    } catch (err) {
+      // The next tick rebuilds and delivers again, even if nothing else changed.
+      this.dirty = true;
+      throw err;
+    }
     // Only after delivery: a callback that threw gets the same snapshot next time (v0.7).
     this.lastSignature = signature;
   }

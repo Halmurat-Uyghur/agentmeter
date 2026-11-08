@@ -518,7 +518,8 @@ describe("ClaudeSourceReader", () => {
     await appendFile(path!, claudeAssistantLine({ id: "msg_c", cwd: "/x/third" }) + "\n");
     const again = await fr.read();
     expect(again.records.map((r) => r.key)).toEqual(["msg_c"]);
-    expect(again.label).toBe("first");
+    // The label is reported once, in the read that first finds it (source.ts contract).
+    expect(again.label).toBeUndefined();
   });
 
   it("uses the candidate's session id when a line has none", async () => {
@@ -603,7 +604,7 @@ describe("ClaudeSourceReader", () => {
     const third = await fr.read();
     expect(third.reset).toBe(false);
     expect(third.records).toEqual([]);
-    expect(third.label).toBe("newrepo");
+    expect(third.label).toBeUndefined();
   });
 
   it("counts a line whose parsing throws as malformed and keeps reading", async () => {

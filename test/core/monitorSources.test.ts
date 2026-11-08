@@ -502,4 +502,98 @@ describe("multi-source monitor", () => {
     expect(calls).toEqual([paths[0]]);
     expect(snaps).toHaveLength(0);
   });
+  it("idle ticks over primed Claude Code and Codex files with project names on emit no snapshot", async () => {
+    await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: HOT }]);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 2), mtime: HOT }]);
+    await sessionTree(copilotRoot, [{ id: A, lines: jsonl([pRec(A, 1)]), mtime: new Date(HOT) }]);
+    make();
+    await monitor!.refresh({ full: true });
+    expect(last().month?.projects.map((p) => p.name).sort()).toEqual(["(no project)", "codex-proj", "myrepo"]);
+    const before = snaps.length;
+    for (let i = 0; i < 20; i++) {
+      clock += 500; // crosses one periodic rediscovery with an identical outcome
+      await monitor!.refresh();
+    }
+    expect(snaps.length).toBe(before);
+  });
+
+  it("an absent root rediscovered every tick emits nothing until it appears", async () => {
+    await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: HOT }]);
+    await sessionTree(copilotRoot, [{ id: A, lines: jsonl([pRec(A, 1)]), mtime: new Date(HOT) }]);
+    make();
+    await monitor!.refresh({ full: true });
+    expect(last().health.sources?.codex?.state).toBe("no-dir");
+    const before = snaps.length;
+    for (let i = 0; i < 20; i++) {
+      clock += 500;
+      await monitor!.refresh();
+    }
+    expect(snaps.length).toBe(before);
+    await codexTree(codexRoot, [{ date: "2026/11/08", sessionId: xs(1), lines: xFile(xs(1), 1), mtime: HOT }]);
+    clock += 500;
+    await monitor!.refresh();
+    expect(snaps.length).toBe(before + 1);
+    expect(last().health.sources?.codex?.state).toBe("ok");
+    expect(last().today?.bySource?.codex?.records).toBe(1);
+  });
+
+  it("a primed file whose read fails is read again on a full refresh and when its root recovers", async () => {
+    const path = join(dir, "stub", "a.jsonl");
+    let fail = false;
+    let rootError: "permission" | undefined;
+    let reads = 0;
+    let mtimeMs = COLD;
+    const stub: SourceReader = {
+      source: "claude-code",
+      root: join(dir, "stub"),
+      rootSource: "default",
+      rootDirMtime: async () => 1,
+      discover: async (): Promise<SourceDiscoverResult> =>
+        rootError !== undefined
+          ? { ok: false, error: rootError }
+          : { ok: true, candidates: [{ source: "claude-code", sessionId: cs(1), folderId: cs(1), files: [{ path, mtimeMs, size: 10 }], mtimeMs, live: false }], unreadable: [], dirMtimeMs: 1 },
+      pathAllowed: () => true,
+      open: (): FileReader => ({
+        read: async () => {
+          reads++;
+          return fail ? { ...emptyReadResult(), error: "EACCES" } : emptyReadResult();
+        },
+      }),
+    };
+    make({ readers: [stub] }, false);
+    await monitor!.refresh({ full: true });
+    expect(reads).toBe(1);
+    // The file errors once (a discovery saw it change), then stays errored on idle ticks.
+    fail = true;
+    mtimeMs += 1000;
+    clock += 10_000;
+    await monitor!.refresh({ full: true });
+    expect(last().health.partial).toBe(true);
+    const errored = reads;
+    clock += 500;
+    await monitor!.refresh();
+    expect(reads).toBe(errored);
+    // A full refresh retries it; a good read clears the error and `partial`.
+    fail = false;
+    await monitor!.refresh({ full: true });
+    expect(reads).toBe(errored + 1);
+    expect(last().health.partial).toBe(false);
+    expect(last().health.unreadableFiles).toBe(0);
+    // A root that goes permission → ok re-reads its files once.
+    rootError = "permission";
+    clock += 10_000;
+    await monitor!.refresh();
+    expect(last().health.sources?.["claude-code"]?.state).toBe("permission");
+    const locked = reads;
+    clock += 500;
+    await monitor!.refresh();
+    expect(reads).toBe(locked); // not on every tick while the error lasts
+    rootError = undefined;
+    clock += 500;
+    await monitor!.refresh();
+    expect(reads).toBe(locked + 1);
+    clock += 500;
+    await monitor!.refresh();
+    expect(reads).toBe(locked + 1);
+  });
 });

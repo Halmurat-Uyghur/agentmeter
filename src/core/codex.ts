@@ -431,6 +431,8 @@ class CodexFileReader implements FileReader {
   private sawRecord = false;
   private out: FileReadResult = emptyReadResult();
   private lastTotal: UsageRecord | undefined;
+  /** the label last reported: it is reported once, when first known (and again after a reset) */
+  private shown: string | undefined;
 
   constructor(
     private readonly filePath: string,
@@ -507,6 +509,7 @@ class CodexFileReader implements FileReader {
     this.state = { models: new Map(), sawTurn: false };
     this.sawMeta = false;
     this.sawRecord = false;
+    this.shown = undefined;
   }
 
   private async readOnce(): Promise<{ reset: boolean; error?: FileReadResult["error"] }> {
@@ -527,7 +530,10 @@ class CodexFileReader implements FileReader {
     const out = this.out;
     out.reset = r.reset;
     if (r.error !== undefined) out.error = r.error;
-    if (this.state.label !== undefined) out.label = this.state.label;
+    if (this.state.label !== undefined && this.state.label !== this.shown) {
+      out.label = this.state.label;
+      this.shown = this.state.label;
+    }
     if (this.lastTotal !== undefined && !this.sawRecord) {
       out.totals = [this.lastTotal];
       out.hasTotals = true;

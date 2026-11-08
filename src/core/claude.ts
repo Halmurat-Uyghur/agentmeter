@@ -413,6 +413,8 @@ class ClaudeFileReader implements FileReader, LineHandler {
   private out: FileReadResult = emptyReadResult();
   /** per-file state, cleared on a reset: the label pinned from the first usage record */
   private label: string | undefined;
+  /** the label last reported: it is reported once, when first known (and again after a reset) */
+  private shown: string | undefined;
   private tailer: ByteTailer;
 
   constructor(
@@ -438,13 +440,17 @@ class ClaudeFileReader implements FileReader, LineHandler {
       // The lines just handled came from a rewritten file but were parsed with the old
       // file's state (the pinned label): drop that pass and start over with a fresh tailer.
       this.label = undefined;
+      this.shown = undefined;
       this.tailer = this.newTailer();
       r = { ...(await this.readOnce()), reset: true };
     }
     const out = this.out;
     out.reset = r.reset;
     if (r.error !== undefined) out.error = r.error;
-    if (this.label !== undefined) out.label = this.label;
+    if (this.label !== undefined && this.label !== this.shown) {
+      out.label = this.label;
+      this.shown = this.label;
+    }
     return out;
   }
 

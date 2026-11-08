@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -282,6 +282,21 @@ describe("CodexSourceReader", () => {
     expect(res.hasTotals).toBe(false);
     expect(res.malformed + res.unrecognized).toBe(0);
     expectNoLeak(res);
+  });
+
+  it("reports the label only in the read that first finds it, and again after a reset", async () => {
+    const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: CODEX_SESSION, lines: [codexMeta(), codexRecord({ responseId: "r1" })] }]);
+    const fr = reader().open(p!, candidate(p!));
+    expect((await fr.read()).label).toBe("codex-proj");
+    expect((await fr.read()).label).toBeUndefined();
+    await appendFile(p!, `${codexRecord({ responseId: "r2" })}\n`);
+    const more = await fr.read();
+    expect(more.records).toHaveLength(1);
+    expect(more.label).toBeUndefined();
+    await writeFile(p!, `${codexMeta({ cwd: canaryCwd("other") })}\n`);
+    const reset = await fr.read();
+    expect(reset.reset).toBe(true);
+    expect(reset.label).toBe("other");
   });
 
   it("readProjects off yields no label", async () => {
