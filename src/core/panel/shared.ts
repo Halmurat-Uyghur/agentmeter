@@ -44,6 +44,24 @@ export function shortDate(ms: number): string {
   return `${MONTHS[d.getMonth()]!.slice(0, 3)} ${d.getDate()}`;
 }
 
+/** A day's instant hover readout: the weekday before its hover text ("Wed Nov 4: …").
+ * The webview runs no scripts and native tooltips are slow or missing there, so
+ * charts show this through CSS (`data-tip`, or an SVG text revealed on hover). */
+export function weekdayTip(ms: number, text: string): string {
+  return `${DOW[(new Date(ms).getDay() + 6) % 7]} ${text}`;
+}
+
+/** ` data-tip="…"`: the CSS hover readout's text. */
+export function dataTip(text: string): string {
+  return ` data-tip="${escapeHtml(text)}"`;
+}
+
+/** Edge class so a readout stays inside the chart: the first and last `edge`
+ * of `n` items anchor their readout left and right instead of centred. */
+export function tipSide(i: number, n: number, edge = 6): string {
+  return i < edge ? " tip-l" : i >= n - edge ? " tip-r" : "";
+}
+
 export function monthTitle(ms: number): string {
   const d = new Date(ms);
   return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;

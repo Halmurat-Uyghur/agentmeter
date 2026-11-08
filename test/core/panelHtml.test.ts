@@ -215,8 +215,8 @@ describe("renderPanelHtml", () => {
     const html = renderPanelHtml(snap({ month: { ...snap().month!, days: days(5, { 2: t, 3: big, 5: t }) } }), "x", undefined, "daily");
     const daily = html.slice(html.indexOf("Daily trend"), html.indexOf("</section>", html.indexOf("Daily trend")));
     expect(daily.match(/class="col[ "]/g)).toHaveLength(30);
-    expect(daily.match(/class="col later"/g)).toHaveLength(25);
-    expect(daily.match(/class="col sel"/g)).toHaveLength(1);
+    expect(daily.match(/class="col later[ "]/g)).toHaveLength(25);
+    expect(daily.match(/class="col sel[ "]/g)).toHaveLength(1);
     expect(daily.match(/class="fill/g)).toHaveLength(3);
     expect(daily.match(/class="fill peak"/g)).toHaveLength(1);
     const v = text(daily).replace(/\s+/g, " ");
@@ -224,7 +224,8 @@ describe("renderPanelHtml", () => {
     expect(v).toContain("3 of 5 days active");
     // (1.5M + 6.0M + 1.5M) / 3 active days
     expect(v).toContain("Avg / active day 3.0M");
-    expect(v).toContain("Nov 1: no usage records");
+    // instant hover readout with the weekday (no script, no native tooltip)
+    expect(daily).toContain('class="col tip-l" data-tip="Sun Nov 1: no usage records"');
     expect(v).not.toMatch(COPY_RE);
   });
 
@@ -248,7 +249,7 @@ describe("renderPanelHtml", () => {
   it("empty day renders —, never 0", () => {
     const html = renderPanelHtml(snap(), "x", undefined, "daily");
     // a day with no record stays blank; its title says so (design #7)
-    expect(html).toMatch(/title="Nov 1: no usage records">1<small><span class="sr">no usage records<\/span><\/small>/);
+    expect(html).toMatch(/class="d tip-r" data-tip="Sun Nov 1: no usage records">1<small><span class="sr">no usage records<\/span><\/small>/);
     expect(html).not.toMatch(/>1<small>0<\/small>/);
   });
 

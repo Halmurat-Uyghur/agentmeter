@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - **Collapsible section navigation.** A toggle at the top of the details panel's section nav collapses it to a narrow icon rail and expands it again. In the rail each icon keeps its section name as a tooltip and for screen readers, Data health still shows its `!` or `*` mark, and the groups are separated by a line. The choice is remembered in the `copilotUsageMonitor.panelNavCollapsed` user setting (also "Copilot Usage: Collapse or Expand Panel Navigation" in the Command Palette). A narrow panel, where the nav is already a row above the content, shows full labels and no toggle.
+- **Currency in the side bar.** The side bar footer shows **Currency: USD** (or CAD, or whichever you chose) next to the unit switch; click it to open the currency picker. The picker is also in the side bar's `…` menu as **Choose Currency…**. While a non-USD rate is still being fetched, the link names the chosen currency and its tooltip says figures stay in USD until the rate arrives.
+
+## 0.6.1 - 2026-11-07
+
+### Fixed
+
+- **Day dates on hover.** The daily charts now name the day under the pointer at once, with its weekday: "Wed Nov 4: $0.600 USD (est.)". This covers the Overview's 30-day bars, the daily activity squares (a readout line under the grid, with a "Hover a square to see its date" hint) and the Daily section's trend bars and calendar. Before, the date was only in a native tooltip, which is slow or missing in the panel. Still no scripts: the readouts are CSS only, and readouts at either end of a chart stay inside it.
 
 ## 0.6.0 - 2026-11-07
 

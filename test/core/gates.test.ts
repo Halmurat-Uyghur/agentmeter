@@ -268,6 +268,7 @@ describe("gates", () => {
       "copilotUsageMonitor.showSection",
       "copilotUsageMonitor.setFilter",
       "copilotUsageMonitor.toggleUnit",
+      "copilotUsageMonitor.selectCurrency",
     ]);
     const src = readFileSync(join(ROOT, SIDEBAR_SRC), "utf8");
     expect(src).toContain("{ enableScripts: false, enableForms: false, enableCommandUris: SIDEBAR_COMMANDS, localResourceRoots: [] }");

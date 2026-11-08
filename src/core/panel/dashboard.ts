@@ -11,6 +11,8 @@ import {
   callsPhrase,
   comparePeriods,
   DASH,
+  dataTip,
+  weekdayTip,
   escapeHtml,
   headline,
   headlineMetric,
@@ -19,6 +21,7 @@ import {
   plural,
   shortDate,
   sym,
+  tipSide,
   titleAttr,
   unitWord,
   val,
@@ -214,6 +217,9 @@ const CELL = 12;
 const STEP = 15;
 const LEFT = 30;
 const TOP = 16;
+/** Height and minimum width of the heatmap's hover readout row. */
+const READ_ROW = 20;
+const READ_MIN_WIDTH = 220;
 /** Weeks the heatmap draws (design #3): the last 20, or fewer when the window is shorter. */
 export const HEAT_WEEKS = 20;
 
@@ -250,8 +256,11 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
     return { col: Math.floor(n / 7), row: n % 7 };
   };
   const cols = weekOf(today).col + 1;
-  const width = LEFT + cols * STEP;
-  const height = TOP + 7 * STEP;
+  // A readout row under the grid names the hovered day; wide enough for "Wed Nov 4: …".
+  const width = Math.max(LEFT + cols * STEP, READ_MIN_WIDTH);
+  const gridBottom = TOP + 7 * STEP;
+  const height = gridBottom + READ_ROW;
+  const readY = gridBottom + READ_ROW - 4;
   const cells: string[] = [];
   const months: string[] = [];
   const rowsForTable: DayRow[] = [];
@@ -269,7 +278,8 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
     }
     if (d) rowsForTable.push(dayRow(t, d, view, partial));
     const now = t === today ? " now" : "";
-    cells.push(`<rect class="hm h${level}${now}" x="${LEFT + col * STEP}" y="${TOP + row * STEP}" width="${CELL}" height="${CELL}" rx="2"><title>${escapeHtml(dayTitle(t, d, view, partial))}</title></rect>`);
+    const title = dayTitle(t, d, view, partial);
+    cells.push(`<g class="hc"><rect class="hm h${level}${now}" x="${LEFT + col * STEP}" y="${TOP + row * STEP}" width="${CELL}" height="${CELL}" rx="2"><title>${escapeHtml(title)}</title></rect><text class="tip" x="0" y="${readY}">${escapeHtml(weekdayTip(t, title))}</text></g>`);
     const date = new Date(t);
     if ((date.getDate() === 1 || i === 0) && col - lastMonthCol >= 3) {
       months.push(`<text class="ax" x="${LEFT + col * STEP}" y="11">${MONTHS[date.getMonth()]!.slice(0, 3)}</text>`);
@@ -286,7 +296,7 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
   const label = `Daily activity from ${shortDate(days[0]!)} to ${shortDate(today)}: ${active} of ${plural(days.length, "day")} active${peakText}.${since} Stronger colour means more ${view.unit === "cost" ? estWord() : "tokens"}. Not filtered.`;
   const lblTitle = titleAttr(`Days with usage since ${shortDate(from)}, the start of the history window. The grid shows the last ${plural(cols, "week")}.`);
   const table = dayTable(`Days with usage records from ${shortDate(days[0]!)} to ${shortDate(today)}, not filtered`, unitHead(view), rowsForTable, "Active days as a table");
-  return `<div class="hero-heat"><p class="lbl"${lblTitle}>Daily activity <b class="hot num">${plural(activeAll, "active day")}</b></p><svg class="heat" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">${months.join("")}${rows.join("")}${cells.join("")}</svg>${table}</div>`;
+  return `<div class="hero-heat"><p class="lbl"${lblTitle}>Daily activity <b class="hot num">${plural(activeAll, "active day")}</b></p><svg class="heat" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">${months.join("")}${rows.join("")}<text class="hint" x="0" y="${readY}">Hover a square to see its date</text>${cells.join("")}</svg>${table}</div>`;
 }
 
 // ------------------------------------------------------------------ cache ring
@@ -404,6 +414,7 @@ export function dailyBars(s: Snapshot, view: ViewOptions): string {
   const H = 100;
   const h = (v: number) => Math.max(1, (H * v) / scale);
   const bars: string[] = [];
+  const hits: string[] = [];
   const tableRows: DayRow[] = [];
   let peakIdx = -1;
   values.forEach((v, i) => {
@@ -415,9 +426,10 @@ export function dailyBars(s: Snapshot, view: ViewOptions): string {
     const title = t < from ? `${shortDate(t)}: before the history window` : dayTitle(t, d, view, partial);
     if (t >= from) tableRows.push(dayRow(t, d, view, partial));
     const cls = t === s.dayStartMs ? "dbar-today" : "dbar";
-    const hit = `<rect class="bar-hit" x="${i * 10}" y="0" width="10" height="${H}"><title>${escapeHtml(title)}</title></rect>`;
+    // Hover target as HTML over the plot: the readout shows at once (no script, no native tooltip).
+    hits.push(`<span class="hit${tipSide(i, BAR_DAYS)}"${dataTip(weekdayTip(t, title))}></span>`);
     const bar = v !== undefined && v > 0 ? `<rect class="${cls}" x="${i * 10 + 1.5}" y="${(H - h(v)).toFixed(2)}" width="7" height="${h(v).toFixed(2)}" rx="1"/>` : "";
-    bars.push(bar + hit);
+    bars.push(bar);
   });
   if (known.length === 0) {
     return `<section class="card bars" aria-labelledby="bars-title">${h3}<p class="muted">Nothing logged in the last ${BAR_DAYS} days.</p></section>`;
@@ -442,5 +454,5 @@ export function dailyBars(s: Snapshot, view: ViewOptions): string {
   const ticks = `<div class="yaxis" aria-hidden="true"><span class="num">${escapeHtml(fmtNum(scale, view))}</span><span class="num">${escapeHtml(fmtNum(scale / 2, view))}</span><span class="num">${escapeHtml(fmtNum(0, view))}</span></div>`;
   const fine = days[0]! < from ? `<div class="fine"><p>${escapeHtml(`Days before ${shortDate(from)} are outside the history window and have no bar.`)}</p></div>` : "";
   const table = dayTable(`${heading}, last ${BAR_DAYS} days, not filtered`, unitHead(view), tableRows);
-  return `<section class="card bars" aria-labelledby="bars-title"><div class="chrow">${h3}${chips}</div><div class="plotgrid"><svg class="barplot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}">${bars.join("")}${avgLine}</svg>${ticks}<div class="xaxis" aria-hidden="true">${axis}</div></div><div class="scale"><span class="lg"><b class="avgsw"></b>Avg / active day</span><span class="lg"><b class="todaysw"></b>Today</span></div>${fine}${table}</section>`;
+  return `<section class="card bars" aria-labelledby="bars-title"><div class="chrow">${h3}${chips}</div><div class="plotgrid"><div class="plotwrap"><svg class="barplot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}">${bars.join("")}${avgLine}</svg><div class="hits" aria-hidden="true">${hits.join("")}</div></div>${ticks}<div class="xaxis" aria-hidden="true">${axis}</div></div><div class="scale"><span class="lg"><b class="avgsw"></b>Avg / active day</span><span class="lg"><b class="todaysw"></b>Today</span></div>${fine}${table}</section>`;
 }
