@@ -5,7 +5,7 @@ import { FOCUSED_REDRAW_MS, RedrawThrottle } from "../core/redrawThrottle";
 import type { Snapshot, ViewOptions } from "../core/types";
 
 /** The details webview: scripts off, no local resources, command links limited
- * to PANEL_COMMANDS (month, unit, filter, section and session calls), re-rendered per snapshot.
+ * to PANEL_COMMANDS (month, unit, filter, section, session calls and the nav toggle), re-rendered per snapshot.
  * The selected section is held here for the VS Code session only (D30): never
  * persisted and not part of ViewOptions. Whether the section nav is collapsed to an icon
  * rail is set by the extension (which remembers it across sessions) and drawn at once.

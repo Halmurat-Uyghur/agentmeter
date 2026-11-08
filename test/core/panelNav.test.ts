@@ -217,6 +217,9 @@ describe("nav and page structure", () => {
     expect(shut).toMatch(/aria-current="page" title="Sessions"><svg [^]*?<\/svg><span class="lbl">Sessions<\/span>/);
     expect(renderPanelHtml(undefined, "x", undefined, "overview", true)).toContain('<nav class="sidenav collapsed"');
     expect(PANEL_CSS).toContain(".shell.navcollapsed { grid-template-columns: 44px minmax(0, 1fr); }");
+    // user-level only: the toggle writes Global, so a workspace value must not shadow it
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    expect(pkg.contributes.configuration.properties["copilotUsageMonitor.panelNavCollapsed"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
   it("toolbar, banner and state note are chrome: on every section", () => {

@@ -223,6 +223,7 @@
         "copilotUsageMonitor.panelNavCollapsed": {
           "type": "boolean",
           "default": false,
+          "scope": "application",
           "description": "Show the details panel's section navigation as a narrow icon rail. The toggle at the top of the navigation sets this."
         },
         "copilotUsageMonitor.statusBar": {
