@@ -97,7 +97,7 @@ suite("Copilot Usage Monitor", () => {
 
   test("activates and shows status text", async () => {
     const s = await waitFor((x) => x.statusText.startsWith("$(pulse) Local today:") && x.statusText.endsWith("tok"), 3000);
-    assert.match(s.tooltip, /Locally observed from Copilot session logs/);
+    assert.match(s.tooltip, /Locally observed from Copilot, Claude Code and Codex session logs/);
   });
 
   test("updates within 2 s of a complete usage line", async () => {
@@ -310,7 +310,7 @@ suite("Copilot Usage Monitor", () => {
   test("no-dir tooltip names the setting, and a setting change re-roots", async () => {
     await config().update("copilotHome", join(ROOT, "missing"), vscode.ConfigurationTarget.Global);
     try {
-      const s = await waitFor((x) => x.statusText === "$(circle-slash) Copilot logs not found");
+      const s = await waitFor((x) => x.statusText === "$(circle-slash) Local: no usage logs found");
       assert.match(s.tooltip, /copilotUsageMonitor\.copilotHome/);
       // the side bar shows the in-page state: no rows, the setting named
       await showSidebar();

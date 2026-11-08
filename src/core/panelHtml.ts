@@ -24,6 +24,8 @@ export { PANEL_COMMANDS, sectionHref } from "./panel/links";
 export { DEFAULT_SECTION, isSectionId, SECTION_DEFS, SECTIONS, sectionPickItems, type SectionId } from "./panel/sections";
 export { escapeHtml, monthKey, TABLE_LIMIT } from "./panel/shared";
 export { toolGroup } from "./panel/tools";
+export { renderSourcesCard, sourceChips, sourcesHealthBox } from "./panel/sources";
+export { filterHref } from "./panel/links";
 
 const RENDER: Record<SectionId, (s: Snapshot, view: ViewOptions) => string> = {
   overview: renderOverview,

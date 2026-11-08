@@ -2,6 +2,7 @@
 import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE } from "../format";
 import type { Snapshot } from "../types";
 import { escapeHtml } from "./shared";
+import { sourcesHealthBox } from "./sources";
 
 export function healthBox(s: Snapshot): string {
   const h = s.health;
@@ -20,7 +21,7 @@ ${fact("Malformed lines", h.malformed, true)}
 ${fact("Over-long lines skipped (may be usage)", h.overlong, true)}
 ${h.overlongOther > 0 ? fact("Over-long lines skipped (not usage)", h.overlongOther) : ""}
 ${h.shutdownOversize > 0 ? fact("Session-end lines too long to read", h.shutdownOversize, true) : ""}
-</div>${h.sessionsFromTotals > 0 ? `<div class="fine">${escapeHtml(SESSION_TOTAL_NOTE)}</div>` : ""}<h3 class="sub">Not covered</h3><ul class="plain">${NOT_COVERED.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul></section>`;
+</div>${h.sessionsFromTotals > 0 ? `<div class="fine">${escapeHtml(SESSION_TOTAL_NOTE)}</div>` : ""}<h3 class="sub">Not covered</h3><ul class="plain">${NOT_COVERED.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul></section>${sourcesHealthBox(s)}`;
 }
 
 export function renderHealth(s: Snapshot): string {

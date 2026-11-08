@@ -2,6 +2,7 @@
 import { changeAmount, costLabel, estWord, formatCount, formatUsd, money, partialNote, usd } from "../format";
 import { modelFamily } from "../store";
 import { modelCacheCard } from "./explain";
+import { rowChips } from "./sources";
 import type { Snapshot, Totals, ViewOptions } from "../types";
 import { CALLS_MISSING_NOTE, callsCell, card, changeCell, changeFine, changeHead, comparePeriods, DASH, headlineMetric, sym, escapeHtml, foldedTable, headlineValue, inHundred, monthTitle, plural, titleAttr, tokens, totalsFine, unitWord, val, viewedName, viewedStart, withStar } from "./shared";
 
@@ -30,7 +31,7 @@ export function renderModels(s: Snapshot, view: ViewOptions): string {
       const callsText = callsCell(c.calls, c.callsMissing);
       const shareText = inHundred(v, total);
       const bar = share > 0 ? `<span class="bar f-${fam}" style="width:${share}%" aria-hidden="true"></span>` : "";
-      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${bar}</td><td class="num${shareText === DASH ? " muted" : ""}">${shareText === DASH ? val(DASH) : sym(shareText)}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num${view.unit === "tokens" ? " sum" : ""}"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}"${titleAttr(partialNote(c.nanoAiu))}>${val(withStar(formatUsd(c.nanoAiu), partial))}</td>${cell(perCallText)}<td class="num${callsText === DASH ? " muted" : ""}"${titleAttr(c.callsMissing > 0 ? CALLS_MISSING_NOTE : undefined)}>${val(callsText)}</td>${per ? changeCell(changeAmount(headlineMetric(c, view), before[m] ? headlineMetric(before[m]!, view) : undefined, view.unit, partial)) : ""}</tr>`;
+      return `<tr><td><span class="chipm f-${fam}" title="${escapeHtml(m)}">${escapeHtml(m)}</span>${rowChips(s, c.sources)}${bar}</td><td class="num${shareText === DASH ? " muted" : ""}">${shareText === DASH ? val(DASH) : sym(shareText)}</td>${cell(formatCount(c.input), partialNote(c.input))}${cell(formatCount(c.output), partialNote(c.output))}${cell(formatCount(c.cacheRead), partialNote(c.cacheRead))}<td class="num${view.unit === "tokens" ? " sum" : ""}"${titleAttr(partialNote(tok))}>${val(withStar(formatCount(tok), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}"${titleAttr(partialNote(c.nanoAiu))}>${val(withStar(formatUsd(c.nanoAiu), partial))}</td>${cell(perCallText)}<td class="num${callsText === DASH ? " muted" : ""}"${titleAttr(c.callsMissing > 0 ? CALLS_MISSING_NOTE : undefined)}>${val(callsText)}</td>${per ? changeCell(changeAmount(headlineMetric(c, view), before[m] ? headlineMetric(before[m]!, view) : undefined, view.unit, partial)) : ""}</tr>`;
     });
   const empty = `No model usage logged in ${viewedName(s)}${s.filter ? " for this filter" : ""}.`;
   const body = rows.length

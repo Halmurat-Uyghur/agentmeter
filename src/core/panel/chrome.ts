@@ -1,12 +1,13 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { costLabel, costNotes, estWord, LOCAL_BANNER, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, estWord, homeSettings, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
-import type { Health, Snapshot, ViewOptions } from "../types";
+import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
 import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
+import { sourceOrigins } from "./sources";
 import { clock, escapeHtml, monthKey, monthTitle, plural, projectLabel, viewedStart } from "./shared";
 
 export function page(body: string, cspSource: string, sectionLabel: string): string {
@@ -33,8 +34,8 @@ function rootLabel(h: Health): string {
 
 /** The figures' provenance: one muted line plus a native fold with the full text on every
  * section (design #4); Data health shows the full text openly. */
-function aboutNote(view: ViewOptions, full: boolean): string {
-  const costNote = view.unit === "cost" ? costNotes(view).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
+function aboutNote(view: ViewOptions, full: boolean, mixed = false): string {
+  const costNote = view.unit === "cost" ? costNotes(view, mixed).map((n) => `<p>${escapeHtml(n)}</p>`).join("") : "";
   const text = `<p>${escapeHtml(LOCAL_BANNER)}</p><p>${escapeHtml(STREAMING_NOTE)}</p>${costNote}`;
   if (full) return `<section class="note" aria-label="About these figures">${text}</section>`;
   const line = `Local logs on this computer only${view.unit === "cost" ? " · cost is an estimate" : ""} · updates after each model call`;
@@ -46,25 +47,29 @@ export function topBar(s: Snapshot | undefined, view: ViewOptions, fullNote = fa
   if (s) {
     if (s.current) {
       const c = s.current;
-      const state = c.live ? "live" : "ended";
+      const state = c.live ? "live" : notLiveWord(c.source);
       chips.push(`<span class="chip${c.live ? " live" : ""}"><i></i>Current session ${state}${c.pinned ? " (pinned)" : ""}</span>`);
     }
     if (s.health.partial)
       chips.push(`<span class="chip warn" title="Some logs or lines could not be read; figures marked * may be incomplete."><i></i>Partial data</span>`);
     if (s.health.state === "format-changed") chips.push(`<span class="chip warn"><i></i>Format changed</span>`);
-    chips.push(`<span class="chip">${escapeHtml(rootLabel(s.health))}</span>`);
+    const origins = sourceOrigins(s);
+    chips.push(`<span class="chip">${escapeHtml(origins ? `Folders: ${origins}` : rootLabel(s.health))}</span>`);
   }
-  const when = s ? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight` : "Reading Copilot session logs…";
+  const reading = s ? readingLine(s.health) : undefined;
+  const when = !s ? "Reading Copilot session logs…" : reading ?? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`;
   return `<header class="top">
   <div><h1 class="wordmark">${logo()}<span class="wm">Copilot Usage</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
 </header>
-${aboutNote(view, fullNote)}`;
+${aboutNote(view, fullNote, mixedSources(s?.month?.totals?.sources))}`;
 }
 
 /** Not role="alert": the page re-renders after every model call and would re-announce (O3). */
 export function stateNote(h: Health): string {
   const box = (text: string) => `<section class="note alert" aria-labelledby="problem-title"><h2 id="problem-title" class="sr">Problem reading logs</h2><p>${text}</p></section>`;
+  if (h.state === "no-dir" && multiSource(h))
+    return box(`No usage logs were found. Set ${homeSettings(h).split(/(copilotUsageMonitor\.\w+)/).map((x, i) => (i % 2 ? `<b>${escapeHtml(x)}</b>` : escapeHtml(x))).join("")} if a tool keeps its logs somewhere other than its default folder.`);
   if (h.state === "no-dir")
     return box(`No Copilot session logs were found. Set <b>copilotUsageMonitor.copilotHome</b> if Copilot keeps them somewhere other than COPILOT_HOME or the default folder in your home directory.`);
   if (h.state === "permission") return box(`The Copilot session log folder could not be read on this computer.`);
@@ -96,10 +101,10 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
       ? `<span class="seg on">${label}<span class="sr"> (selected)</span></span>`
       : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? estWord() : "tokens"}`);
   const f = s.filter;
-  const chip = (kind: "project" | "tool", label: string, value: string) =>
+  const chip = (kind: "project" | "tool" | "source", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`Clear ${kind} filter: ${value}`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
   const filters = f
-    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
+    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
     : "";
   return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>

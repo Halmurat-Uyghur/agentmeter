@@ -1,11 +1,12 @@
 // Sessions (D32): the current session's tiles, then the viewed month's
 // costliest sessions (the snapshot keeps up to 50; 10 show, the rest fold).
-import { costLabel, formatCount, formatUsd, SESSION_TOTAL_NOTE, usd } from "../format";
+import { costLabel, formatCount, formatUsd, notLiveWord, SESSION_TOTAL_NOTE, usd } from "../format";
 import { GROWTH_FLAG } from "../insights";
 import { modelFamily } from "../store";
 import type { SessionSummary, Snapshot, ViewOptions } from "../types";
 import { promptsCard, sessionDetailCard } from "./explain";
 import { sessionCallsHref } from "./links";
+import { rowChips } from "./sources";
 import { CALLS_MISSING_NOTE, callsCell, card, DASH, escapeHtml, titleAttr, foldedTable, inHundred, pad2, plural, shortDate, shortId, sym, tilesBox, val, viewedName, withStar } from "./shared";
 
 function started(ms: number): string {
@@ -58,7 +59,7 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
     const bar = share > 0 ? `<span class="bar f-other" style="width:${share}%" aria-hidden="true"></span>` : "";
     const calls = callsCell(x.calls, x.callsMissing);
     const callsTd = `<td class="num${calls === DASH ? " muted" : ""}"${titleAttr(x.callsMissing ? CALLS_MISSING_NOTE : undefined)}>${val(calls)}</td>`;
-    const html = `<tr${on ? ' class="on"' : ""}><td>${ident}${tag}${bar}</td><td>${escapeHtml(started(x.firstMs))}</td>${callsTd}<td>${model}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td>${cacheCell(x)}<td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${growth === DASH ? val(DASH) : sym(`${growth}${flagged ? " ▲" : ""}`)}</td></tr>`;
+    const html = `<tr${on ? ' class="on"' : ""}><td>${ident}${tag}${x.source ? rowChips(s, { [x.source]: 1 }) : ""}${bar}</td><td>${escapeHtml(started(x.firstMs))}</td>${callsTd}<td>${model}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(x.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(x.nanoAiu), partial))}</td>${cacheCell(x)}<td class="num${flagged ? " flag" : ""}" title="${escapeHtml(growthTitle)}">${growth === DASH ? val(DASH) : sym(`${growth}${flagged ? " ▲" : ""}`)}</td></tr>`;
     return { html, keep: on };
   });
   const count = s.month?.sessionCount ?? list.length;
@@ -76,7 +77,7 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
 
 export function renderSessions(s: Snapshot, view: ViewOptions): string {
   const badge = s.current
-    ? `${shortId(s.current.folderId)} · ${s.current.live ? "live" : "ended"}${s.current.pinned ? " · pinned" : ""}`
+    ? `${shortId(s.current.folderId)} · ${s.current.live ? "live" : notLiveWord(s.current.source)}${s.current.pinned ? " · pinned" : ""}`
     : "none";
   const none = s.current ? "" : `<p class="muted">No current session. A session becomes current when Copilot logs a model call in it.</p>`;
   // The call list comes first: picking a session redraws the page, which starts at the top.

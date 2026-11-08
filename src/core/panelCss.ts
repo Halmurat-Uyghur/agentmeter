@@ -164,6 +164,12 @@ tr.on th { box-shadow: inset 3px 0 0 var(--hot); }
 .tag { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 10.5px; border: 1px solid var(--line); color: var(--muted); }
 .tag.add { border-color: var(--c-other); color: var(--c-other); }
 .tag.on { border-color: var(--hot); color: var(--fg); }
+.src-copilot { --src: var(--accent); } .src-claude-code { --src: var(--c-claude); } .src-codex { --src: var(--c-gpt); }
+.srcchips { white-space: nowrap; }
+.srcchip { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 4px; font-size: 10.5px; border: 1px solid var(--src); color: var(--src); vertical-align: middle; }
+.srcdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--src); vertical-align: middle; }
+h4.srch { margin: 12px 0 6px; font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+h4.srch .srcchip { margin-left: 0; }
 details.more { margin-top: 6px; }
 details.more > summary { cursor: pointer; color: var(--accent); font-size: 12px; padding: 4px 0; list-style: none; }
 details.more > summary::-webkit-details-marker { display: none; }

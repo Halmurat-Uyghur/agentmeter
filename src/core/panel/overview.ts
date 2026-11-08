@@ -1,11 +1,12 @@
 // Overview (D32, laid out by A2): the Today hero (with the activity heatmap and the
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
-import { costLabel, formatCount, formatRange, formatUsd, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
+import { costLabel, formatCount, formatRange, formatUsd, mixedSources, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
 import type { MonthSummary, Snapshot, ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
 import { commandHref } from "./links";
+import { renderSourcesCard } from "./sources";
 import {
   callsPhrase,
   DASH,
@@ -38,7 +39,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const cur = s.current;
   const curVal = cur?.totals ? withStar(headline(cur.totals, view), partial) : DASH;
   const curSub = cur
-    ? `${shortId(cur.folderId)} · ${cur.live ? "live" : "ended"}${cur.totals ? ` · ${callsPhrase(cur.totals.calls, cur.totals.callsMissing)}` : ""}`
+    ? `${shortId(cur.folderId)} · ${cur.live ? "live" : notLiveWord(cur.source)}${cur.totals ? ` · ${callsPhrase(cur.totals.calls, cur.totals.callsMissing)}` : ""}`
     : "no session yet";
 
   // When the history window starts inside the two weeks, the figure is starred and no change is shown.
@@ -74,7 +75,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
     // The target state of the viewed month, spent so far in estimated USD.
     const state = rangeState(mt ? usd(mt.nanoAiu) : undefined, view.range);
     monthCls += ` st-${state}`;
-    monthSub += ` · Target ${formatRange(view.range)}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
+    monthSub += ` · Target ${formatRange(view.range)}${mixedSources(mt?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
     monthNotes.unshift(RANGE_LABEL[state]);
   }
 
@@ -142,5 +143,6 @@ export function trend(s: Snapshot, view: ViewOptions): string {
 }
 
 export function renderOverview(s: Snapshot, view: ViewOptions): string {
-  return `${heroCard(s, view)}\n${kpis(s, view)}\n${dailyBars(s, view)}\n${trend(s, view)}`;
+  const sources = renderSourcesCard(s, view);
+  return `${heroCard(s, view)}\n${kpis(s, view)}\n${sources ? `${sources}\n` : ""}${dailyBars(s, view)}\n${trend(s, view)}`;
 }

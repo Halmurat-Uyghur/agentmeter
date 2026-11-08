@@ -626,3 +626,57 @@ describe("sidebar model: currency switch", () => {
     expect(renderSidebarHtml(cad, "x")).toContain('href="command:copilotUsageMonitor.selectCurrency"');
   });
 });
+
+describe("sources (D49)", () => {
+  const sh = (o: Partial<import("../../src/core/types").SourceHealth> = {}) => ({ state: "ok" as const, rootSource: "default" as const, files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, ...o });
+  const last7 = (): Totals => ({
+    ...totals(),
+    sources: { copilot: 2, "claude-code": 3 },
+    bySource: { copilot: counts(), "claude-code": counts({ input: m(700_000, 3), output: m(0, 3), nanoAiu: none(), callNanoAiu: none() }) },
+  });
+  it("group By source, last 7 days: one row per enabled source whose folder exists, each filtering the panel", () => {
+    const model = buildSidebarModel(snap({ last7: last7(), health: health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh({ state: "no-dir" }) } }) }), TOKENS);
+    const g = grp(model, "sources")!;
+    expect(g.heading).toBe("By source, last 7 days");
+    expect(g.rows.map((x) => [x.id, x.label, x.value])).toEqual([
+      ["sources/0", "Copilot", "1.5M tok"],
+      ["sources/1", "Claude Code", "700.0K tok"],
+    ]);
+    expect(g.rows[1]!.link).toEqual({ command: "copilotUsageMonitor.setFilter", args: ["source", "claude-code", "overview"] });
+    const html = renderSidebarHtml(model, "x");
+    expect(html).toContain(escapeHtmlAttr(sidebarHref(g.rows[1]!.link!)));
+    for (const t of strings(model)) expect(t).not.toMatch(STRICT_RE);
+  });
+  it("an enabled source with no record shows —; the active source filter is marked and clears", () => {
+    const model = buildSidebarModel(snap({ last7: last7(), filter: { source: "claude-code" }, health: health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh() } }) }), TOKENS);
+    const g = grp(model, "sources")!;
+    expect(g.rows.map((x) => x.value)).toEqual(["1.5M tok", "700.0K tok", "—"]);
+    expect(g.rows[1]!.marker?.kind).toBe("filtered");
+    expect(g.rows[1]!.link!.args).toEqual(["source", "", "overview"]);
+  });
+  it("absent when only Copilot is enabled or found, and without health.sources", () => {
+    expect(grp(buildSidebarModel(snap({ last7: last7(), health: health({ sources: { copilot: sh(), "claude-code": sh({ state: "off" }), codex: sh({ state: "no-dir" }) } }) })), "sources")).toBeUndefined();
+    expect(grp(buildSidebarModel(snap({ last7: last7() })), "sources")).toBeUndefined();
+  });
+  it("no-dir notice names every enabled source's setting", () => {
+    const model = buildSidebarModel(snap({ health: health({ state: "no-dir", sources: { copilot: sh({ state: "no-dir" }), "claude-code": sh({ state: "no-dir" }), codex: sh({ state: "off" }) } }) }));
+    const t = model.notice.join(" ");
+    expect(t).toContain("copilotUsageMonitor.copilotHome");
+    expect(t).toContain("copilotUsageMonitor.claudeHome");
+    expect(t).not.toContain("codexHome");
+  });
+  it("health.reading with a snapshot: figures plus a reading line", () => {
+    const model = buildSidebarModel(snap({ health: health({ reading: { done: 2, total: 9 } }) }));
+    expect(model.state).toBe("ready");
+    expect(model.message).toContain("Reading history (2 of 9 files)…");
+  });
+  it("cost view: detail lines add the sources note only when mixed", () => {
+    const mixed = buildSidebarModel(snap({ last7: last7(), health: health({ sources: { copilot: sh(), "claude-code": sh() } }) }), COST);
+    expect(r(mixed, "week").title).toContain("USD (est.) covers Copilot only");
+    expect(r(buildSidebarModel(snap(), COST), "week").title).not.toContain("covers Copilot only");
+  });
+});
+
+function escapeHtmlAttr(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}

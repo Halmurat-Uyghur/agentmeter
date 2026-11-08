@@ -4,10 +4,63 @@
 
 import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
-import type { Currency, Counts, Health, LastPrompt, Metric, RangeState, Snapshot, Totals, ViewOptions } from "./types";
+import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
-  "Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.";
+  "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.";
+
+/** Added to the cost notes wherever a non-Copilot record is in scope (D46). */
+export const COST_SOURCES_NOTE = "USD (est.) covers Copilot only: Claude Code and Codex log no cost; their figures are tokens.";
+
+/** Insights footer line when a non-Copilot record is in scope (D49). */
+export const INSIGHTS_SOURCES_NOTE = "Insights use Copilot's logged AI credits; Claude Code and Codex calls are not examined.";
+
+/** True when records of a source other than Copilot are counted in `sources` (D46, D49). */
+export function mixedSources(sources: Partial<Record<Source, number>> | undefined): boolean {
+  return !!sources && SOURCES.some((x) => x !== "copilot" && (sources[x] ?? 0) > 0);
+}
+
+/** The settings that name each source's folder and turn it on (D48). */
+export const SOURCE_HOME_SETTING: Record<Source, string> = {
+  copilot: "copilotUsageMonitor.copilotHome",
+  "claude-code": "copilotUsageMonitor.claudeHome",
+  codex: "copilotUsageMonitor.codexHome",
+};
+export const SOURCE_TOGGLE_SETTING: Record<Exclude<Source, "copilot">, string> = {
+  "claude-code": "copilotUsageMonitor.claudeCode",
+  codex: "copilotUsageMonitor.codex",
+};
+
+/** Sources whose reading is on, in SOURCES order; undefined when the snapshot has no per-source health. */
+export function enabledSources(h: Health): Source[] | undefined {
+  const per = h.sources;
+  if (!per) return undefined;
+  return SOURCES.filter((x) => per[x] !== undefined && per[x]!.state !== "off");
+}
+
+/** "copilotUsageMonitor.copilotHome, …claudeHome or …codexHome": the folder settings of the
+ * enabled sources (Copilot's alone without per-source health). */
+export function homeSettings(h: Health): string {
+  const names = (enabledSources(h) ?? ["copilot"]).map((x) => SOURCE_HOME_SETTING[x]);
+  if (names.length === 0) names.push(SOURCE_HOME_SETTING.copilot);
+  return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
+}
+
+/** True when a source other than Copilot is enabled (per-source health present). */
+export function multiSource(h: Health): boolean {
+  return (enabledSources(h) ?? []).some((x) => x !== "copilot");
+}
+
+/** "Reading history (n of N files)…" while the first read of the window runs (D50). */
+export function readingLine(h: Health): string | undefined {
+  const r = h.reading;
+  return r ? `Reading history (${r.done} of ${r.total} files)…` : undefined;
+}
+
+/** "idle" for a session whose liveness comes from file times (Claude Code, Codex), else "ended" (D43). */
+export function notLiveWord(source: Source | undefined): string {
+  return source !== undefined && source !== "copilot" ? "idle" : "ended";
+}
 
 export const STREAMING_NOTE =
   "Updates when Copilot finishes each model call, not token by token.";
@@ -86,9 +139,11 @@ export function estWord(): string {
   return `estimated ${currencyCode()}`;
 }
 
-/** The cost note plus, when converting, the rate used (or why it is not converted yet). */
-export function costNotes(view: ViewOptions): string[] {
+/** The cost note plus, when converting, the rate used (or why it is not converted yet).
+ * `mixed`: a non-Copilot record is in scope, so the note says USD covers Copilot only (D46). */
+export function costNotes(view: ViewOptions, mixed = false): string[] {
   const out = [COST_NOTE];
+  if (mixed) out.push(COST_SOURCES_NOTE);
   const c = view.currency;
   if (c) out.push(`Shown in ${c.code} at 1 USD = ${c.rate} ${c.code}, the European Central Bank reference rate of ${c.date} (via frankfurter.dev). Targets are in ${c.code}.`);
   else if (view.currencyPending) out.push(`No ${view.currencyPending} exchange rate yet, so cost is shown in USD and targets are not compared until it arrives.`);
@@ -245,7 +300,7 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "$(sync~spin) Copilot usage: loading";
   if (s.health.state === "no-dir")
-    return "$(circle-slash) Copilot logs not found";
+    return "$(circle-slash) Local: no usage logs found";
   if (s.health.state === "permission") return "$(lock) Copilot logs unreadable";
   const p = statusParts(s, view);
   return `$(${p.icon}) Local ${p.place}: ${p.figure}${p.suffix}`;
@@ -302,7 +357,7 @@ export function spoken(text: string): string {
 /** The status bar item's spoken label (D33); same figures as statusText, in words. */
 export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
   if (!s) return "Copilot usage: loading";
-  if (s.health.state === "no-dir") return "Copilot logs not found. Opens details.";
+  if (s.health.state === "no-dir") return "No usage logs found. Opens details.";
   if (s.health.state === "permission") return "Copilot logs unreadable. Opens details.";
   const p = statusParts(s, view);
   const mode = view.statusBar ?? "today";
@@ -339,7 +394,9 @@ function healthLines(h: Health): string[] {
   const out: string[] = [];
   if (h.state === "no-dir") {
     out.push(
-      "No Copilot session logs were found. Set `copilotUsageMonitor.copilotHome` if Copilot keeps them elsewhere.",
+      multiSource(h)
+        ? `No usage logs were found. Set ${homeSettings(h).replace(/copilotUsageMonitor\.\w+/g, (x) => `\`${x}\``)} if a tool keeps its logs elsewhere.`
+        : "No Copilot session logs were found. Set `copilotUsageMonitor.copilotHome` if Copilot keeps them elsewhere.",
     );
   } else if (h.state === "permission") {
     out.push(
@@ -398,6 +455,15 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   if (s.today) {
     const incl = s.today.sessionTotals > 0 ? ` (incl. ${s.today.sessionTotals} session total${s.today.sessionTotals === 1 ? "" : "s"})` : "";
     parts.push([`**Local today**${incl}`, ...countsLines(s.today)].join("  \n"));
+    const t = s.today;
+    const present = SOURCES.filter((x) => (t.sources?.[x] ?? 0) > 0);
+    if (present.length >= 2) {
+      const lines = present.map((x) => {
+        const c = t.bySource?.[x];
+        return `- ${SOURCE_LABEL[x]}: ${c ? tok(addMetrics(c.input, c.output)) : DASH}`;
+      });
+      parts.push(["**By source today**", ...lines].join("\n"));
+    }
   } else if (s.health.state !== "no-dir" && s.health.state !== "permission") {
     parts.push(`**Local today**: ${DASH}`);
   }
@@ -405,7 +471,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   const cur = s.current;
   if (cur) {
     const tags = [
-      cur.live ? undefined : "ended",
+      cur.live ? undefined : notLiveWord(cur.source),
       cur.pinned ? "pinned" : undefined,
     ].filter(Boolean);
     const label =
@@ -441,11 +507,12 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   if (view.unit === "cost" || view.range) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
+    const mixed = mixedSources(thisMonth?.sources);
     if (view.range) {
       const state = currentRangeState(s, view);
-      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}: ${RANGE_LABEL[state]}`);
+      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
     }
-    parts.push(lines.join("  \n"), ...costNotes(view).map(escapeMarkdown));
+    parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 
   parts.push(...healthLines(s.health));

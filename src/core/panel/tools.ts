@@ -5,6 +5,7 @@ import { toolGroup } from "../store";
 import type { Snapshot, ToolSummary, ViewOptions } from "../types";
 import { toolOverheadCard } from "./explain";
 import { filterHref } from "./links";
+import { rowChips } from "./sources";
 import { card, changeCell, changeFine, changeHead, comparePeriods, escapeHtml, foldedTable, monthTitle, plural, projectLabel, TABLE_LIMIT, val, viewedName, viewedStart, withStar } from "./shared";
 
 export { toolGroup } from "../store";
@@ -33,7 +34,7 @@ export function toolsBox(s: Snapshot, view: ViewOptions): string {
     const kind = t.builtIn ? `<span class="tag">built-in</span>` : `<span class="tag add">added</span>`;
     return {
       keep: on,
-      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" aria-label="${escapeHtml(on ? `${t.name}, filtered. Clear the tool filter` : `${t.name}. Show only calls that used this tool`)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}</td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td>${per ? changeCell(changeAmount(metric(t), metric(before.get(t.name)), view.unit, partial)) : ""}</tr>`,
+      html: `<tr${on ? ' class="on"' : ""}><td><a class="rowlink num" href="${escapeHtml(href)}" aria-label="${escapeHtml(on ? `${t.name}, filtered. Clear the tool filter` : `${t.name}. Show only calls that used this tool`)}" title="${on ? "Clear the tool filter" : "Show only calls that used this tool"}">${escapeHtml(t.name)}</a>${on ? ` <span class="tag on" aria-hidden="true">filtered</span>` : ""}${rowChips(s, t.sources)}</td><td>${kind}</td><td class="num">${t.uses}</td><td class="num">${t.calls}</td><td class="num${view.unit === "tokens" ? " sum" : ""}">${val(withStar(formatCount(t.tokens), partial))}</td><td class="num${view.unit === "cost" ? " sum" : ""}">${val(withStar(formatUsd(t.nanoAiu), partial))}</td>${per ? changeCell(changeAmount(metric(t), metric(before.get(t.name)), view.unit, partial)) : ""}</tr>`,
     };
   });
   let addedNote = "Only built-in tools were used.";

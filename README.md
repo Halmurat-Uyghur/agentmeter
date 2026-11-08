@@ -40,7 +40,7 @@ How to read the numbers:
 
 ## What this is not
 
-> Locally observed from Copilot session logs on this computer. Not your GitHub bill, not your remaining allowance, and not usage from other devices or Copilot features that don't write these logs.
+> Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.
 
 - **Not official.** These are local observations of an undocumented log format, not an account statement from GitHub. If you need the official figures, check your GitHub account settings.
 - **Partial coverage.** Only Copilot clients that write `~/.copilot/session-state/*/events.jsonl` are counted: the Copilot CLI and the coding agent, including agent sessions started from VS Code. These are not counted:
