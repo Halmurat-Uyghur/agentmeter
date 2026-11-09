@@ -78,6 +78,17 @@ describe("promptStats (1.2)", () => {
     expect(lastPrompt([call({ initiator: "agent" })])).toBeUndefined();
     expect(lastPrompt([call({ initiator: "user", nanoAiu: undefined })])!.nanoAiu).toBeUndefined();
   });
+
+  it("lastPrompt over a folder with two sessions is the newest prompt by time, not the highest sequence (review #24)", () => {
+    // Session A's old prompt has a high sequence; session B's newer prompt restarts at 1.
+    const oldA = { ...call({ initiator: "user", nanoAiu: 0.09 * USD }), sessionId: "A", sequence: 100, timestampMs: 1_000 };
+    const newB = { ...call({ initiator: "user", nanoAiu: 0.01 * USD }), sessionId: "B", sequence: 1, timestampMs: 2_000 };
+    const agentB = { ...call({ initiator: "agent", nanoAiu: 0.02 * USD }), sessionId: "B", sequence: 2, timestampMs: 2_500 };
+    const p = lastPrompt([newB, oldA, agentB])!;
+    expect(p.atMs).toBe(2_000);
+    expect(p.agentCalls).toBe(1);
+    expect(p.nanoAiu).toBe(0.03 * USD);
+  });
 });
 
 describe("cacheStats and modelCacheStats (1.3)", () => {

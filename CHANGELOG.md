@@ -13,7 +13,7 @@ Fixes from a Codex review of 0.11.2.
 - **Dropping old logs no longer stalls the window.** Files that leave the history window (on the 1st of the month, say) are forgotten in one pass over the stored records instead of one pass per file.
 - **A Codex session total is not priced as one long prompt.** Counted only for Codex logs with no per-call records, it is now priced only while its total input is under the long-context threshold and the log names one model; otherwise its cost is unknown (`—`, starred), not overstated.
 - **A call without input or output tokens has an unknown cost.** It showed $0.00 (reasoning tokens only) or an unstarred estimate (output missing); it now shows `—` and stars the total.
-- **Current session shows a resumed session's calls.** When a session folder holds calls that name another session id (a resumed or forked Copilot session), the current session card counted none of them; it now counts the folder's own calls too.
+- **Current session shows a resumed session's calls.** When a session folder holds calls that name another session id (a resumed or forked Copilot session), the current session card counted none of them; it now counts the folder's own calls too. Its last prompt is the newest one by time across those sessions (sequence numbers only order calls within one session).
 
 ## 0.11.2 - 2026-11-09
 

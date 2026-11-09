@@ -14,7 +14,7 @@ import { computeInsights, promptConventions } from "./insights";
 import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceFile, type SourceReader } from "./source";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import type { ReadErrorCode } from "./tailer";
-import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type UsageRecord } from "./types";
+import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type Totals, type UsageRecord } from "./types";
 
 export { RECENT_MS };
 
@@ -139,6 +139,11 @@ function errCode(err: unknown): string {
 /** A reader-supplied code, if it is a code; never a free string. */
 function safeCode(code: string): string {
   return CODE.test(code) ? code : "OTHER";
+}
+
+/** Copilot's logged cost in the month's totals: the Insights month-share floor (other sources log no cost, D46). */
+function copilotNano(totals: Totals | undefined): number {
+  return totals?.bySource?.copilot?.nanoAiu.sum ?? 0;
 }
 
 export class UsageMonitor {
@@ -928,7 +933,7 @@ export class UsageMonitor {
         monthStartMs: current,
         isCurrent: true,
         days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
-        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, this.copilotNano(inCurrent)),
+        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, copilotNano(totals)),
         projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
         tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
         ...(totals !== undefined && { totals }),
@@ -943,16 +948,11 @@ export class UsageMonitor {
       monthStartMs: past,
       isCurrent: false,
       days: daysOfMonth(this.store, past, lastDay, false, keep),
-      ...this.sessionsAndInsights(past, end, keep, byProject, this.copilotNano(inPast)),
+      ...this.sessionsAndInsights(past, end, keep, byProject, copilotNano(totals)),
       projects: projectSummaries(this.store, past, end, projectOf, byTool),
       tools: toolSummaries(this.store, past, end, byProject),
       ...(totals !== undefined && { totals }),
     };
-  }
-
-  /** Copilot's logged cost of the records `pick` keeps: the Insights month-share floor (other sources log no cost, D46). */
-  private copilotNano(pick: (r: UsageRecord) => boolean): number {
-    return this.store.totals((r) => r.source === "copilot" && pick(r))?.nanoAiu.sum ?? 0;
   }
 
   /** Session rows (at most SESSION_ROWS), the session counts and the insights for [fromMs, toMs). */
