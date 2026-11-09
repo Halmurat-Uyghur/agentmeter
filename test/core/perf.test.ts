@@ -372,3 +372,213 @@ describe("perf: Claude Code and Codex sources (D50)", () => {
     m.dispose();
   }, 300_000);
 });
+
+// Live appends: what one new line of a session being written costs. A store shaped like a year
+// of daily use of the three tools: about 90,000 records in 40 Copilot, 3,774 Claude Code and
+// 193 Codex logs, spread over six months (three in ten in the current one), one live log per
+// source. The next tick picks an appended line up and rebuilds the snapshot; the budgets are
+// the CPU of that tick, for a line that adds a call and for one that adds none.
+const LIVE_MONTHS = 6;
+/** months back of a log, by its index: three in ten are this month's */
+const LIVE_MONTH_OF = [0, 0, 0, 1, 1, 2, 2, 3, 4, 5];
+const LIVE = { copilot: [40, 150], claude: [3774, 20], codex: [193, 44] } as const;
+const CWD_MARK = "CWDMARK0000";
+const MODEL_MARK = "MODELMARK0000";
+const ls = (i: number) => `11fe0000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+const lx = (i: number) => `11fec0de-0000-4000-8000-${String(i).padStart(12, "0")}`;
+const lc = (i: number) => `11fec011-0000-4000-8000-${String(i).padStart(12, "0")}`;
+
+/** A Claude assistant-line factory with the id, session, time, project folder and model spliced in. */
+function liveAssistantTemplate(tools: string[]): (id: string, session: string, ts: string, project: string, model: string) => string {
+  const tpl = claudeAssistantLine({ id: `msg_${ID_MARK}`, requestId: `req_${ID_MARK}`, sessionId: SESS_MARK, timestamp: TS_MARK, tools, cwd: `/${CLAUDE_CANARY}/${CWD_MARK}`, model: MODEL_MARK });
+  const parts = tpl.split(/(IDMARK0000|ffffffff-ffff-4fff-8fff-ffffffffffff|2000-01-01T00:00:00\.000Z|CWDMARK0000|MODELMARK0000)/);
+  return (id, session, ts, project, model) => {
+    let out = "";
+    for (const p of parts) out += p === ID_MARK ? id : p === SESS_MARK ? session : p === TS_MARK ? ts : p === CWD_MARK ? project : p === MODEL_MARK ? model : p;
+    return `${out}\n`;
+  };
+}
+
+describe("perf: live append on a 90,000-record store (three sources, six months)", () => {
+  let lroot: string;
+  let records = 0;
+  const live = { copilot: "", claude: "", codex: "" };
+  const assistants = [["Bash", "Read"], ["Edit"], [], ["mcp__srv__lookup", "Grep"]].map(liveAssistantTemplate);
+  const CLAUDE_MODELS = ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"];
+
+  beforeAll(async () => {
+    lroot = await mkdtemp(join(tmpdir(), "cum-perf-live-"));
+    const now = Date.now();
+    const nowDate = new Date(now);
+    const STEP_MS = 20_000;
+    /** The time of log `i`'s first record: in its month, spread over the month's days (this month: up to now). */
+    const baseOf = (i: number, perFile: number): number => {
+      const back = LIVE_MONTH_OF[i % LIVE_MONTH_OF.length]!;
+      const start = new Date(nowDate.getFullYear(), nowDate.getMonth() - back, 1).getTime();
+      const end = back === 0 ? now : new Date(nowDate.getFullYear(), nowDate.getMonth() - back + 1, 1).getTime();
+      const room = Math.max(0, end - start - perFile * STEP_MS - 60_000);
+      return start + Math.floor((((i * 7919) % 1000) / 1000) * room);
+    };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    /** A log was last written at its last record (never within the last ten minutes: only the live logs are hot). */
+    const mtimeOf = (base: number, perFile: number) => Math.min(base + perFile * STEP_MS, now - 10 * 60_000) / 1000;
+    const t = performance.now();
+
+    const [copilotLogs, copilotCalls] = LIVE.copilot;
+    for (let i = 0; i < copilotLogs; i++) {
+      const dir = join(lroot, "copilot", "session-state", lc(i));
+      await mkdir(dir, { recursive: true });
+      const base = baseOf(i, copilotCalls);
+      let s = "";
+      for (let k = 0; k < copilotCalls; k++) {
+        s += jsonl([usageEvent({ usageId: `lu-${i}-${k}`, id: `le-${i}-${k}`, sourceSessionId: lc(i), sequence: k + 1, model: `model-${(i + k) % 4}`, timestamp: iso(base + k * STEP_MS), initiator: k % 5 === 0 ? "user" : "agent", toolTokenCount: 900, availableToolCount: 30 })]);
+      }
+      records += copilotCalls;
+      const p = join(dir, "events.jsonl");
+      await writeFile(p, s);
+      if (i === 0) live.copilot = p;
+      else await utimes(p, mtimeOf(base, copilotCalls), mtimeOf(base, copilotCalls));
+    }
+
+    // Claude Code: 60 project folders, three models, four tool mixes.
+    const [claudeLogs, claudeCalls] = LIVE.claude;
+    for (let i = 0; i < claudeLogs; i++) {
+      const dir = join(lroot, "claude", "projects", `-${CLAUDE_CANARY}-live${i % 60}`);
+      if (i < 60) await mkdir(dir, { recursive: true });
+      const base = baseOf(i, claudeCalls);
+      let s = "";
+      for (let k = 0; k < claudeCalls; k++) s += assistants[(i + k) % assistants.length]!(`l${i}_${k}`, ls(i), iso(base + k * STEP_MS), `proj${i % 60}`, CLAUDE_MODELS[(i + k) % CLAUDE_MODELS.length]!);
+      records += claudeCalls;
+      const p = join(dir, `${ls(i)}.jsonl`);
+      await writeFile(p, s);
+      if (i === 0) live.claude = p;
+      else await utimes(p, mtimeOf(base, claudeCalls), mtimeOf(base, claudeCalls));
+    }
+
+    // Codex: each rollout in the date folder of its first record.
+    const [codexLogs, codexCalls] = LIVE.codex;
+    const files = Array.from({ length: codexLogs }, (_, i) => {
+      const base = baseOf(i, codexCalls);
+      const d = new Date(base);
+      return {
+        date: `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`,
+        sessionId: lx(i),
+        ...(i === 0 ? {} : { mtime: new Date(mtimeOf(base, codexCalls) * 1000) }),
+        lines: [
+          codexMeta({ id: lx(i), timestamp: iso(base), cwd: `/${CLAUDE_CANARY}/cproj${i % 12}` }),
+          codexTurn({ timestamp: iso(base) }),
+          ...Array.from({ length: codexCalls }, (_, k) => codexRecord({ sessionId: lx(i), responseId: `lresp_${i}_${k}`, timestamp: iso(base + k * STEP_MS), ordinal: k + 2 })),
+        ],
+      };
+    });
+    records += codexLogs * codexCalls;
+    live.codex = (await codexTree(join(lroot, "codex"), files))[0]!;
+    console.log(`live corpus: ${records} records in ${copilotLogs + claudeLogs + codexLogs} logs, written in ${(performance.now() - t).toFixed(0)}ms`);
+  }, 300_000);
+
+  afterAll(async () => {
+    await rm(lroot, { recursive: true, force: true });
+  });
+
+  it("the tick that picks up an appended line: a new call < 30 ms CPU, a line without one < 8 ms, idle < 5 ms", async () => {
+    let last: Snapshot | undefined;
+    let snaps = 0;
+    const m = new UsageMonitor({
+      root: join(lroot, "copilot"),
+      rootSource: "default",
+      log: new Logger(() => {}),
+      onSnapshot: (x) => {
+        last = x;
+        snaps++;
+      },
+      readTotals: true,
+      readProjects: true,
+      historyMonths: 12,
+      sources: { claude: { root: join(lroot, "claude"), rootSource: "default" }, codex: { root: join(lroot, "codex"), rootSource: "default" } },
+    });
+    const t0 = performance.now();
+    await m.refresh({ full: true });
+    const cold = performance.now() - t0;
+    const stored = () => (last?.history ?? []).reduce((a, h) => a + (h.totals?.records ?? 0), 0);
+    expect(stored()).toBe(records);
+    expect((last?.history ?? []).filter((h) => h.totals !== undefined).length).toBe(LIVE_MONTHS);
+
+    const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+    const tick = async (): Promise<{ cpu: number; wall: number }> => {
+      const cpu0 = process.cpuUsage();
+      const t = performance.now();
+      await m.refresh();
+      const wall = performance.now() - t;
+      const c = process.cpuUsage(cpu0);
+      return { cpu: (c.user + c.system) / 1000, wall };
+    };
+    /** One more call in a live log: Claude Code, Codex and Copilot in turn. */
+    const append = async (n: number): Promise<void> => {
+      const ts = new Date().toISOString();
+      const which = n % 3;
+      if (which === 0) await appendFile(live.claude, assistants[n % assistants.length]!(`live-${n}`, ls(0), ts, "proj0", CLAUDE_MODELS[n % CLAUDE_MODELS.length]!));
+      else if (which === 1) await appendFile(live.codex, `${codexRecord({ sessionId: lx(0), responseId: `lresp_live_${n}`, timestamp: ts, ordinal: 1000 + n })}\n`);
+      else await appendFile(live.copilot, jsonl([usageEvent({ usageId: `lu-live-${n}`, id: `le-live-${n}`, sourceSessionId: lc(0), sequence: 1000 + n, timestamp: ts })]));
+    };
+    // Three unmeasured appends (first-run compilation), then the first read's garbage is collected.
+    for (let n = 0; n < 3; n++) {
+      await append(n);
+      await m.refresh();
+    }
+    (globalThis as { gc?: () => void }).gc?.();
+    await new Promise((r) => setTimeout(r, 100));
+
+    const cpus: number[] = [];
+    const walls: number[] = [];
+    const bySource: number[][] = [[], [], []];
+    const APPENDS = 21;
+    for (let n = 3; n < 3 + APPENDS; n++) {
+      await append(n);
+      const before = snaps;
+      const s = await tick();
+      // Every appended call is in the very next snapshot.
+      expect(snaps).toBe(before + 1);
+      expect(stored()).toBe(records + n + 1);
+      cpus.push(s.cpu);
+      walls.push(s.wall);
+      bySource[n % 3]!.push(s.cpu);
+    }
+    // A line that adds no call (a tool result in the live Claude Code log): the session's
+    // activity counters change, so the snapshot is rebuilt, with the same records.
+    const quiet: number[] = [];
+    const calls = stored();
+    for (let i = 0; i < 9; i++) {
+      await appendFile(live.claude, `${claudeUserLine({ sessionId: ls(0) })}\n`);
+      quiet.push((await tick()).cpu);
+      expect(stored()).toBe(calls);
+    }
+    // A rebuild with nothing read at all (a pin change; like the once-a-minute refresh of the prior-month comparison).
+    const rebuilds: number[] = [];
+    for (let i = 0; i < 9; i++) {
+      const cpu0 = process.cpuUsage();
+      m.pin(undefined);
+      await m.refresh();
+      const c = process.cpuUsage(cpu0);
+      rebuilds.push((c.user + c.system) / 1000);
+    }
+    const idle0 = process.cpuUsage();
+    for (let i = 0; i < 20; i++) await m.refresh();
+    const idleCpu = process.cpuUsage(idle0);
+    const idle = (idleCpu.user + idleCpu.system) / 1000 / 20;
+    const f = (xs: number[]) => xs.map((x) => x.toFixed(1)).join(", ");
+    console.log(
+      `live append: cold ${cold.toFixed(0)}ms for ${records} records; a new call: median ${median(cpus).toFixed(1)}ms cpu, ${median(walls).toFixed(1)}ms wall ` +
+        `(claude ${median(bySource[0]!).toFixed(1)}, codex ${median(bySource[1]!).toFixed(1)}, copilot ${median(bySource[2]!).toFixed(1)}ms cpu; all [${f(cpus)}]); ` +
+        `a line without a call: median ${median(quiet).toFixed(1)}ms cpu of [${f(quiet)}]; ` +
+        `a rebuild with nothing read: median ${median(rebuilds).toFixed(1)}ms cpu of [${f(rebuilds)}]; idle ${idle.toFixed(2)}ms cpu per tick`,
+    );
+    expect(JSON.stringify(last)).not.toContain(CLAUDE_CANARY);
+    // Before results were kept between snapshots each of the three cost a whole rebuild: about
+    // 105 ms on this store (2026-11-09, the machine that then measured 21, 4.6 and 4.6 ms).
+    expect(median(cpus)).toBeLessThan(30);
+    expect(median(quiet)).toBeLessThan(8);
+    expect(median(rebuilds)).toBeLessThan(8);
+    expect(idle).toBeLessThan(5);
+    m.dispose();
+  }, 300_000);
+});

@@ -90,13 +90,28 @@ function promptTokens(r: UsageRecord, convention: PromptConvention | undefined):
   return r.source === "copilot" && convention === "separate" ? (t.input ?? 0) + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : (t.input ?? 0);
 }
 
-/**
- * One pass over every call record: the prompt convention per model, and the
- * key of each session's first call (the lowest sequence, else the earliest timestamp).
- */
-function scanCalls(records: UsageRecord[]): { conventions: Map<string, PromptConvention>; firsts: Set<string> } {
+/** What the rules need from every call record read: the prompt convention per model, and
+ * the key of each session's first call (the lowest sequence, else the earliest timestamp). */
+export interface CallScan {
+  conventions: Map<string, PromptConvention>;
+  firsts: Set<string>;
+}
+
+/** A scan that `extendScan` can continue with later calls. */
+export interface ScanState extends CallScan {
+  /** each session's first call */
+  first: Map<string, UsageRecord>;
+  /** sessions with a call that carries a sequence number, and those of them that also have a call without one */
+  sequenced: Set<string>;
+  mixed: Set<string>;
+}
+
+/** One pass over every call record, in the order given (two calls of a session that tie keep the earlier one in that order). */
+export function scanCalls(records: UsageRecord[]): ScanState {
   const conventions = new Map<string, PromptConvention>();
   const first = new Map<string, UsageRecord>();
+  const sequenced = new Set<string>();
+  const mixed = new Set<string>();
   const before = (a: UsageRecord, b: UsageRecord) =>
     a.sequence !== undefined && b.sequence !== undefined ? a.sequence < b.sequence : a.timestampMs < b.timestampMs;
   for (const r of records) {
@@ -108,10 +123,47 @@ function scanCalls(records: UsageRecord[]): { conventions: Map<string, PromptCon
       else if (!conventions.has(r.model)) conventions.set(r.model, "included");
     }
     const cur = first.get(r.sessionId);
+    if (r.sequence !== undefined) {
+      if (cur !== undefined && !sequenced.has(r.sessionId)) mixed.add(r.sessionId);
+      sequenced.add(r.sessionId);
+    } else if (sequenced.has(r.sessionId)) mixed.add(r.sessionId);
     if (!cur || before(r, cur)) first.set(r.sessionId, r);
   }
   const firsts = new Set<string>();
   for (const r of first.values()) firsts.add(r.key);
+  return { conventions, firsts, first, sequenced, mixed };
+}
+
+/**
+ * The scan of `earlier`'s calls and `later` together, without reading `earlier`'s calls again.
+ * One pass over them all could meet them in another order than "earlier's, then later's", and
+ * the first call of a session depends on that order when two of its calls tie, or when only
+ * some of its calls carry a sequence number (a sequence orders two calls only if both have
+ * one). In those cases the answer is not known from here: undefined, and the caller scans
+ * every call. Otherwise the result is the one pass's own: a session's first call is the lower
+ * of its two firsts, and a model's convention is "separate" if either side found it so.
+ */
+export function extendScan(earlier: ScanState, later: UsageRecord[]): CallScan | undefined {
+  const next = scanCalls(later);
+  const firsts = new Set(earlier.firsts);
+  for (const [sessionId, b] of next.first) {
+    const a = earlier.first.get(sessionId);
+    if (a === undefined) {
+      firsts.add(b.key);
+      continue;
+    }
+    const sequenced = earlier.sequenced.has(sessionId);
+    if (sequenced !== next.sequenced.has(sessionId) || earlier.mixed.has(sessionId) || next.mixed.has(sessionId)) return undefined;
+    const x = sequenced ? a.sequence! : a.timestampMs;
+    const y = sequenced ? b.sequence! : b.timestampMs;
+    if (x === y) return undefined;
+    if (y < x) {
+      firsts.delete(a.key);
+      firsts.add(b.key);
+    }
+  }
+  const conventions = new Map(earlier.conventions);
+  for (const [model, c] of next.conventions) if (c === "separate" || !conventions.has(model)) conventions.set(model, c);
   return { conventions, firsts };
 }
 
@@ -188,7 +240,7 @@ function longContext(monthRecords: UsageRecord[], conventions: Map<string, Promp
 }
 
 /** I3: low cache reuse on a model, over the month's eligible calls; the costliest model wins. */
-function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCalls>, monthNano: number): Insight | undefined {
+function cacheReuse(monthRecords: UsageRecord[], scan: CallScan, monthNano: number): Insight | undefined {
   const { conventions, firsts } = scan;
   const byModel = new Map<string, { calls: number; sessions: Set<string>; cacheRead: number; prompt: number; nano: number; priced: number; tokens: number }>();
   for (const r of monthRecords) {
@@ -234,15 +286,17 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
  * Insights for the viewed month. `sessions` must be every session of the month
  * (not the displayed top rows); `monthRecords` the month's records with the
  * filters applied; `allRecords` every record read, for the prompt convention
- * and each session's first call; `monthNanoAiu` the month's logged AIU.
+ * and each session's first call (or `scan`, when the caller already has their
+ * scan); `monthNanoAiu` the month's logged AIU.
  */
 export function computeInsights(o: {
   sessions: SessionSummary[];
   monthRecords: UsageRecord[];
-  allRecords: UsageRecord[];
+  allRecords?: UsageRecord[];
+  scan?: CallScan;
   monthNanoAiu: number;
 }): InsightsView {
-  const scan = scanCalls(o.allRecords);
+  const scan = o.scan ?? scanCalls(o.allRecords ?? []);
   // Copilot sessions only, like the other two rules: other sources log no cost (D46), so their
   // estimated costs must neither fire the growth rule nor count in its coverage.
   const sessions = o.sessions.filter((s) => (s.source ?? "copilot") === "copilot");

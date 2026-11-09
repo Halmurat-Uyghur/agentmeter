@@ -83,6 +83,28 @@ function dropFile(e: Entry, file: string): { folderId: string | undefined; empty
  * source's (D40). Keying the inner Map by `r.key` itself stores no second key string. */
 type Namespace = Map<string, Entry>;
 
+/** Calls `fn` with each record a pass is to read (visible or not), in the store's order. */
+type Scan = (fn: (r: UsageRecord) => void) => void;
+
+/** What an aggregation reads: the whole store, or (`UsageStore.from`) only its records dated
+ * at or after a time. Either way only visible records, in the store's own order. */
+export interface RecordSource {
+  /** aggregates the matching records; undefined iff none match. With `seed` (left untouched)
+   * the result also holds what `seed` holds: the totals of the records `seed` was made from
+   * and these together (sums and counts, so the order they are added in changes no figure;
+   * only the order in which models and sources are listed may differ from one pass over them all) */
+  totals(filter: (r: UsageRecord) => boolean, seed?: Totals): Totals | undefined;
+  /** one pass: aggregates each record into bucket `bucket(r)` (0..n-1, or undefined to skip);
+   * an entry is undefined for a bucket with no record */
+  totalsByBucket(n: number, bucket: (r: UsageRecord) => number | undefined): (Totals | undefined)[];
+  /** calls `fn` for every record, without building an array */
+  each(fn: (r: UsageRecord) => void): void;
+  /** every record matching `filter` */
+  records(filter: (r: UsageRecord) => boolean): UsageRecord[];
+  /** folderId → newest timestampMs over the records (those matching `filter`, when given) */
+  latest(filter?: (r: UsageRecord) => boolean): Map<string, number>;
+}
+
 /** Most distinct strings the store's pool keeps before starting over. */
 const POOL_MAX = 50_000;
 
@@ -168,6 +190,34 @@ function accumulateTotals(totals: Totals, r: UsageRecord): void {
   accumulate((bySource[r.source] ??= emptyCounts()), r);
 }
 
+function cloneCounts(c: Counts): Counts {
+  return {
+    ...c,
+    input: { ...c.input },
+    output: { ...c.output },
+    cacheRead: { ...c.cacheRead },
+    cacheWrite: { ...c.cacheWrite },
+    reasoning: { ...c.reasoning },
+    durationMs: { ...c.durationMs },
+    nanoAiu: { ...c.nanoAiu },
+    callNanoAiu: { ...c.callNanoAiu },
+    ...(c.sources !== undefined && { sources: Object.assign(Object.create(null) as Partial<Record<Source, number>>, c.sources) }),
+  };
+}
+
+/** A copy of `t` that shares nothing with it, its models and sources in the same order. */
+function cloneTotals(t: Totals): Totals {
+  const byModel = Object.create(null) as Record<string, Counts>;
+  for (const [model, c] of Object.entries(t.byModel)) byModel[model] = cloneCounts(c);
+  const out: Totals = { ...cloneCounts(t), byModel };
+  if (t.bySource !== undefined) {
+    const bySource = Object.create(null) as Partial<Record<Source, Counts>>;
+    for (const [source, c] of Object.entries(t.bySource)) bySource[source as Source] = cloneCounts(c);
+    out.bySource = bySource;
+  }
+  return out;
+}
+
 /** Fields a later line of the same call in the same file replaces (D42 repeats). */
 const REPEAT_FIELDS = [
   "tokens", "timestampMs", "model", "finishReason", "sequence", "durationMs", "nanoAiu", "typeCost", "initiator", "toolTokens", "availableTools",
@@ -201,18 +251,40 @@ function mergeRepeat(r: UsageRecord, next: UsageRecord): UsageRecord {
   return out;
 }
 
+/** The name of the namespace holding `r`: its kind ("c" or "t"), then its source. */
+function spaceName(r: UsageRecord): string {
+  return `${r.kind === "call" ? "c" : "t"}|${r.source}`;
+}
+
+/** The entries dated at or after one cut: per namespace name, in the namespace's own
+ * (insertion) order, which is the order a pass over the store meets them in. */
+interface Tail {
+  lists: Map<string, Entry[]>;
+  /** entries in all the lists */
+  size: number;
+}
+
+/** The list of namespace `name` in `tail`, made if absent. */
+function listed(tail: Tail, name: string): Entry[] {
+  let list = tail.lists.get(name);
+  if (list === undefined) tail.lists.set(name, (list = []));
+  return list;
+}
+
 /** The visibility-map key of `id` within `source`. */
 function idOf(source: Source, id: string): string {
   return `${source}|${id}`;
 }
 
-function bump(m: Map<string, number>, id: string, by: 1 | -1): void {
-  const n = (m.get(id) ?? 0) + by;
-  if (n > 0) m.set(id, n);
-  else m.delete(id);
+/** Aggregates `records` in order, as `RecordSource.totals` does; undefined iff there are none. */
+export function totalsOf(records: readonly UsageRecord[]): Totals | undefined {
+  if (records.length === 0) return undefined;
+  const totals = emptyTotals();
+  for (const r of records) accumulateTotals(totals, r);
+  return totals;
 }
 
-export class UsageStore {
+export class UsageStore implements RecordSource {
   /** kind ("c" or "t") + "|" + source → that namespace's records */
   private readonly spaces = new Map<string, Namespace>();
   /** `${source}|${sessionId}` → call records held; a session in here hides its session totals.
@@ -231,6 +303,193 @@ export class UsageStore {
    * When the original re-delivers the key (a tailer reset re-reads the whole file), ownership and
    * attribution return to it. Weak and only for promoted entries, so an entry stays flat (D50). */
   private readonly promotedFrom = new WeakMap<Entry, string>();
+
+  // Change tracking for a caller that keeps results between changes (the monitor). The caller
+  // names a few times (`setCuts`); they split the records into ranges by timestamp. Every
+  // change to a record stamps the range holding its timestamp with a new, larger number
+  // (`versionOf` reads them), and for each cut the store keeps the entries dated at or after it
+  // in the order a full pass meets them (`from`), so a pass over recent records need not visit
+  // the old ones. Nothing here changes what a pass returns.
+  /** ascending, distinct; range i holds timestamps in [cuts[i-1], cuts[i]) (range 0: before cuts[0]; the last: from the last cut on) */
+  private cuts: number[] = [];
+  /** per range: `clock` at its last change */
+  private stamps: number[] = [0];
+  /** `clock` when the cuts last changed, or a session total's visibility may have (calls arrived for, or left, its session or folder) */
+  private epoch = 0;
+  private clock = 0;
+  /** per cut, once asked for: its entries dated at or after the cut (see Tail); "stale" until
+   * the next read rebuilds it; "whole" while that list would hold more than half the store
+   * (then a pass reads the whole store instead, and the list costs no memory);
+   * undefined = never asked for */
+  private tails: (Tail | "stale" | "whole" | undefined)[] = [];
+
+  /**
+   * Names the times whose ranges are tracked apart. A change of cuts forgets the old ranges:
+   * every `versionOf` result changes, and the lists behind `from` are built again when next read.
+   */
+  setCuts(cuts: readonly number[]): void {
+    const next = [...new Set(cuts)].filter((c) => Number.isFinite(c)).sort((a, b) => a - b);
+    if (next.length === this.cuts.length && next.every((c, i) => c === this.cuts[i])) return;
+    this.cuts = next;
+    this.epoch = ++this.clock;
+    this.stamps = new Array<number>(next.length + 1).fill(this.epoch);
+    this.tails = new Array<undefined>(next.length).fill(undefined);
+  }
+
+  /**
+   * A number that grows whenever a record dated in [fromMs, toMs) is added, replaced or
+   * removed, a session total's visibility may have changed, or the cuts change. Equal results
+   * for the same range mean nothing an aggregation over that range reads has changed. It is as
+   * exact as the cuts: a change between two cuts counts for every range that overlaps them.
+   */
+  versionOf(fromMs: number = Number.NEGATIVE_INFINITY, toMs: number = Number.POSITIVE_INFINITY): number {
+    let v = this.epoch;
+    const cuts = this.cuts;
+    for (let i = 0; i <= cuts.length; i++) {
+      // range i is [lo, hi)
+      const lo = i === 0 ? Number.NEGATIVE_INFINITY : cuts[i - 1]!;
+      const hi = i === cuts.length ? Number.POSITIVE_INFINITY : cuts[i]!;
+      if (lo < toMs && hi > fromMs && this.stamps[i]! > v) v = this.stamps[i]!;
+    }
+    return v;
+  }
+
+  /**
+   * The records dated at or after `cutMs`: what a pass over the whole store that skips older
+   * records reads, in the same order. For a time named in `setCuts` the store keeps that list
+   * up to date, so a pass costs only the records it holds; for any other time every record is visited.
+   */
+  from(cutMs: number): RecordSource {
+    const at = this.cuts.indexOf(cutMs);
+    if (at >= 0 && this.tails[at] === undefined) this.tails[at] = "stale";
+    const scan: Scan = (fn) => {
+      // The cuts may have changed since this view was made: then it reads the whole store.
+      const i = this.cuts.indexOf(cutMs);
+      const tail = i >= 0 ? this.tail(i) : undefined;
+      if (tail === undefined) {
+        this.forEachRecord((r) => {
+          if (r.timestampMs >= cutMs) fn(r);
+        });
+        return;
+      }
+      // Namespaces in the store's order, each list in its namespace's order.
+      for (const name of this.spaces.keys()) {
+        const entries = tail.lists.get(name);
+        if (entries === undefined) continue;
+        for (let k = 0; k < entries.length; k++) fn(entries[k]!.record);
+      }
+    };
+    return {
+      totals: (filter, seed) => this.totalsIn(scan, filter, seed),
+      totalsByBucket: (n, bucket) => this.totalsByBucketIn(scan, n, bucket),
+      each: (fn) => this.eachIn(scan, fn),
+      records: (filter) => this.recordsIn(scan, filter),
+      latest: (filter) => this.latestIn(scan, filter),
+    };
+  }
+
+  /**
+   * Whether the store keeps the list of the records dated from `cutMs` on (it does for a time
+   * named in `setCuts`, while those records are at most half the store): then a pass over
+   * `from(cutMs)` costs only those records. Otherwise it visits every record, as a pass over
+   * the store itself does.
+   */
+  keeps(cutMs: number): boolean {
+    const i = this.cuts.indexOf(cutMs);
+    if (i < 0) return false;
+    if (this.tails[i] === undefined) this.tails[i] = "stale";
+    return this.tail(i) !== undefined;
+  }
+
+  /** The list for cut `i`, rebuilt first if stale (every stale list in one pass); undefined
+   * if never asked for, or if it would hold more than half the store. */
+  private tail(i: number): Tail | undefined {
+    const t = this.tails[i];
+    if (t === undefined || t === "whole") return undefined;
+    if (t !== "stale") return t;
+    const stale: number[] = [];
+    const built: Tail[] = [];
+    for (let k = 0; k < this.tails.length; k++) {
+      if (this.tails[k] !== "stale") continue;
+      stale.push(k);
+      built.push((this.tails[k] = { lists: new Map(), size: 0 }));
+    }
+    let total = 0;
+    for (const [name, m] of this.spaces) {
+      total += m.size;
+      for (const e of m.values()) {
+        const ts = e.record.timestampMs;
+        for (let k = 0; k < stale.length; k++) {
+          if (ts < this.cuts[stale[k]!]!) continue;
+          listed(built[k]!, name).push(e);
+          built[k]!.size++;
+        }
+      }
+    }
+    for (let k = 0; k < stale.length; k++) if (built[k]!.size * 2 > total) this.tails[stale[k]!] = "whole";
+    const now = this.tails[i];
+    return now === "whole" || now === "stale" ? undefined : now;
+  }
+
+  /** Stamps the range holding `timestampMs`. */
+  private touch(timestampMs: number): void {
+    let i = 0;
+    while (i < this.cuts.length && timestampMs >= this.cuts[i]!) i++;
+    this.stamps[i] = ++this.clock;
+  }
+
+  /** A new entry was set under a new key of namespace `name`: it is the namespace's last. */
+  private inserted(e: Entry, name: string): void {
+    const ts = e.record.timestampMs;
+    this.touch(ts);
+    let total = -1;
+    for (let i = 0; i < this.cuts.length && ts >= this.cuts[i]!; i++) {
+      const t = this.tails[i];
+      if (t === undefined || t === "stale" || t === "whole") continue;
+      listed(t, name).push(e);
+      t.size++;
+      if (total < 0) {
+        total = 0;
+        for (const m of this.spaces.values()) total += m.size;
+      }
+      if (t.size * 2 > total) this.tails[i] = "whole";
+    }
+  }
+
+  /** An entry's record `old` is replaced in place by `next` (the entry keeps its position). */
+  private replaced(old: UsageRecord, next: UsageRecord): void {
+    this.touch(old.timestampMs);
+    if (next.timestampMs === old.timestampMs) return;
+    this.touch(next.timestampMs);
+    // A list the entry enters or leaves is rebuilt: its place there is its place in the namespace.
+    for (let i = 0; i < this.cuts.length; i++) {
+      if (old.timestampMs >= this.cuts[i]! !== next.timestampMs >= this.cuts[i]! && typeof this.tails[i] === "object") this.tails[i] = "stale";
+    }
+  }
+
+  /** The entry holding `r` was deleted. */
+  private removed(r: UsageRecord): void {
+    this.touch(r.timestampMs);
+    for (let i = 0; i < this.cuts.length && r.timestampMs >= this.cuts[i]!; i++) if (typeof this.tails[i] === "object") this.tails[i] = "stale";
+  }
+
+  /** Counts a call held for `id` (a session or a folder of `source`) up or down. When its first
+   * arrives or its last leaves, a session total of that session or folder hides or shows. */
+  private bump(m: Map<string, number>, source: Source, id: string, by: 1 | -1): void {
+    const key = idOf(source, id);
+    const n = (m.get(key) ?? 0) + by;
+    if (n > 0) m.set(key, n);
+    else m.delete(key);
+    if (n > 1 || (n === 1 && by === -1)) return;
+    for (const recs of this.totalKeys.values()) {
+      for (const o of recs) {
+        if (o.source === source && (o.sessionId === id || o.folderId === id)) {
+          this.epoch = ++this.clock;
+          return;
+        }
+      }
+    }
+  }
 
   private intern(s: string): string {
     const known = this.pool.get(s);
@@ -252,7 +511,7 @@ export class UsageStore {
   private space(r: UsageRecord, create: true): Namespace;
   private space(r: UsageRecord, create: false): Namespace | undefined;
   private space(r: UsageRecord, create: boolean): Namespace | undefined {
-    const name = `${r.kind === "call" ? "c" : "t"}|${r.source}`;
+    const name = spaceName(r);
     let m = this.spaces.get(name);
     if (m === undefined && create) this.spaces.set(name, (m = new Map()));
     return m;
@@ -278,6 +537,7 @@ export class UsageStore {
       const merged = mergeRepeat(existing.record, r);
       if (JSON.stringify(merged) === JSON.stringify(existing.record)) return false;
       this.share(merged);
+      this.replaced(existing.record, merged);
       existing.record = merged;
       return true;
     }
@@ -291,7 +551,7 @@ export class UsageStore {
       ) return this.restoreOwner(existing, r, file);
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
-        if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
+        if (r.kind === "call" && !holds(existing, r.folderId)) this.bump(this.callsPerFolder, r.source, r.folderId, 1);
         const sessionId = copySession(r.sessionId, r.folderId, existing.folderId);
         const holder: Holder = sessionId === existing.record.sessionId ? r.folderId : { folderId: this.intern(r.folderId), sessionId: this.intern(sessionId) };
         (existing.more ??= new Map()).set(file, holder);
@@ -299,10 +559,12 @@ export class UsageStore {
       return false;
     }
     this.share(r);
-    this.space(r, true).set(r.key, newEntry(r, file, r.folderId));
+    const entry = newEntry(r, file, r.folderId);
+    this.space(r, true).set(r.key, entry);
+    this.inserted(entry, spaceName(r));
     if (r.kind === "call") {
-      bump(this.callsPerSession, idOf(r.source, r.sessionId), 1);
-      bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
+      this.bump(this.callsPerSession, r.source, r.sessionId, 1);
+      this.bump(this.callsPerFolder, r.source, r.folderId, 1);
     }
     return true;
   }
@@ -318,10 +580,10 @@ export class UsageStore {
     const changed = JSON.stringify(r) !== JSON.stringify(old);
     this.share(r);
     const { sessionId, folderId } = r;
-    if (!holds(e, folderId)) bump(this.callsPerFolder, idOf(old.source, folderId), 1);
+    if (!holds(e, folderId)) this.bump(this.callsPerFolder, old.source, folderId, 1);
     if (sessionId !== old.sessionId) {
-      bump(this.callsPerSession, idOf(old.source, old.sessionId), -1);
-      bump(this.callsPerSession, idOf(old.source, sessionId), 1);
+      this.bump(this.callsPerSession, old.source, old.sessionId, -1);
+      this.bump(this.callsPerSession, old.source, sessionId, 1);
     }
     // Later holders are stored relative to the record's sessionId: restate them, the demoted owner first.
     const rel = (f: string, held: string): Holder => {
@@ -333,6 +595,7 @@ export class UsageStore {
     e.more = more;
     e.file = file;
     e.folderId = folderId;
+    this.replaced(old, r);
     e.record = r;
     return changed;
   }
@@ -355,14 +618,16 @@ export class UsageStore {
         );
       });
     if (same) return false;
-    for (const o of old) this.space(o, false)?.delete(o.key);
+    for (const o of old) if (this.space(o, false)?.delete(o.key)) this.removed(o);
     const kept: UsageRecord[] = [];
     for (const r of records) {
       if (r.kind !== "sessionTotal") continue;
       const m = this.space(r, true);
       if (m.has(r.key)) continue;
       this.share(r);
-      m.set(r.key, newEntry(r, file, folderId));
+      const entry = newEntry(r, file, folderId);
+      m.set(r.key, entry);
+      this.inserted(entry, spaceName(r));
       kept.push(r);
     }
     if (kept.length > 0) this.totalKeys.set(folderId, kept);
@@ -407,8 +672,8 @@ export class UsageStore {
     if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
       const sessionId = promoted.sessionId ?? r.sessionId;
       if (sessionId !== r.sessionId) {
-        bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
-        bump(this.callsPerSession, idOf(r.source, sessionId), 1);
+        this.bump(this.callsPerSession, r.source, r.sessionId, -1);
+        this.bump(this.callsPerSession, r.source, sessionId, 1);
         // Later holders are stored relative to the record's sessionId: restate them.
         if (entry.more) {
           for (const [f, h] of entry.more) {
@@ -417,13 +682,16 @@ export class UsageStore {
           }
         }
       }
-      r = entry.record = { ...r, folderId: entry.folderId, sessionId };
+      const moved = { ...r, folderId: entry.folderId, sessionId };
+      this.replaced(r, moved);
+      r = entry.record = moved;
     }
-    if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
+    if (r.kind === "call" && (empty || !holds(entry, folderId))) this.bump(this.callsPerFolder, r.source, folderId, -1);
     if (empty) {
       m.delete(key);
+      this.removed(r);
       if (r.kind === "call") {
-        bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+        this.bump(this.callsPerSession, r.source, r.sessionId, -1);
       } else {
         const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
         if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
@@ -451,20 +719,46 @@ export class UsageStore {
     return out;
   }
 
-  /** Aggregates matching records; undefined iff none match. */
-  totals(filter: (r: UsageRecord) => boolean): Totals | undefined {
-    const totals = emptyTotals();
-    this.forEachRecord((record) => {
-      if (this.visible(record) && filter(record)) accumulateTotals(totals, record);
-    });
-    return totals.records === 0 ? undefined : totals;
+  /** Aggregates matching records; undefined iff none match (and no `seed` to continue). */
+  totals(filter: (r: UsageRecord) => boolean, seed?: Totals): Totals | undefined {
+    return this.totalsIn(this.all, filter, seed);
   }
 
   /** One pass: aggregates each record into bucket `bucket(r)` (0..n-1, or
    * undefined to skip). Entries are undefined for buckets with no record. */
   totalsByBucket(n: number, bucket: (r: UsageRecord) => number | undefined): (Totals | undefined)[] {
+    return this.totalsByBucketIn(this.all, n, bucket);
+  }
+
+  /** Calls `fn` for every visible record, in no particular order, without building an array. */
+  each(fn: (r: UsageRecord) => void): void {
+    this.eachIn(this.all, fn);
+  }
+
+  /** Every record matching `filter`, in no particular order. */
+  records(filter: (r: UsageRecord) => boolean): UsageRecord[] {
+    return this.recordsIn(this.all, filter);
+  }
+
+  /** folderId → newest timestampMs over all records (those matching `filter`, when given). */
+  latest(filter?: (r: UsageRecord) => boolean): Map<string, number> {
+    return this.latestIn(this.all, filter);
+  }
+
+  // The passes themselves, over whatever `scan` visits: the whole store, or one of `from`'s lists.
+  private readonly all: Scan = (fn) => this.forEachRecord(fn);
+
+  private totalsIn(scan: Scan, filter: (r: UsageRecord) => boolean, seed?: Totals): Totals | undefined {
+    const totals = seed === undefined ? emptyTotals() : cloneTotals(seed);
+    scan((record) => {
+      if (this.visible(record) && filter(record)) accumulateTotals(totals, record);
+    });
+    return totals.records === 0 ? undefined : totals;
+  }
+
+  private totalsByBucketIn(scan: Scan, n: number, bucket: (r: UsageRecord) => number | undefined): (Totals | undefined)[] {
     const out: (Totals | undefined)[] = new Array(n).fill(undefined);
-    this.forEachRecord((record) => {
+    scan((record) => {
       if (!this.visible(record)) return;
       const i = bucket(record);
       if (i === undefined || i < 0 || i >= n) return;
@@ -473,27 +767,24 @@ export class UsageStore {
     return out;
   }
 
-  /** Calls `fn` for every visible record, in no particular order, without building an array. */
-  each(fn: (r: UsageRecord) => void): void {
-    this.forEachRecord((record) => {
+  private eachIn(scan: Scan, fn: (r: UsageRecord) => void): void {
+    scan((record) => {
       if (this.visible(record)) fn(record);
     });
   }
 
-  /** Every record matching `filter`, in no particular order. */
-  records(filter: (r: UsageRecord) => boolean): UsageRecord[] {
+  private recordsIn(scan: Scan, filter: (r: UsageRecord) => boolean): UsageRecord[] {
     const out: UsageRecord[] = [];
-    this.forEachRecord((record) => {
+    scan((record) => {
       if (this.visible(record) && filter(record)) out.push(record);
     });
     return out;
   }
 
-  /** folderId → newest timestampMs over all records. */
-  latest(): Map<string, number> {
+  private latestIn(scan: Scan, filter: ((r: UsageRecord) => boolean) | undefined): Map<string, number> {
     const out = new Map<string, number>();
-    this.forEachRecord((record) => {
-      if (!this.visible(record)) return;
+    scan((record) => {
+      if (!this.visible(record) || (filter !== undefined && !filter(record))) return;
       const prev = out.get(record.folderId);
       if (prev === undefined || record.timestampMs > prev) {
         out.set(record.folderId, record.timestampMs);
@@ -530,13 +821,13 @@ export function localMonthStart(now: Date): number {
 /** One entry per local day from the 1st of the month through today; `totals`
  * stays undefined for a day with no record ("—" in the panel, never 0). Today's
  * bucket has no upper bound, matching the Today figure (clock-skewed records). */
-export function byLocalDay(store: UsageStore, now: Date): DayTotals[] {
+export function byLocalDay(store: RecordSource, now: Date): DayTotals[] {
   return daysOfMonth(store, localMonthStart(now), now.getDate(), true);
 }
 
 /** Days 1..`lastDay` of the month starting at `monthStartMs`. With `openEnd`
  * the last bucket has no upper bound; otherwise records after the month are skipped. */
-export function daysOfMonth(store: UsageStore, monthStartMs: number, lastDay: number, openEnd: boolean, keep: (r: UsageRecord) => boolean = ALL): DayTotals[] {
+export function daysOfMonth(store: RecordSource, monthStartMs: number, lastDay: number, openEnd: boolean, keep: (r: UsageRecord) => boolean = ALL): DayTotals[] {
   const first = new Date(monthStartMs);
   const starts: number[] = [];
   for (let d = 1; d <= lastDay; d++) {
@@ -563,7 +854,7 @@ export function monthStarts(now: Date, n: number): number[] {
 }
 
 /** Totals per month for `starts` (oldest first); the newest month has no upper bound. */
-export function byMonth(store: UsageStore, starts: number[], keep: (r: UsageRecord) => boolean = ALL): MonthSummary[] {
+export function byMonth(store: RecordSource, starts: number[], keep: (r: UsageRecord) => boolean = ALL): MonthSummary[] {
   const buckets = store.totalsByBucket(starts.length, (r) => {
     if (starts.length === 0 || r.timestampMs < starts[0]! || !keep(r)) return undefined;
     let i = starts.length - 1;
@@ -640,30 +931,62 @@ function emptyGroup(name: string): GroupSummary {
   return { name, sessions: 0, calls: 0, tokens: emptyMetric(), nanoAiu: emptyMetric(), sources: Object.create(null) as Partial<Record<Source, number>> };
 }
 
+/** Per-project sums in the making: `projectGroups` adds records, `groupSummaries` reads them. */
+export type ProjectGroups = Map<string, { s: GroupSummary; ids: Set<string> }>;
+
+function addToGroup(groups: ProjectGroups, name: string, r: UsageRecord, sessionTotals: boolean): void {
+  let g = groups.get(name);
+  if (!g) {
+    g = { s: emptyGroup(name), ids: new Set() };
+    groups.set(name, g);
+  }
+  g.ids.add(r.sessionId);
+  g.s.calls += callsOf(r);
+  if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
+  if (sessionTotals && r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
+  countTokens(g.s.tokens, r);
+  if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
+  bumpSource(g.s.sources!, r.source);
+}
+
+/**
+ * Per-project sums of the records in [fromMs, toMs) that pass `keep`. With `seed` (left
+ * untouched) they continue from it: the sums of the records `seed` was made from and these
+ * together. They are sums, counts and sets of session ids, so the order records are added in
+ * changes no figure. `sessionTotals` also counts session-total rows (the side bar's figures).
+ */
+export function projectGroups(
+  store: RecordSource,
+  fromMs: number,
+  toMs: number,
+  projectOf: (r: UsageRecord) => string,
+  keep: (r: UsageRecord) => boolean = ALL,
+  o: { seed?: ProjectGroups; sessionTotals?: boolean } = {},
+): ProjectGroups {
+  const groups: ProjectGroups = new Map();
+  if (o.seed !== undefined) {
+    for (const [name, { s, ids }] of o.seed) {
+      groups.set(name, { s: { ...s, tokens: { ...s.tokens }, nanoAiu: { ...s.nanoAiu }, sources: Object.assign(Object.create(null) as Partial<Record<Source, number>>, s.sources) }, ids: new Set(ids) });
+    }
+  }
+  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && keep(x))) addToGroup(groups, projectOf(r), r, o.sessionTotals === true);
+  return groups;
+}
+
+/** The projects of `groups`, costliest first. */
+export function groupSummaries(groups: ProjectGroups): GroupSummary[] {
+  return [...groups.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
+}
+
 /** Per-project totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
 export function projectSummaries(
-  store: UsageStore,
+  store: RecordSource,
   fromMs: number,
   toMs: number,
   projectOf: (r: UsageRecord) => string,
   keep: (r: UsageRecord) => boolean = ALL,
 ): GroupSummary[] {
-  const groups = new Map<string, { s: GroupSummary; ids: Set<string> }>();
-  for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && keep(x))) {
-    const name = projectOf(r);
-    let g = groups.get(name);
-    if (!g) {
-      g = { s: emptyGroup(name), ids: new Set() };
-      groups.set(name, g);
-    }
-    g.ids.add(r.sessionId);
-    g.s.calls += callsOf(r);
-    if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
-    countTokens(g.s.tokens, r);
-    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
-    bumpSource(g.s.sources!, r.source);
-  }
-  return [...groups.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
+  return groupSummaries(projectGroups(store, fromMs, toMs, projectOf, keep));
 }
 
 /**
@@ -672,36 +995,20 @@ export function projectSummaries(
  * `sessionTotals` counts session-total rows and is absent when 0.
  */
 export function recentProjects(
-  store: UsageStore,
+  store: RecordSource,
   last7StartMs: number,
   todayStartMs: number,
   projectOf: (r: UsageRecord) => string,
 ): { today: GroupSummary[]; last7: GroupSummary[] } {
-  type Acc = { s: GroupSummary; ids: Set<string> };
-  const week = new Map<string, Acc>();
-  const day = new Map<string, Acc>();
-  const add = (into: Map<string, Acc>, name: string, r: UsageRecord) => {
-    let g = into.get(name);
-    if (!g) {
-      g = { s: emptyGroup(name), ids: new Set() };
-      into.set(name, g);
-    }
-    g.ids.add(r.sessionId);
-    g.s.calls += callsOf(r);
-    if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
-    if (r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
-    countTokens(g.s.tokens, r);
-    if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
-    bumpSource(g.s.sources!, r.source);
-  };
+  const week: ProjectGroups = new Map();
+  const day: ProjectGroups = new Map();
   store.each((r) => {
     if (r.timestampMs < last7StartMs) return;
     const name = projectOf(r);
-    add(week, name, r);
-    if (r.timestampMs >= todayStartMs) add(day, name, r);
+    addToGroup(week, name, r, true);
+    if (r.timestampMs >= todayStartMs) addToGroup(day, name, r, true);
   });
-  const done = (m: Map<string, Acc>) => [...m.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
-  return { today: done(day), last7: done(week) };
+  return { today: groupSummaries(day), last7: groupSummaries(week) };
 }
 
 /** Each source's own tools (D52); anything else (MCP servers, extensions, skills' tools) is "added".
@@ -731,14 +1038,25 @@ export function toolGroup(name: string): string {
   return m ? m[1]! : name;
 }
 
-/** Per-tool totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
-export function toolSummaries(
-  store: UsageStore,
+/** Per-tool sums in the making: `toolGroups` adds records; its values are the rows. */
+export type ToolGroups = Map<string, ToolSummary>;
+
+/**
+ * Per-tool sums of the records in [fromMs, toMs) that pass `keep`. With `seed` (left
+ * untouched) they continue from it, like `projectGroups`: sums and counts, so the order
+ * records are added in changes no figure.
+ */
+export function toolGroups(
+  store: RecordSource,
   fromMs: number,
   toMs: number,
   keep: (r: UsageRecord) => boolean = ALL,
-): ToolSummary[] {
-  const tools = new Map<string, ToolSummary>();
+  seed?: ToolGroups,
+): ToolGroups {
+  const tools: ToolGroups = new Map();
+  if (seed !== undefined) {
+    for (const [name, t] of seed) tools.set(name, { ...t, tokens: { ...t.tokens }, nanoAiu: { ...t.nanoAiu }, sources: Object.assign(Object.create(null) as Partial<Record<Source, number>>, t.sources) });
+  }
   for (const r of store.records((x) => x.timestampMs >= fromMs && x.timestampMs < toMs && x.tools !== undefined && keep(x))) {
     for (const [name, uses] of Object.entries(r.tools!)) {
       let t = tools.get(name);
@@ -755,7 +1073,22 @@ export function toolSummaries(
       bumpSource(t.sources!, r.source);
     }
   }
-  return [...tools.values()].sort(byCost);
+  return tools;
+}
+
+/** The tools of `groups`, costliest first. */
+export function toolRows(groups: ToolGroups): ToolSummary[] {
+  return [...groups.values()].sort(byCost);
+}
+
+/** Per-tool totals for records in [fromMs, toMs) that pass `keep`, costliest first. */
+export function toolSummaries(
+  store: RecordSource,
+  fromMs: number,
+  toMs: number,
+  keep: (r: UsageRecord) => boolean = ALL,
+): ToolSummary[] {
+  return toolRows(toolGroups(store, fromMs, toMs, keep));
 }
 
 /** Prompt tokens of a record: input, plus cached tokens when its Copilot model reports them
@@ -791,7 +1124,7 @@ export function countPairedCache(prompt: Metric, cacheRead: Metric, r: UsageReco
  * includes cached tokens; a model not in it is taken as "included".
  */
 export function sessionSummaries(
-  store: UsageStore,
+  store: Pick<RecordSource, "records">,
   fromMs: number,
   toMs: number,
   limit = 10,
@@ -884,8 +1217,13 @@ export function sessionSummaries(
       ...(excessNanoAiu !== undefined && { excessNanoAiu }),
     });
   }
-  out.sort((a, b) => b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.sessionId.localeCompare(b.sessionId));
+  out.sort(bySessionCost);
   return out.slice(0, limit);
+}
+
+/** The order of session rows: costliest first, then most tokens, then by id (no two rows tie). */
+export function bySessionCost(a: SessionSummary, b: SessionSummary): number {
+  return b.nanoAiu.sum - a.nanoAiu.sum || b.tokens.sum - a.tokens.sum || a.sessionId.localeCompare(b.sessionId);
 }
 
 /**
@@ -893,7 +1231,7 @@ export function sessionSummaries(
  * pass, never filtered (A2). Only days with a record are listed. Like Today, the last
  * day has no upper bound; records before `fromMs` are skipped.
  */
-export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: number, keep?: (r: UsageRecord) => boolean): Activity {
+export function dailyActivity(store: RecordSource, fromMs: number, todayStartMs: number, keep?: (r: UsageRecord) => boolean): Activity {
   const first = new Date(fromMs);
   const starts: number[] = [];
   for (let d = 0; ; d++) {
