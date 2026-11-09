@@ -109,7 +109,7 @@ function rowHtml(r: CallRow): string {
   const by = r.initiator ? escapeHtml(INITIATOR_LABEL[r.initiator]) : val(DASH);
   const end = r.finishReason ? escapeHtml(FINISH_LABEL[r.finishReason]) : val(DASH);
   const tools = r.toolTokens !== undefined && r.prompt !== undefined ? share(Math.min(r.toolTokens, r.prompt), r.prompt) : val(DASH);
-  return `<tr><td class="num">${escapeHtml(when)}</td><td>${model}</td><td>${by}</td>${count(r.uncached)}${count(r.cacheRead)}${count(r.cacheWrite)}${count(r.output)}${count(r.reasoning)}${td(tools)}${td(val(formatAiu(one(r.nanoAiu))))}${td(val(formatUsd(one(r.nanoAiu))))}<td>${end}</td></tr>`;
+  return `<tr><td class="num">${escapeHtml(when)}</td><td>${model}</td><td>${by}</td>${count(r.uncached)}${count(r.cacheRead)}${count(r.cacheWrite)}${count(r.output)}${count(r.reasoning)}${td(tools)}${td(val(r.source === undefined || r.source === "copilot" ? formatAiu(one(r.nanoAiu)) : DASH))}${td(val(formatUsd(one(r.nanoAiu))))}<td>${end}</td></tr>`;
 }
 
 function detailTiles(d: SessionDetail, view: ViewOptions): string {
@@ -136,7 +136,7 @@ export function sessionDetailCard(s: Snapshot, view: ViewOptions): string {
   const table = foldedTable(head, d.rows.map((r) => ({ html: rowHtml(r) })), LEDGER_SHOWN, `Calls in session ${who}, ${name}`);
   const notes = [
     `Uncached input + cache read + cache write = the call's input tokens. Reasoning is part of Output, not added to it. Tool definitions = the tool descriptions sent with the prompt, out of every 100 input tokens: part of input, not an extra cost.`,
-    `Started by: You = a prompt you sent; Agent = a call the agent made on its own. Ended with: Answer = the model replied and stopped; Tool calls = it asked to run tools. AIU is as logged; ${costLabel()} is estimated from it, as everywhere in this panel.`,
+    `Started by: You = a prompt you sent; Agent = a call the agent made on its own. Ended with: Answer = the model replied and stopped; Tool calls = it asked to run tools. AIU is as logged by Copilot; ${costLabel()} is estimated from it, as everywhere in this panel${multiSource(s.health) ? "; Claude Code and Codex log no AIU (—), so their cost is estimated from tokens at list prices" : ""}.`,
     `Uncached input and its cache-read price come from the per-token-type AI credits Copilot logs with each call; "—" where a call did not log them. The cache-read price is not a saving you could have had: a session's first call, and any call after a change of model or tools or a long break, has to send its input uncached.`,
     ...promptNotes(d.prompts, "in this session", multiSource(s.health)),
   ];

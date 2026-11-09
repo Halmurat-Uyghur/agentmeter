@@ -93,21 +93,25 @@ export function priceOf(source: Source, model: string | undefined): Price | unde
   return Object.hasOwn(table, key) ? table[key] : undefined;
 }
 
-/** True when every token count is absent or 0: such a call costs nothing whatever its model. */
+/** True when every token count, reasoning included, is absent or 0: such a call costs nothing whatever its model. */
 function noTokens(t: Tokens): boolean {
-  return !t.input && !t.output && !t.cacheRead && !t.cacheWrite;
+  return !t.input && !t.output && !t.cacheRead && !t.cacheWrite && !t.reasoning;
 }
 
 /**
  * Estimated cost of a Claude Code or Codex record in nano-AIU (1 USD = 1e11), or undefined when
- * the model has no price. Tokens follow the one convention (D47): `input` includes cache reads,
+ * the model has no price, input or output was not logged, or (`cumulative`) a session total is
+ * past the model's long-context threshold. Tokens follow the one convention (D47): `input` includes cache reads,
  * and for Claude Code also cache writes; reasoning is inside output. Codex logs cache writes
  * apart from input, so they are not taken out of it.
  */
-export function estimateNanoAiu(rec: Pick<UsageRecord, "source" | "model" | "tokens">): number | undefined {
+export function estimateNanoAiu(rec: Pick<UsageRecord, "source" | "model" | "tokens">, o: { cumulative?: boolean } = {}): number | undefined {
   if (rec.source === "copilot") return undefined;
   const t = rec.tokens;
   if (noTokens(t)) return 0;
+  // Without both input and output the cost cannot be established: unknown, never a smaller
+  // figure that looks complete (review #1). Reasoning is inside output, so it never stands in for it.
+  if (t.input === undefined || t.output === undefined) return undefined;
   const p = priceOf(rec.source, rec.model);
   if (!p) return undefined;
   const read = t.cacheRead ?? 0;
@@ -115,6 +119,9 @@ export function estimateNanoAiu(rec: Pick<UsageRecord, "source" | "model" | "tok
   const input = t.input ?? 0;
   const uncached = Math.max(0, input - read - (rec.source === "claude-code" ? write : 0));
   const prompt = rec.source === "claude-code" ? input : input + write;
+  // A cumulative total (a Codex session total) is many prompts: past the long-context threshold
+  // it cannot tell which of them were long, so its cost is unknown (review #2).
+  if (o.cumulative && p.long && prompt > p.long.above) return undefined;
   const rate: Rate = p.long && prompt > p.long.above ? p.long : p;
   const usd = (uncached * rate.input + read * rate.cacheRead + write * rate.cacheWrite + (t.output ?? 0) * rate.output) / 1e6;
   const nano = Math.round(usd * 1e11);

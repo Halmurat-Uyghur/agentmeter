@@ -14,7 +14,7 @@ import { computeInsights, promptConventions } from "./insights";
 import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceFile, type SourceReader } from "./source";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import type { ReadErrorCode } from "./tailer";
-import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type UsageRecord } from "./types";
+import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type Totals, type UsageRecord } from "./types";
 
 export { RECENT_MS };
 
@@ -139,6 +139,11 @@ function errCode(err: unknown): string {
 /** A reader-supplied code, if it is a code; never a free string. */
 function safeCode(code: string): string {
   return CODE.test(code) ? code : "OTHER";
+}
+
+/** Copilot's logged cost in the month's totals: the Insights month-share floor (other sources log no cost, D46). */
+function copilotNano(totals: Totals | undefined): number {
+  return totals?.bySource?.copilot?.nanoAiu.sum ?? 0;
 }
 
 export class UsageMonitor {
@@ -472,11 +477,13 @@ export class UsageMonitor {
     const inWindow = new Map<string, { c: SourceCandidate; mtimeMs: number; size: number }>();
     for (const c of candidates.values()) for (const f of c.files) inWindow.set(f.path, { c, mtimeMs: f.mtimeMs, size: f.size });
     const keep = new Set([...inWindow.keys(), ...unreadable]);
+    const gone = new Set<string>();
     for (const [path, f] of [...this.files]) {
       if (f.source !== reader.source || keep.has(path)) continue;
       this.files.delete(path);
-      this.store.resetFile(path);
+      gone.add(path);
     }
+    this.store.resetFiles(gone);
     const refused = new Set<string>();
     const hotSinceMs = nowMs - RECENT_MS;
     for (const [path, { c, mtimeMs, size }] of inWindow) {
@@ -920,12 +927,13 @@ export class UsageMonitor {
     const sel = this.selectedMonth;
     const past = sel !== undefined && sel !== current && starts.includes(sel) ? sel : undefined;
     if (past === undefined) {
-      const totals = this.store.totals((r) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r));
+      const inCurrent = (r: UsageRecord) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r);
+      const totals = this.store.totals(inCurrent);
       return {
         monthStartMs: current,
         isCurrent: true,
         days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
-        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, totals?.nanoAiu.sum ?? 0),
+        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, copilotNano(totals)),
         projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
         tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
         ...(totals !== undefined && { totals }),
@@ -934,12 +942,13 @@ export class UsageMonitor {
     const first = new Date(past);
     const end = new Date(first.getFullYear(), first.getMonth() + 1, 1).getTime();
     const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
-    const totals = this.store.totals((r) => r.timestampMs >= past && r.timestampMs < end && keep(r));
+    const inPast = (r: UsageRecord) => r.timestampMs >= past && r.timestampMs < end && keep(r);
+    const totals = this.store.totals(inPast);
     return {
       monthStartMs: past,
       isCurrent: false,
       days: daysOfMonth(this.store, past, lastDay, false, keep),
-      ...this.sessionsAndInsights(past, end, keep, byProject, totals?.nanoAiu.sum ?? 0),
+      ...this.sessionsAndInsights(past, end, keep, byProject, copilotNano(totals)),
       projects: projectSummaries(this.store, past, end, projectOf, byTool),
       tools: toolSummaries(this.store, past, end, byProject),
       ...(totals !== undefined && { totals }),
@@ -1027,9 +1036,12 @@ export class UsageMonitor {
     }
     if (folderId === undefined) return {};
     const id = folderId;
-    const totals = this.store.totals((r) => r.sessionId === id);
+    // The folder's own records count too: a resumed or forked session's calls can name another
+    // session id than the folder they are written in (review #5).
+    const mine = (r: UsageRecord) => r.sessionId === id || r.folderId === id;
+    const totals = this.store.totals(mine);
     const live = folders.get(id)?.live === true;
-    const last = lastPrompt(this.store.records((r) => r.kind === "call" && r.sessionId === id));
+    const last = lastPrompt(this.store.records((r) => r.kind === "call" && mine(r)));
     // The candidate's source, else its files', else (a folder only records name) the records' own (fix wave F2).
     let source: Source | undefined = folders.get(id)?.source;
     if (source === undefined) for (const f of this.files.values()) if (f.folderId === id) source = f.source;

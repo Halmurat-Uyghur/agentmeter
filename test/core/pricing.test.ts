@@ -54,6 +54,19 @@ describe("estimateNanoAiu", () => {
     expect(est("claude-code", "<synthetic>", {})).toBe(0);
     expect(est("copilot", "claude-opus-5-5", { input: 10 })).toBeUndefined();
   });
+  it("without input or output the cost is unknown; reasoning alone is not \"no tokens\" (review #1)", () => {
+    expect(est("codex", "gpt-6.1-sol", { reasoning: 100 })).toBeUndefined();
+    expect(est("codex", "codex-auto-review", { reasoning: 100 })).toBeUndefined();
+    expect(est("codex", "gpt-6.1-sol", { input: 1_000 })).toBeUndefined();
+    expect(est("claude-code", "claude-sonnet-5-5", { output: 1_000 })).toBeUndefined();
+    expect(est("codex", "gpt-6.1-sol", { input: 1_000, output: 0 })).toBe(nano(0.001 * 2));
+  });
+  it("a cumulative total past the long-context threshold is unknown; a single call is priced long (review #2)", () => {
+    const t = { input: 300_000, output: 0 };
+    expect(estimateNanoAiu({ source: "codex", model: "gpt-6.1-sol", tokens: t }, { cumulative: true })).toBeUndefined();
+    expect(est("codex", "gpt-6.1-sol", t)).toBe(nano(0.3 * 4));
+    expect(estimateNanoAiu({ source: "codex", model: "gpt-6.1-sol", tokens: { input: 100_000, output: 0 } }, { cumulative: true })).toBe(nano(0.1 * 2));
+  });
   it("never goes negative when reads exceed the logged input", () => {
     expect(est("claude-code", "claude-sonnet-5-5", { input: 10, cacheRead: 50, output: 0 })).toBe(nano((50 * 0.1) / 1e6));
   });

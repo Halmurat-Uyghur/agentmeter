@@ -147,6 +147,18 @@ describe("I2 context-growth", () => {
     expect(run({ sessions: [session({ nanoAiu: m(0.5 * USD, 20), excessNanoAiu: 3 * USD })] }).items).toHaveLength(1);
   });
 
+  it("Claude Code and Codex sessions are not examined, nor counted in the coverage (review #7)", () => {
+    const claude = session({ sessionId: "c", source: "claude-code", growth: 4.1 });
+    const codex = session({ sessionId: "x", source: "codex", growth: 4.1 });
+    const v = run({ sessions: [claude, codex] });
+    expect(v.items).toEqual([]);
+    expect(v.coverage).toEqual({ callSessions: 0, totalsOnlySessions: 0 });
+    const mixed = run({ sessions: [claude, session({ sessionId: "p", source: "copilot", growth: 4.1 })] });
+    expect(mixed.items).toHaveLength(1);
+    if (mixed.items[0]!.id === "context-growth") expect(mixed.items[0]!.top.map((t) => t.sessionId)).toEqual(["p"]);
+    expect(mixed.coverage.callSessions).toBe(1);
+  });
+
   it("growth under 3 never fires; session totals never fire", () => {
     expect(run({ sessions: [session({ growth: 2.9 })] }).items).toEqual([]);
     expect(run({ sessions: [session({ sessionTotal: true })] }).items).toEqual([]);

@@ -751,6 +751,14 @@ describe("UsageMonitor", () => {
     expect(last().health.sessionsFromTotals).toBe(0);
   });
 
+  it("the current session counts its folder's calls even when they name another session (review #5)", async () => {
+    await sessionTree(root, [{ id: B, lines: jsonl([rec(A, 1), rec(A, 2)]) }]);
+    make({ readTotals: true });
+    await monitor.refresh({ full: true });
+    expect(last().current?.folderId).toBe(B);
+    expect(last().current?.totals?.records).toBe(2);
+  });
+
   it("truncation and rewrite of a legacy log replaces its totals", async () => {
     await sessionTree(root, [{ id: A, lines: legacy(A) }]);
     make({ readTotals: true });

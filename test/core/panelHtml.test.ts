@@ -95,6 +95,25 @@ function text(html: string): string {
 // D22: estimated USD is allowed (labelled "est."); account-statement words stay banned.
 const COPY_RE = /\b(bill|billing|remaining|quota|limit|allowance|premium)\b|%/i;
 
+describe("AIU tile with other sources in scope (review #8)", () => {
+  it("shows Copilot's logged AIU only, labelled as such; Copilot alone keeps the plain label", () => {
+    const copilot = counts({ nanoAiu: m(4e9, 2) });
+    const claude = counts({ nanoAiu: m(1e11, 2) });
+    const mixed: Totals = { ...totals(undefined, { nanoAiu: m(4e9 + 1e11, 4) }), sources: { copilot: 2, "claude-code": 2 }, bySource: { copilot, "claude-code": claude } };
+    const t = text(renderPanelHtml(snap({ today: mixed }), "x", undefined, "daily"));
+    expect(t).toContain("AIU (as logged, Copilot)");
+    expect(t).toContain("Claude Code and Codex log no AIU");
+    expect(t).not.toContain("AIU (as logged) ");
+    const onlyClaude: Totals = { ...totals(undefined, { nanoAiu: m(1e11, 2) }), sources: { "claude-code": 2 }, bySource: { "claude-code": claude } };
+    const t2 = renderPanelHtml(snap({ today: onlyClaude }), "x", undefined, "daily");
+    const tile = t2.slice(t2.indexOf("AIU (as logged, Copilot)"));
+    expect(tile.slice(0, 200)).toContain("—");
+    const plain = text(renderPanelHtml(snap(), "x", undefined, "daily"));
+    expect(plain).toContain("AIU (as logged)");
+    expect(plain).not.toContain("AIU (as logged, Copilot)");
+  });
+});
+
 describe("month helpers", () => {
   it("localMonthStart is local midnight on the 1st (across DST)", () => {
     expect(localMonthStart(new Date("2026-11-05T15:00:00Z"))).toBe(Date.parse("2026-11-01T04:00:00Z"));

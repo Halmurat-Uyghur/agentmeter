@@ -1,8 +1,8 @@
 // Helpers shared by the panel's section renderers. Every log-derived string
 // goes through escapeHtml; "—" means not reported (never 0), "*" incomplete.
-import { type Change, costLabel, estWord, folderListNote, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, unreadableParts, usd } from "../format";
+import { type Change, costLabel, estWord, folderListNote, formatAiu, formatCount, formatDuration, formatUsd, mixedSources, partialNote, spoken, unreadableParts, usd } from "../format";
 import { addMetrics } from "../store";
-import { type Counts, type Health, type Metric, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
+import { type Counts, type Health, type Metric, type Snapshot, SOURCE_LABEL, type Totals, type ViewOptions } from "../types";
 import { icon, type IconName } from "./icons";
 
 export const DASH = "—";
@@ -273,11 +273,19 @@ export function tilesBox(title: string, badge: string, c: Counts | undefined, he
   const notes: string[] = [];
   for (let [label, key, fmt] of TILE_FIELDS) {
     if (label === "USD (est.)") label = costLabel();
-    const m = c ? (c[key] as Metric) : undefined;
+    let m = c ? (c[key] as Metric) : undefined;
+    let aiuNote: string | undefined;
+    // Only Copilot logs AIU: with Claude Code or Codex in scope the tile shows Copilot's part
+    // alone, never their estimated cost as if it were logged AIU (review #8).
+    if (c && label === "AIU (as logged)" && mixedSources(c.sources)) {
+      m = (c as Partial<Totals>).bySource?.copilot?.nanoAiu;
+      label = "AIU (as logged, Copilot)";
+      aiuNote = "Copilot calls only: Claude Code and Codex log no AIU.";
+    }
     const text = m ? withStar(fmt(m), health.partial) : DASH;
     const note = m ? partialNote(m) : undefined;
     if (note) notes.push(`${label}: ${note}.`);
-    tiles.push(`<div class="tile"${titleAttr(note)}><span class="k">${escapeHtml(label)}</span><span class="v">${val(text)}</span></div>`);
+    tiles.push(`<div class="tile"${titleAttr(note && aiuNote ? `${note}. ${aiuNote}` : note ?? aiuNote)}><span class="k">${escapeHtml(label)}</span><span class="v">${val(text)}</span></div>`);
   }
   const calls = c ? callsCell(c.calls, c.callsMissing) : DASH;
   if (c && c.callsMissing > 0) notes.push(`Calls: ${CALLS_MISSING_NOTE}`);

@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Fixes from a Codex review of 0.11.2.
+
+### Fixed
+
+- **Session-growth insight examines Copilot only.** Claude Code and Codex sessions no longer fire "later calls became more expensive" or count in the Insights coverage line, and the month-share floor of every insight uses Copilot's logged cost only, as the section already said.
+- **Estimated cost is no longer shown as logged AIU.** A Claude Code or Codex call shows `—` in the call list's AIU column. With those sources in scope the AIU tile reads "AIU (as logged, Copilot)" and shows Copilot's calls only.
+- **Dropping old logs no longer stalls the window.** Files that leave the history window (on the 1st of the month, say) are forgotten in one pass over the stored records instead of one pass per file.
+- **A Codex session total is not priced as one long prompt.** Counted only for Codex logs with no per-call records, it is now priced only while its total input is under the long-context threshold and the log names one model; otherwise its cost is unknown (`—`, starred), not overstated.
+- **A call without input or output tokens has an unknown cost.** It showed $0.00 (reasoning tokens only) or an unstarred estimate (output missing); it now shows `—` and stars the total.
+- **Current session shows a resumed session's calls.** When a session folder holds calls that name another session id (a resumed or forked Copilot session), the current session card counted none of them; it now counts the folder's own calls too. Its last prompt is the newest one by time across those sessions (sequence numbers only order calls within one session).
+
 ## 0.11.2 - 2026-11-09
 
 Fixes from an external review and a follow-up review panel: discovery stays complete within the history window, every view marks missing data the same way, the latest settings choice wins, and explanations stay within what the data shows.

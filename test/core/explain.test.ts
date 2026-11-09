@@ -78,6 +78,17 @@ describe("promptStats (1.2)", () => {
     expect(lastPrompt([call({ initiator: "agent" })])).toBeUndefined();
     expect(lastPrompt([call({ initiator: "user", nanoAiu: undefined })])!.nanoAiu).toBeUndefined();
   });
+
+  it("lastPrompt over a folder with two sessions is the newest prompt by time, not the highest sequence (review #24)", () => {
+    // Session A's old prompt has a high sequence; session B's newer prompt restarts at 1.
+    const oldA = { ...call({ initiator: "user", nanoAiu: 0.09 * USD }), sessionId: "A", sequence: 100, timestampMs: 1_000 };
+    const newB = { ...call({ initiator: "user", nanoAiu: 0.01 * USD }), sessionId: "B", sequence: 1, timestampMs: 2_000 };
+    const agentB = { ...call({ initiator: "agent", nanoAiu: 0.02 * USD }), sessionId: "B", sequence: 2, timestampMs: 2_500 };
+    const p = lastPrompt([newB, oldA, agentB])!;
+    expect(p.atMs).toBe(2_000);
+    expect(p.agentCalls).toBe(1);
+    expect(p.nanoAiu).toBe(0.03 * USD);
+  });
 });
 
 describe("cacheStats and modelCacheStats (1.3)", () => {
@@ -142,7 +153,7 @@ describe("sessionDetail (1.1)", () => {
     const d = sessionDetail("s1", recs, NONE);
     expect(d.calls).toBe(2);
     expect(d.omitted).toBe(0);
-    expect(d.rows[0]).toEqual({ timestampMs: recs[0]!.timestampMs, model: "model-a", initiator: "user", finishReason: "tool_calls", uncached: 3_000, cacheRead: 6_000, cacheWrite: 1_000, output: 200, reasoning: 50, prompt: 10_000, toolTokens: 900, nanoAiu: 0.01 * USD });
+    expect(d.rows[0]).toEqual({ timestampMs: recs[0]!.timestampMs, source: "copilot", model: "model-a", initiator: "user", finishReason: "tool_calls", uncached: 3_000, cacheRead: 6_000, cacheWrite: 1_000, output: 200, reasoning: 50, prompt: 10_000, toolTokens: 900, nanoAiu: 0.01 * USD });
     expect(d.prompts).toMatchObject({ prompts: 1, agentCalls: 1 });
     expect(d.nanoAiu).toEqual({ sum: 0.02 * USD, reported: 2, missing: 0 });
     for (const row of d.rows) for (const v of Object.values(row)) expect(["number", "string"]).toContain(typeof v);

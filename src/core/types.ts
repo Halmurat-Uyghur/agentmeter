@@ -131,7 +131,7 @@ export interface Counts {
   nanoAiu: Metric;
   /** nanoAiu of call records only, for per-call figures (a session total is not a call) */
   callNanoAiu: Metric;
-  /** records per source (D40); nanoAiu and callNanoAiu count Copilot records only (D46) */
+  /** records per source (D40); nanoAiu and callNanoAiu are Copilot's logged cost plus the other sources' estimates (v0.10) */
   sources?: Partial<Record<Source, number>>;
 }
 
@@ -424,6 +424,8 @@ export interface ToolOverhead {
 /** One call in a session's ledger (v0.6, item 1.1). Every field is a number or a fixed enum. */
 export interface CallRow {
   timestampMs: number;
+  /** the record's source: only a Copilot call logs AIU (review #8) */
+  source?: Source;
   model?: string;
   initiator?: Initiator;
   finishReason?: FinishReason;

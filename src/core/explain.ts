@@ -109,10 +109,17 @@ export function promptStats(calls: UsageRecord[]): PromptStats {
   return out;
 }
 
-/** The newest prompt chain among `calls` (one session's records), or undefined. */
+/**
+ * The newest prompt chain among `calls`, or undefined. Chains are built per session, since
+ * sequence numbers only order calls within one session; a folder can hold several (a resumed
+ * or forked session), so the newest chain by time wins.
+ */
 export function lastPrompt(calls: UsageRecord[]): LastPrompt | undefined {
-  const recs = calls.filter((r) => r.kind === "call").sort(bySessionOrder);
-  const c = chainsOf(recs, { notLinked: 0, unknown: 0 }).at(-1);
+  let c: Chain | undefined;
+  for (const recs of groupBySession(calls).values()) {
+    const last = chainsOf(recs, { notLinked: 0, unknown: 0 }).at(-1);
+    if (last && (!c || last.atMs > c.atMs)) c = last;
+  }
   if (!c) return undefined;
   return { atMs: c.atMs, agentCalls: c.agentCalls, ...(c.priced && { nanoAiu: c.nano }), ...(c.tokensKnown && { tokens: c.tokens }) };
 }
@@ -200,7 +207,7 @@ export function toolOverhead(calls: UsageRecord[], conventions: Conventions): To
 
 function rowOf(r: UsageRecord, conventions: Conventions): CallRow {
   const t = r.tokens;
-  const row: CallRow = { timestampMs: r.timestampMs };
+  const row: CallRow = { timestampMs: r.timestampMs, source: r.source };
   if (r.model !== undefined) row.model = r.model;
   if (r.initiator !== undefined) row.initiator = r.initiator;
   if (r.finishReason !== undefined) row.finishReason = r.finishReason;

@@ -142,6 +142,20 @@ describe("session ledger (1.1)", () => {
     expect(text(ledger)).not.toMatch(/\$0\.00\b/);
   });
 
+  it("a Claude Code or Codex call shows — for AIU, never its estimated cost as logged AIU (review #8)", () => {
+    const saved = n; // later tests depend on the call counter
+    const ledgerRow = (r: UsageRecord) => {
+      const html = render(snap({ recs: [r] }), "sessions");
+      const ledger = html.slice(html.indexOf("Calls in session"));
+      return text(ledger.slice(ledger.indexOf("<tbody"), ledger.indexOf("</tbody>")));
+    };
+    const claude = ledgerRow(call({ source: "claude-code", nanoAiu: 1.23 * USD, typeCost: undefined }));
+    expect(claude).toContain("$1.23");
+    expect(claude).not.toContain("123");
+    expect(ledgerRow(call({ nanoAiu: 1.23 * USD }))).toContain("123");
+    n = saved;
+  });
+
   it(`folds rows after ${LEDGER_SHOWN} and says when older calls are not listed`, () => {
     const recs = Array.from({ length: 30 }, () => call());
     const s = snap({ recs });
