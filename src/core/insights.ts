@@ -28,10 +28,18 @@ export interface LongContextEntry {
   prefix?: boolean;
   thresholdTokens: number;
 }
-// GitHub Docs "Models and pricing", as of 2026-11. Unknown ids never fire.
+// GitHub Docs "Models and pricing" (every model with a "Long context" row), checked
+// 2026-11-08. Unknown ids never fire.
 export const LONG_CONTEXT_THRESHOLDS: readonly LongContextEntry[] = [
   { id: "claude-haiku-5.5", thresholdTokens: 100_000 },
+  { id: "gpt-5.6-luna", thresholdTokens: 200_000 },
+  { id: "gpt-5.6-sol", thresholdTokens: 272_000 },
+  { id: "gpt-5.6-terra", thresholdTokens: 272_000 },
+  { id: "gpt-6-astra", thresholdTokens: 272_000 },
+  { id: "gpt-6-luna", thresholdTokens: 272_000 },
   { id: "gpt-6-sol", thresholdTokens: 272_000 },
+  { id: "gpt-6.1-sol", thresholdTokens: 272_000 },
+  { id: "gpt-6.1-terra", thresholdTokens: 272_000 },
   { id: "grok-4", prefix: true, thresholdTokens: 200_000 },
 ];
 /** I1 fires at 3 priced calls over the threshold whose AIU reaches $0.50 (no month-share floor).
