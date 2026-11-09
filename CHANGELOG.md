@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.10.0 - 2026-11-08
+
+A Source dropdown in the panel, estimated cost for Claude Code and Codex from API list prices, and a fix for the panel shifting sideways between sections.
+
+### Added
+
+- **A Source dropdown in the details panel.** The toolbar on every section now has **Source: All ▾**, a menu of All sources and each enabled source (a found-or-not note, and a link to turn sources on or off). Picking one filters the month view, trend and tables to it, the same filter the side bar's By source rows and **Filter by Project, Tool or Source…** set. It is a native menu, so the panel still runs no scripts. It shows when more than one source is on.
+- **Estimated cost for Claude Code and Codex.** Each call is priced from its logged tokens at the public API list price of its model (Anthropic and OpenAI pricing pages, 2026-11-08): uncached input, cache reads, cache writes (Claude Code at the 1-hour rate, Codex at the 30-minute rate) and output, with long-context rates where a model has them. USD (est.) now covers every source in totals, the By source card, Models, Projects, Sessions, daily bars and the trend. A model with no list price shows `—` and stars the total. Targets still compare Copilot's logged cost only.
+
+### Fixed
+
+- **The panel no longer shifts sideways when you switch sections.** A short section (Insights, and often Tools or Projects) had no scrollbar while the others had one, so the toolbar and content jumped by the scrollbar's width on each switch. The scrollbar's space is now kept on every section.
+
 ## 0.9.0 - 2026-11-08
 
 A Settings section in the details panel, daily and weekly targets, premade colour palettes, and a fix for settings saves that VS Code refuses: the panel now keeps what you chose and says why the save failed. The design is in `docs/superpowers/specs/2026-11-08-settings-section-design.md` (D1–D12).

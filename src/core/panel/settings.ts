@@ -127,7 +127,7 @@ function targetsCard(view: ViewOptions, p: Prefs): string {
   );
   const pending = view.currencyPending ? `<p class="fine">No ${escapeHtml(view.currencyPending)} exchange rate yet: targets are compared once it arrives.</p>` : "";
   const shown = view.range ? `This month is compared against ${formatRange(view.range)}.` : "";
-  const intro = `<p class="intro">${escapeHtml(`Amounts are estimated cost in ${code} (Copilot only: Claude Code and Codex log no cost). A target never stops anything; it marks today, the last 7 days and this month as under, in range or over. ${shown}`.trim())}</p>`;
+  const intro = `<p class="intro">${escapeHtml(`Amounts are estimated cost in ${code}. Targets compare Copilot's logged cost only; Claude Code and Codex cost is an estimate from list prices and is not counted. A target never stops anything; it marks today, the last 7 days and this month as under, in range or over. ${shown}`.trim())}</p>`;
   return card("set-targets", "trend", "Targets", `in ${code}`, intro + rows.join("") + conflict + alert + pending, "settings");
 }
 

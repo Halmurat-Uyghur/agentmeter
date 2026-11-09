@@ -1,7 +1,7 @@
 // Overview (D32, laid out by A2): the Today hero (with the activity heatmap and the
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
-import { costLabel, formatCount, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
+import { costLabel, formatCount, targetUsd, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
 import type { MonthSummary, Snapshot, ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
@@ -55,7 +55,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.
   let wState = "";
   if (view.weekTarget) {
-    const state = rangeState(w ? usd(w.nanoAiu) : undefined, view.weekTarget);
+    const state = rangeState(targetUsd(w), view.weekTarget);
     wState = state;
     wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
     wNotes.unshift(RANGE_LABEL[state]);
@@ -80,7 +80,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const monthNotes = [mt ? partialNote(headlineMetric(mt, view)) : undefined];
   if (view.range) {
     // The target state of the viewed month, spent so far in estimated USD.
-    const state = rangeState(mt ? usd(mt.nanoAiu) : undefined, view.range);
+    const state = rangeState(targetUsd(mt), view.range);
     monthCls += ` st-${state}`;
     monthSub += ` · Target ${formatRange(view.range)}${mixedSources(mt?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
     monthNotes.unshift(RANGE_LABEL[state]);
@@ -115,7 +115,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
   const viewed = s.month?.monthStartMs;
   const values = hist.map((h) => headlineValue(h.totals, view));
   const range = view.unit === "cost" ? view.range : undefined;
-  // The target is in estimated USD, which only Copilot logs (D46).
+  // The target compares Copilot's logged USD only (D46, v0.10): say so when other sources are in scope.
   const only = mixedSources(s.month?.totals?.sources) ? " (Copilot only)" : "";
   const top = Math.max(0, ...values.map((v) => v ?? 0), range?.max ?? 0, range?.min ?? 0);
   const scale = top > 0 ? top * 1.08 : 1;
@@ -126,7 +126,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     const v = values[i];
     const m = h.totals ? headlineMetric(h.totals, view) : undefined;
     const text = m ? withStar(fmt(m), s.health.partial) : DASH;
-    const state = range ? rangeState(h.totals ? usd(h.totals.nanoAiu) : undefined, range) : "none";
+    const state = range ? rangeState(targetUsd(h.totals), range) : "none";
     const d = new Date(h.monthStartMs);
     const label = MONTHS[d.getMonth()]!.slice(0, 3) + (d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : "");
     const isSel = h.monthStartMs === viewed;

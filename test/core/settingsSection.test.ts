@@ -144,7 +144,7 @@ describe("Settings section: Targets card", () => {
     expect(alert.value).toBe("On");
     expect(alert.actions).toContain(`href="${href("setTargetAlert", "off")}"`);
     expect(alert.actions).toContain(">Turn off</a>");
-    expect(html).toContain("Amounts are estimated cost in CAD (Copilot only: Claude Code and Codex log no cost).");
+    expect(html).toContain("Amounts are estimated cost in CAD. Targets compare Copilot&#39;s logged cost only; Claude Code and Codex cost is an estimate from list prices and is not counted.");
 
     const none = main(render(snap(), { unit: "tokens", range: { max: 0.5 } }));
     const w = row(none, "Weekly target (most)");

@@ -29,7 +29,7 @@ output below, which prints key paths, types and counts, never values. Read it be
 - VS Code version: <!-- Help → About, or `code --version` -->
 - Copilot version: <!-- `copilot --version` for the CLI; Copilot Chat extension version from the Extensions view -->
 - Claude Code / Codex CLI version, if the problem involves them: <!-- `claude --version`, `codex --version` -->
-- Copilot Usage Monitor version: <!-- e.g. 0.9.0 -->
+- Copilot Usage Monitor version: <!-- e.g. 0.10.0 -->
 
 **Shape-only probe output (optional)**
 

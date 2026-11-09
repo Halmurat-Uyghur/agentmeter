@@ -27,6 +27,7 @@ import {
   type SourceReader,
   type SourceUnreadable,
 } from "./source";
+import { estimateNanoAiu } from "./pricing";
 import { ByteTailer, type LineHandler } from "./tailer";
 import type { Tokens, UsageRecord } from "./types";
 
@@ -244,6 +245,7 @@ function parseRecord(buf: Buffer, start: number, end: number, state: CodexFileSt
     tokens,
   };
   if (model !== undefined) record.model = model;
+  priced(record);
   return { kind: "usage", record };
 }
 
@@ -307,7 +309,14 @@ function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileSta
     tokens,
   };
   if (state.latestModel !== undefined) record.model = state.latestModel;
+  priced(record);
   return { kind: "total", record };
+}
+
+/** Codex logs no cost: the record's cost is estimated from its tokens at the model's list price (v0.10). */
+function priced(record: UsageRecord): void {
+  const cost = estimateNanoAiu(record);
+  if (cost !== undefined) record.nanoAiu = cost;
 }
 
 /**
