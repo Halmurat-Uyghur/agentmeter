@@ -179,7 +179,12 @@ describe("source filter chip", () => {
     const html = renderPanelHtml(snap(mixedTotals(), { filter: { source: "claude-code" } }), "csp", TOKENS, "overview");
     expect(html).toMatch(/Source: <b>Claude Code<\/b>/);
     expect(html).toContain(`href="${filterHref("source", "").replace(/"/g, "&quot;")}"`);
-    expect(html).toContain('aria-label="Clear source filter: Claude Code"');
+    expect(html).toContain('aria-label="Source: Claude Code, clear filter"');
+    // WCAG 2.5.3: the accessible name starts with the visible label.
+    const a = /<a class="fchip"[^>]*aria-label="([^"]*)"[^>]*>([\s\S]*?)<\/a>/.exec(html)!;
+    const visible = a[2]!.replace(/<span aria-hidden="true">[^<]*<\/span>/g, "").replace(/<[^>]+>/g, "").trim();
+    expect(visible).toBe("Source: Claude Code");
+    expect(a[1]!.startsWith(visible)).toBe(true);
   });
 });
 
@@ -466,5 +471,69 @@ describe("estimated cost for Claude Code and Codex (v0.10)", () => {
     const html = renderPanelHtml(snap(t, { thisMonth: t }), "csp", view, "overview");
     expect(html).toContain("(Copilot only): In range");
     expect(html).not.toContain("(Copilot only): Over");
+  });
+});
+
+describe("source scope: daily and weekly targets keep comparing Copilot's logged cost (UI-5)", () => {
+  const CPX = counts({ nanoAiu: m(5e11, 2), sources: { copilot: 2 } }); // $5.00 Copilot
+  const CCX = counts({ nanoAiu: m(1e10, 2), sources: { "claude-code": 2 } }); // $0.10 Claude Code (est.)
+  const all = (): Totals => ({ ...counts({ records: 4, calls: 4, nanoAiu: m(5.1e11, 4), sources: { copilot: 2, "claude-code": 2 } }), byModel: { "model-a": CPX, "claude-x": CCX }, bySource: { copilot: CPX, "claude-code": CCX } });
+  const ccOnly = (): Totals => ({ ...CCX, byModel: { "claude-x": CCX }, bySource: { "claude-code": CCX } });
+  const cpOnly = (): Totals => ({ ...CPX, byModel: { "model-a": CPX }, bySource: { copilot: CPX } });
+  const act = { fromMs: MONTH0, days: [] };
+  const VIEW: ViewOptions = { unit: "cost", dayTarget: { max: 1 }, weekTarget: { max: 2 } };
+  const daily = (h: string) => /Daily target [^<]*/.exec(h)?.[0];
+  const weekly = (h: string) => /Weekly target [^<]*/.exec(h)?.[0];
+  const heroTag = (h: string) => /<section class="card hero[^"]*"/.exec(h)![0];
+  const weekTag = (h: string) => /<section class="card kpi k3[^"]*"/.exec(h)![0];
+
+  it("Source: Claude Code, Copilot over both targets: Over, tagged Copilot only, the figure stays Claude Code's", () => {
+    const s = snap(all(), { last7: all(), thisMonth: all(), filter: { source: "claude-code" }, activity: act, sourceScope: { source: "claude-code", today: ccOnly(), last7: ccOnly(), activity: act } });
+    const html = renderPanelHtml(s, "csp", VIEW, "overview");
+    expect(daily(html)).toBe("Daily target up to $1.00 (Copilot only): Over");
+    expect(weekly(html)).toBe("Weekly target up to $2.00 (Copilot only): Over");
+    expect(heroTag(html)).toContain("st-over");
+    expect(weekTag(html)).toContain("st-over");
+    const hero = html.slice(html.indexOf('id="today-title"'), html.indexOf('id="today-title"') + 600);
+    expect(hero).toContain("$0.10");
+    expect(hero).not.toContain("$5.1");
+  });
+
+  it("the scoped source has nothing today or this week: the targets still say Over (Copilot only)", () => {
+    const s = snap(all(), { last7: all(), filter: { source: "codex" }, activity: act, sourceScope: { source: "codex", activity: act } });
+    const html = renderPanelHtml(s, "csp", VIEW, "overview");
+    expect(daily(html)).toBe("Daily target up to $1.00 (Copilot only): Over");
+    expect(weekly(html)).toBe("Weekly target up to $2.00 (Copilot only): Over");
+    expect(heroTag(html)).toContain("st-over");
+    expect(weekTag(html)).toContain("st-over");
+  });
+
+  it("no unfiltered record today or this week: the targets compare no data, not the scoped figure", () => {
+    // A scoped total without a per-source split would read "Not compared"; nothing logged reads In range.
+    const noSplit = { ...CCX, byModel: { "claude-x": CCX } } as Totals;
+    const { today: _t, ...base } = snap(all(), { filter: { source: "claude-code" }, activity: act, sourceScope: { source: "claude-code", today: noSplit, last7: noSplit, activity: act } });
+    const html = renderPanelHtml(base as Snapshot, "csp", VIEW, "overview");
+    expect(daily(html)).toBe("Daily target up to $1.00 (Copilot only): In range");
+    expect(weekly(html)).toBe("Weekly target up to $2.00 (Copilot only): In range");
+  });
+
+  it("Source: Copilot compares the card's own figure, untagged", () => {
+    const s = snap(all(), { last7: all(), filter: { source: "copilot" }, activity: act, sourceScope: { source: "copilot", today: cpOnly(), last7: cpOnly(), activity: act } });
+    expect(panelSnapshot(s).targetBasis).toBeUndefined();
+    const html = renderPanelHtml(s, "csp", VIEW, "overview");
+    expect(daily(html)).toBe("Daily target up to $1.00: Over");
+    expect(weekly(html)).toBe("Weekly target up to $2.00: Over");
+  });
+
+  it("panelSnapshot keeps the unfiltered Today and Last 7 days as the target basis only under another source", () => {
+    const s = snap(all(), { last7: all(), filter: { source: "claude-code" }, activity: act, sourceScope: { source: "claude-code", today: ccOnly(), activity: act } });
+    const p = panelSnapshot(s);
+    expect(p.targetBasis?.today).toBe(s.today);
+    expect(p.targetBasis?.last7).toBe(s.last7);
+    expect(p.today).toBe(s.sourceScope!.today);
+    expect(p.last7).toBeUndefined();
+    const project = snap(all(), { last7: all(), filter: { project: "acme/web" } });
+    expect(panelSnapshot(project)).toBe(project);
+    expect(project.targetBasis).toBeUndefined();
   });
 });

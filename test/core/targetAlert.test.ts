@@ -48,6 +48,16 @@ describe("target-crossed alert", () => {
     expect(new TargetAlertState().next(snap(80), { unit: "tokens", range: { max: 60 } }, true)).toContain("$80.00 est. (target up to $60.00)");
   });
 
+  it("mixed sources: states Copilot's logged cost, the figure it compared, not the all-source month", () => {
+    const copilot = t(61.2);
+    const claude: Totals = { ...t(200), nanoAiu: m(200e11, 1, 1) }; // an estimate with one unpriced call
+    const thisMonth: Totals = { ...t(261.2), nanoAiu: m(261.2e11, 1, 1), records: 2, bySource: { copilot, "claude-code": claude }, sources: { copilot: 1, "claude-code": 1 } };
+    const s: Snapshot = { ...snap(undefined), thisMonth };
+    expect(new TargetAlertState().next(s, { unit: "cost", range: { max: 60 } }, true)).toBe(
+      "Copilot usage this month is over your target: $61.20 est. (target up to $60.00). Locally observed from Copilot session logs on this computer.",
+    );
+  });
+
   it("no target max, no data, or no snapshot: nothing", () => {
     const a = new TargetAlertState();
     expect(a.next(snap(80), { unit: "cost" }, true)).toBeUndefined();

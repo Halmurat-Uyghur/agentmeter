@@ -215,7 +215,7 @@
           {
             "id": "target",
             "title": "Set a target range",
-            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency, and a most for today and for the last 7 days. The status bar icon then shows the month as under, in range or over; the panel marks today and the last 7 days.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
+            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency, and a most for today and for the last 7 days. The status bar icon then shows the month as under, in range or over; the panel marks today and the last 7 days.\n[Set the target range](command:copilotUsageMonitor.setTarget) offers the four targets: pick one, enter its amount, and repeat for the others.",
             "media": {
               "markdown": "media/walkthrough/target.md"
             }
@@ -280,7 +280,7 @@
           "default": "tokens",
           "enumDescriptions": [
             "Input + output tokens.",
-            "Estimated USD: Copilot's logged AI credits × $0.01."
+            "Estimated USD: Copilot's logged AI credits × $0.01; Claude Code and Codex tokens at API list prices."
           ],
           "description": "Unit for the status bar and panel figures."
         },

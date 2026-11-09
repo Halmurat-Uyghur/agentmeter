@@ -7,7 +7,10 @@
 //   - opens only `<root>/session-state/<folder>/events.jsonl`; everything else is readdir/lstat;
 //   - walks `data` key paths only for the usage/session event types below;
 //   - skips the `context` and `codeChanges` subtrees;
-//   - masks UUID-shaped keys as <uuid> and any other non-identifier key as <key>;
+//   - masks every child key of a map keyed by data (DATA_KEYED: modelMetrics and
+//     providerModelMetrics → <model>, toolCounts → <tool>, agentMetrics → <agent>,
+//     usageAccountingWatermarks → <key>), so no model, tool or agent name is printed;
+//   - masks other UUID-shaped keys as <uuid> and any other non-identifier key as <key>;
 //   - aborts, printing nothing, if any output token contains "/".
 //
 // Root: $COPILOT_HOME (~ expanded, relative → home) or ~/.copilot.
@@ -31,6 +34,15 @@ const KNOWN_NAMES = new Set([
 ]);
 const PREFIX = Buffer.from('{"type":"');
 const SKIP_KEYS = new Set(["context", "codeChanges"]);
+// Maps keyed by data (model, tool, agent names, session ids): every child key of one of
+// these, at any depth of the path, is printed as the mask, never as itself.
+const DATA_KEYED = new Map([
+  ["modelMetrics", "<model>"],
+  ["providerModelMetrics", "<model>"],
+  ["toolCounts", "<tool>"],
+  ["agentMetrics", "<agent>"],
+  ["usageAccountingWatermarks", "<key>"],
+]);
 const WALK_TYPES = new Set([
   "session.usage_record",
   "session.usage_checkpoint",
@@ -74,7 +86,8 @@ function typeOf(v) {
 }
 
 function maskKey(key, parentPath) {
-  if (parentPath.endsWith("modelMetrics")) return "<model>";
+  const parent = parentPath.slice(parentPath.lastIndexOf(".") + 1);
+  if (DATA_KEYED.has(parent)) return DATA_KEYED.get(parent);
   if (UUID.test(key)) return "<uuid>";
   return IDENT.test(key) ? key : "<key>";
 }

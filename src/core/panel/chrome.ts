@@ -111,7 +111,7 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
       : link("seg", label, commandHref("copilotUsageMonitor.setUnit", u), `Show ${u === "cost" ? estWord() : "tokens"}`);
   const f = s.filter;
   const chip = (kind: "project" | "tool" | "source", label: string, value: string) =>
-    `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`Clear ${kind} filter: ${value}`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
+    `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`${label}: ${value}, clear filter`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
   const filters = f
     ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">${escapeHtml(scopeNote(f))}</span></div>`
     : "";

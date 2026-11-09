@@ -1,7 +1,7 @@
 // The opt-in target-crossed alert (v0.6, owner-approved): decides when to say, once per
 // calendar month per window session, that this month's estimated cost went above the
 // monthly target max. Pure and in memory only; src/vscode/targetAlert.ts shows it.
-import { currentRangeState, formatRange, formatUsd, thisMonthTotals } from "./format";
+import { currentRangeState, formatRange, formatUsd, targetMetric, thisMonthTotals } from "./format";
 import type { Snapshot, ViewOptions } from "./types";
 
 export class TargetAlertState {
@@ -21,7 +21,8 @@ export class TargetAlertState {
     const key = `${d.getFullYear()}-${d.getMonth()}`;
     if (this.shown === key) return undefined;
     this.shown = key;
-    const spent = formatUsd(thisMonthTotals(s)!.nanoAiu);
+    // The Copilot cost the target compared (currentRangeState), not the all-source month.
+    const spent = formatUsd(targetMetric(thisMonthTotals(s)!)!);
     return `Copilot usage this month is over your target: ${spent} est. (target ${formatRange(view.range)}). Locally observed from Copilot session logs on this computer.`;
   }
 }

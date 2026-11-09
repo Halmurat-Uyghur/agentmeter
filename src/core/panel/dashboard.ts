@@ -163,9 +163,10 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
   let heroCls = "";
   const heroNotes: (string | undefined)[] = [today ? partialNote(headlineMetric(today, view)) : undefined];
   if (view.dayTarget) {
-    const st = targetStatus(today, view.dayTarget, s.health);
+    // Under another source, the unfiltered day: the target compares Copilot's logged cost.
+    const st = targetStatus(s.targetBasis ? s.targetBasis.today : today, view.dayTarget, s.health);
     heroCls = ` st-${st.state}`;
-    parts.push(`Daily target ${formatRange(view.dayTarget)}${mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`);
+    parts.push(`Daily target ${formatRange(view.dayTarget)}${s.targetBasis || mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`);
     heroNotes.unshift(rangeLabel(st));
   }
 

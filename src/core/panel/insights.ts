@@ -1,6 +1,6 @@
 // Insights (D32; O2 rules I1, I2 and I3). Neutral copy: what was seen and what it
 // cost, never a "saving". Session totals are excluded and the footer says so.
-import { INSIGHTS_SOURCES_NOTE, mixedSources, money } from "../format";
+import { formatCount, INSIGHTS_SOURCES_NOTE, mixedSources, money } from "../format";
 import { GROWTH_CAUSE_TEXT } from "../insights";
 import type { Insight, Snapshot, ViewOptions } from "../types";
 import { escapeHtml, plural, shortId, viewedName } from "./shared";
@@ -17,7 +17,7 @@ function kTokens(n: number): string {
 }
 
 function evidence(i: Insight, view: ViewOptions): string {
-  const tok = i.tokens >= 1e6 ? `${(i.tokens / 1e6).toFixed(1)}M` : i.tokens >= 1e3 ? `${(i.tokens / 1e3).toFixed(1)}K` : String(i.tokens);
+  const tok = formatCount({ sum: i.tokens, reported: 1, missing: 0 });
   const figure = view.unit === "cost" ? `about ${money(i.nanoAiu / 1e11)} (est.)` : `${tok} input + output tokens`;
   return `${plural(i.calls, "call")} · ${plural(i.sessions, "session")} · ${figure}`;
 }
@@ -72,7 +72,9 @@ function card(i: Insight, view: ViewOptions): string {
     action = `Running /compact, or starting a fresh session, before ${k} keeps calls in the lower price band.`;
   } else {
     title = `Low cache reuse on ${i.model}`;
-    body = `Over ${plural(i.calls, "call")} in ${plural(i.sessions, "session")}, about ${Math.floor(i.share * 10)} in 10 prompt tokens were read from cache. These calls cost about ${usd} (est.).`;
+    const tenths = Math.floor(i.share * 10);
+    const read = i.share === 0 ? "no prompt tokens were" : tenths === 0 ? "fewer than 1 in 10 prompt tokens were" : `about ${tenths} in 10 prompt tokens were`;
+    body = `Over ${plural(i.calls, "call")} in ${plural(i.sessions, "session")}, ${read} read from cache. These calls cost about ${usd} (est.).`;
     action = "The cache starts over when you switch model or reasoning effort mid-session, change the enabled tools or MCP servers, or come back to a session after a long break.";
   }
   return `<article class="ins" aria-labelledby="ins-${i.id}"><h3 id="ins-${i.id}">${escapeHtml(title)}</h3><p class="ev muted">${escapeHtml(evidence(i, view))}</p><p>${escapeHtml(body)}</p><p class="muted">${escapeHtml(action)}</p></article>`;

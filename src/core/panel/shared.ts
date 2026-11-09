@@ -15,7 +15,8 @@ export const MONTHS = [
 /**
  * The snapshot the details panel draws (v0.11.1): with a source filter, Today, Last 7 days,
  * daily activity and the current session are that source's (`sourceScope`). The status bar
- * and the side bar keep reading the unfiltered snapshot.
+ * and the side bar keep reading the unfiltered snapshot. The daily and weekly targets compare
+ * Copilot's logged cost whatever the filter: under another source they read `targetBasis`.
  */
 export function panelSnapshot(s: Snapshot): Snapshot {
   const sc = s.sourceScope;
@@ -23,6 +24,7 @@ export function panelSnapshot(s: Snapshot): Snapshot {
   const { today: _t, last7: _w, prior7: _p, current: _c, ...rest } = s;
   return {
     ...rest,
+    ...(sc.source !== "copilot" && { targetBasis: { today: s.today, last7: s.last7 } }),
     activity: sc.activity,
     ...(sc.today !== undefined && { today: sc.today }),
     ...(sc.last7 !== undefined && { last7: sc.last7 }),

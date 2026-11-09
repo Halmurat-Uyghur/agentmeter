@@ -9,7 +9,12 @@
 //     (never `workspace.json`, `state.vscdb`, transcripts or any other file);
 //   - in chatSessions files walks key paths only to depth 3 and, below that, only
 //     under keys that look like usage (`token`, `usage`, `model`, `result`, `metadata`),
-//     masking array indices and UUID-shaped / non-identifier keys;
+//     masking array indices and UUID-shaped / non-identifier keys; the keys of a map
+//     keyed by data (ID_KEYED: `toolCallResults`, keyed by tool-call id) print as <id>
+//     and every key below them as <key>, in key paths and in patch paths alike;
+//   - in debug-log events prints the top-level keys and, below them (`attrs` and any
+//     other object), only keys in ATTR_KEYS (token, model, version, time, duration and
+//     id field names); every other nested key prints as <key>, still counted;
 //   - prints a string value only if it passes an enum regex for that one field;
 //   - compares the two sources (debug-logs vs ~/.copilot/session-state usage records)
 //     by counts only: id equality and (token tuple, ±5 s) matches;
@@ -32,6 +37,18 @@ const ISO_OFF = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}:\d{2}
 const USAGEISH = /token|usage|model|result|metadata|timing|aiu/i;
 const TS_KEYS = new Set(["ts", "timestamp", "time", "startTime", "endTime", "creationDate", "lastMessageDate"]);
 const TOKEN_ATTRS = ["inputTokens", "outputTokens", "cachedTokens", "copilotUsageNanoAiu"];
+// Debug-log events: the only nested key names (in `attrs` or any other object below the
+// top level) that are printed; any other key there may be data (a tool or file name) and
+// prints as <key>.
+const ATTR_KEYS = new Set([
+  ...TOKEN_ATTRS, ...TS_KEYS,
+  "model", "copilotVersion", "vscodeVersion",
+  "promptTokens", "completionTokens", "totalTokens", "reasoningTokens", "cacheReadTokens", "cacheWriteTokens",
+  "duration", "durationMs", "elapsedMs", "totalElapsed",
+  "id", "spanId", "parentSpanId", "sid", "sessionId", "requestId",
+]);
+// chatSessions: maps keyed by data (ids), at any depth of a key path or patch path.
+const ID_KEYED = new Set(["toolCallResults"]);
 
 // ---------------------------------------------------------------- helpers
 
@@ -53,6 +70,9 @@ function maskKey(k) {
   if (UUID.test(k)) return "<uuid>";
   if (/^\d+$/.test(k)) return "<n>";
   return IDENT.test(k) ? k : "<key>";
+}
+function attrKey(k) {
+  return ATTR_KEYS.has(k) ? k : "<key>";
 }
 function bump(map, key, n = 1) {
   map.set(key, (map.get(key) ?? 0) + n);
@@ -90,7 +110,7 @@ function tsMs(v) {
   return undefined;
 }
 
-/** Full key-path walk (for debug-log events, which carry no prompt text in attrs we print). */
+/** Key-path walk for debug-log events: nested keys print only when in ATTR_KEYS. */
 function walk(value, path, paths, depth, maxDepth) {
   if (value === null || typeof value !== "object" || depth >= maxDepth) return;
   if (Array.isArray(value)) {
@@ -101,26 +121,30 @@ function walk(value, path, paths, depth, maxDepth) {
     return;
   }
   for (const [k, v] of Object.entries(value)) {
-    const p = `${path}.${maskKey(k)}`;
+    const p = `${path}.${attrKey(k)}`;
     pathBump(paths, p, typeOf(v));
     walk(v, p, paths, depth + 1, maxDepth);
   }
 }
-/** Restricted walk for chatSessions: shallow everywhere, deeper only under usage-like keys. */
-function walkChat(value, path, paths, depth, usageBranch) {
+/**
+ * Restricted walk for chatSessions: shallow everywhere, deeper only under usage-like keys.
+ * idState: 0 normal; 1 this object's keys are ids (<id>); 2 below an id (every key <key>).
+ */
+function walkChat(value, path, paths, depth, usageBranch, idState = 0) {
   if (value === null || typeof value !== "object" || depth > 9) return;
   if (!usageBranch && depth >= 4) return;
   if (Array.isArray(value)) {
     for (const item of value) {
       pathBump(paths, `${path}[]`, typeOf(item));
-      walkChat(item, `${path}[]`, paths, depth + 1, usageBranch);
+      walkChat(item, `${path}[]`, paths, depth + 1, usageBranch, idState);
     }
     return;
   }
   for (const [k, v] of Object.entries(value)) {
-    const p = `${path}.${maskKey(k)}`;
+    const p = `${path}.${idState === 1 ? "<id>" : idState === 2 ? "<key>" : maskKey(k)}`;
     pathBump(paths, p, typeOf(v));
-    walkChat(v, p, paths, depth + 1, usageBranch || USAGEISH.test(k));
+    const next = idState > 0 ? 2 : ID_KEYED.has(k) ? 1 : 0;
+    walkChat(v, p, paths, depth + 1, usageBranch || (idState === 0 && USAGEISH.test(k)), next);
   }
 }
 
@@ -347,7 +371,7 @@ for (const f of debugFiles) {
     for (const k of Object.keys(a)) if (TS_KEYS.has(k)) bump(dbg.llm.ts, `attrs.${k} ${tsClass(a[k])}`);
     for (const [k, v] of [...Object.entries(ev).map(([k, v]) => [`top.${k}`, v]), ...Object.entries(a).map(([k, v]) => [`attrs.${k}`, v])]) {
       if (/id$/i.test(k) && typeof v === "string") {
-        bump(dbg.llm.idKeys, `${maskKey(k.split(".")[0])}.${maskKey(k.split(".")[1])} ${UUID.test(v) ? "uuid" : "string"}`);
+        bump(dbg.llm.idKeys, `${k.split(".")[0]}.${k.startsWith("attrs.") ? attrKey(k.slice(6)) : maskKey(k.slice(4))} ${UUID.test(v) ? "uuid" : "string"}`);
         if (cliFolderIds.has(v.toLowerCase())) dbg.anyStringIsCliFolder++;
         if (/session/i.test(k)) { dbg.sessionIdPresent++; if (v === f.sessionName) dbg.sessionIdEqualsDir++; }
       }
@@ -427,7 +451,14 @@ for (const p of chatFiles) {
     if (g) bump(chat.gate, `byte gate {"kind":1,"k":["requests",<n>,"${g[1]}"],"v": → ${typeOf(ev.v)}`);
     else if (/"(promptTokens|completionTokens)"/.test(head) && ev.kind === 1) bump(chat.gate, "token patch NOT matching byte gate");
     if (!chat.paths.has(kind)) chat.paths.set(kind, new Map());
-    walkChat(ev, "", chat.paths.get(kind), 0, false);
+    // A patch whose path k reaches into an id-keyed map: walk its v with that id state.
+    const kState = Array.isArray(ev.k) ? idStateAfter(ev.k) : 0;
+    if (kState > 0 && ev.v && typeof ev.v === "object") {
+      const { v, ...rest } = ev;
+      walkChat(rest, "", chat.paths.get(kind), 0, false);
+      pathBump(chat.paths.get(kind), ".v", typeOf(v));
+      walkChat(v, ".v", chat.paths.get(kind), 1, true, kState);
+    } else walkChat(ev, "", chat.paths.get(kind), 0, false);
     if (Array.isArray(ev.k)) bump(chat.kShapes, `${kind} k=${kShape(ev.k)} v:${typeOf(ev.v)}`);
     // Replay: kind 0 = full snapshot, kind 1 = set value at path k, kind 2 = append array v at path k.
     if (ev.kind === 0 && ev.v && typeof ev.v === "object") state = ev.v;
@@ -455,7 +486,19 @@ for (const p of chatFiles) {
   }
 }
 function kShape(k) {
-  return k.map((x) => (Number.isInteger(x) ? "<n>" : typeof x === "string" && IDENT.test(x) ? x : "<key>")).join(".");
+  let idState = 0;
+  return k.map((x) => {
+    if (Number.isInteger(x)) return "<n>";
+    const shown = idState === 1 ? "<id>" : idState === 2 ? "<key>" : typeof x === "string" && IDENT.test(x) ? x : "<key>";
+    idState = idState > 0 ? 2 : ID_KEYED.has(x) ? 1 : 0;
+    return shown;
+  }).join(".");
+}
+/** The walkChat id state of the value at patch path k (array indices keep the state). */
+function idStateAfter(k) {
+  let idState = 0;
+  for (const x of k) if (!Number.isInteger(x)) idState = idState > 0 ? 2 : ID_KEYED.has(x) ? 1 : 0;
+  return idState;
 }
 function getPath(obj, path) {
   let cur = obj;
