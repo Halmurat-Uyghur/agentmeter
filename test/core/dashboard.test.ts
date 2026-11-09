@@ -492,3 +492,37 @@ describe("v0.4 review fixes (panel a11y and design)", () => {
     expect(html).not.toMatch(/<th>/);
   });
 });
+
+describe("daily and weekly targets on the Overview (v0.9)", () => {
+  it("Today shows the daily target state and colours the figure; Last 7 days the weekly one", () => {
+    const s = snap({ last7: totals({ nanoAiu: m(2e11, 2) }) }); // $2.00 over the last 7 days; today is $0.04
+    const html = render(s, { unit: "cost", dayTarget: { max: 0.01 }, weekTarget: { max: 5 } });
+    expect(html).toContain('<section class="card hero st-over" aria-labelledby="today-title">');
+    const hero = between(html, 'class="card hero');
+    expect(text(hero)).toContain("Daily target up to $0.010: Over");
+    expect(hero).toMatch(/<div class="hero-main" title="over target[^"]*">/);
+    expect(html).toContain('<section class="card kpi k3 st-in" aria-labelledby="k3-title"');
+    const week = between(html, 'class="card kpi k3');
+    expect(text(week)).toContain("Weekly target up to $5.00: In range");
+    expect(week).toMatch(/aria-labelledby="k3-title" title="in target range /);
+    expect(text(html).split(LOCAL_BANNER).join("")).not.toMatch(COPY_RE);
+    // tokens view still shows the state (the target is estimated cost either way, like Month to date)
+    const tok = render(s, { unit: "tokens", dayTarget: { max: 0.01 } });
+    expect(tok).toContain('<section class="card hero st-over"');
+    expect(text(between(tok, 'class="card hero'))).toContain("Daily target up to $0.010: Over");
+    // no target: no state and no line
+    const plain = render(s, { unit: "cost" });
+    expect(plain).toContain('<section class="card hero" aria-labelledby="today-title">');
+    expect(plain).toContain('<section class="card kpi k3" aria-labelledby="k3-title"');
+    expect(plain).not.toContain("Daily target");
+    expect(plain).not.toContain("Weekly target");
+  });
+
+  it("the status bar tooltip names each set target with its state", async () => {
+    const { tooltipMarkdown } = await import("../../src/core/format");
+    const tip = tooltipMarkdown(snap(), { unit: "tokens", dayTarget: { max: 0.01 }, weekTarget: { max: 5 } });
+    expect(tip).toContain("Daily target up to \\$0\\.010: over target");
+    expect(tip).toContain("Weekly target up to \\$5\\.00: in target range");
+    expect(tooltipMarkdown(snap(), { unit: "tokens" })).not.toContain("Daily target");
+  });
+});

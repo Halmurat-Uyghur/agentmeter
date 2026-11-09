@@ -18,8 +18,8 @@ export const state = {
   folder: {} as Scope,
   /** every settings write: [key, value, target] */
   updates: [] as [string, unknown, number][],
-  /** when true, update() rejects like an unwritable settings.json */
-  updateReject: false,
+  /** when true, update() rejects like an unwritable settings file; a string rejects with that message (v0.9) */
+  updateReject: false as boolean | string,
   commands: new Map<string, (...a: any[]) => any>(),
   configListeners: [] as Listener[],
   /** Output channel lines */
@@ -28,6 +28,8 @@ export const state = {
   infos: [] as string[],
   infoPick: undefined as string | undefined,
   panels: 0,
+  /** every commands.executeCommand call: [id, ...args] (v0.9) */
+  executed: [] as unknown[][],
 };
 
 const disp = () => ({ dispose() {} });
@@ -61,6 +63,8 @@ export const window = {
     return { webview: { cspSource: "csp", html: "" }, visible: true, active: false, title: "t", onDidChangeViewState: disp, onDidDispose: disp, reveal() {}, dispose() {} };
   },
   showQuickPick: async () => undefined,
+  /** cancelled unless a test replaces it (v0.9) */
+  showInputBox: async (_o?: unknown) => undefined as string | undefined,
   showInformationMessage: async (message: string) => {
     state.infos.push(message);
     return state.infoPick;
@@ -80,7 +84,7 @@ export const workspace = {
       return { key, globalValue: state.global[key], workspaceValue: state.workspace[key], workspaceFolderValue: state.folder[key] };
     },
     update: async (k: string, v: unknown, target?: unknown) => {
-      if (state.updateReject) throw new Error("settings.json not writable");
+      if (state.updateReject) throw new Error(typeof state.updateReject === "string" ? state.updateReject : "not writable");
       const key = `${section}.${k}`;
       state.updates.push([k, v, Number(target ?? ConfigurationTarget.Workspace)]);
       scopeOf(target ?? ConfigurationTarget.Workspace)[key] = v;
@@ -98,5 +102,10 @@ export const commands = {
   registerCommand: (id: string, fn: (...a: any[]) => any) => {
     state.commands.set(id, fn);
     return disp();
+  },
+  /** records the call; runs nothing (v0.9) */
+  executeCommand: async (id: string, ...args: unknown[]) => {
+    state.executed.push([id, ...args]);
+    return undefined;
   },
 };

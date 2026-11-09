@@ -85,7 +85,7 @@ const ROOT = join(__dirname, "..", "..");
 const render = (s: Snapshot | undefined, section?: SectionId, view?: Parameters<typeof renderPanelHtml>[2]) => renderPanelHtml(s, "x", view, section);
 
 describe("command allowlist", () => {
-  it("PANEL_COMMANDS is exactly the seven panel commands", () => {
+  it("PANEL_COMMANDS is exactly the twelve panel commands", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
@@ -94,6 +94,11 @@ describe("command allowlist", () => {
       "copilotUsageMonitor.showSession",
       "copilotUsageMonitor.toggleNav",
       "copilotUsageMonitor.selectPalette",
+      "copilotUsageMonitor.selectCurrency",
+      "copilotUsageMonitor.setStatusBar",
+      "copilotUsageMonitor.setTarget",
+      "copilotUsageMonitor.setTargetAlert",
+      "copilotUsageMonitor.openVsCodeSettings",
     ]);
   });
 
@@ -119,11 +124,11 @@ describe("command allowlist", () => {
 });
 
 describe("sections", () => {
-  it("are the eight ids in nav order, grouped Usage / Insight / Health under Overview (A2)", () => {
-    expect([...SECTIONS]).toEqual(["overview", "sessions", "daily", "models", "projects", "tools", "insights", "health"]);
-    expect(SECTION_DEFS.map((d) => d.label)).toEqual(["Overview", "Sessions", "Daily", "Models", "Projects", "Tools", "Insights", "Data health"]);
-    expect(SECTION_DEFS.map((d) => d.group)).toEqual([undefined, "Usage", "Usage", "Usage", "Usage", "Usage", "Insight", "Health"]);
-    expect(new Set(SECTION_DEFS.map((d) => d.icon)).size).toBe(8);
+  it("are the nine ids in nav order, grouped Usage / Insight / Health / Setup under Overview (A2; Settings v0.9)", () => {
+    expect([...SECTIONS]).toEqual(["overview", "sessions", "daily", "models", "projects", "tools", "insights", "health", "settings"]);
+    expect(SECTION_DEFS.map((d) => d.label)).toEqual(["Overview", "Sessions", "Daily", "Models", "Projects", "Tools", "Insights", "Data health", "Settings"]);
+    expect(SECTION_DEFS.map((d) => d.group)).toEqual([undefined, "Usage", "Usage", "Usage", "Usage", "Usage", "Insight", "Health", "Setup"]);
+    expect(new Set(SECTION_DEFS.map((d) => d.icon)).size).toBe(9);
   });
 
   it("isSectionId accepts the closed list only", () => {
@@ -182,7 +187,7 @@ describe("nav and page structure", () => {
     }
   });
 
-  it("nav: eight links in order, each a showSection command link, the active one its own id", () => {
+  it("nav: nine links in order, each a showSection command link, the active one its own id", () => {
     for (const active of SECTIONS) {
       const html = render(snap(), active);
       const nav = html.slice(html.indexOf("<nav "), html.indexOf("</nav>"));
@@ -193,12 +198,12 @@ describe("nav and page structure", () => {
       // Overview on top with no group, then three labelled groups (A2)
       expect(nav).toMatch(/^<nav class="sidenav" aria-label="Sections"><div class="navtop"><a class="navtoggle" [^>]*>(<svg [^]*?<\/svg>)<\/a><\/div><ul><li><a [^>]*>(<svg [^]*?<\/svg>)<span class="lbl">Overview<\/span><\/a><\/li><\/ul><p class="grp" id="nav-usage">Usage<\/p><ul aria-labelledby="nav-usage">/);
       const groups = [...nav.matchAll(/<p class="grp" id="(nav-\w+)">(\w+)<\/p><ul aria-labelledby="(nav-\w+)">([^]*?)<\/ul>/g)];
-      expect(groups.map((g) => g[2])).toEqual(["Usage", "Insight", "Health"]);
+      expect(groups.map((g) => g[2])).toEqual(["Usage", "Insight", "Health", "Setup"]);
       for (const g of groups) expect(g[1]).toBe(g[3]);
       const labels = (body: string) => [...body.matchAll(/<\/svg><span class="lbl">([^<]+)/g)].map((x) => x[1]);
-      expect(groups.map((g) => labels(g[4]!))).toEqual([["Sessions", "Daily", "Models", "Projects", "Tools"], ["Insights"], ["Data health"]]);
-      // every link (eight sections plus the collapse toggle) carries a decorative inline icon
-      expect(nav.match(/<a [^>]*><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" focusable="false">/g)).toHaveLength(9);
+      expect(groups.map((g) => labels(g[4]!))).toEqual([["Sessions", "Daily", "Models", "Projects", "Tools"], ["Insights"], ["Data health"], ["Settings"]]);
+      // every link (nine sections plus the collapse toggle) carries a decorative inline icon
+      expect(nav.match(/<a [^>]*><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" focusable="false">/g)).toHaveLength(10);
     }
   });
 
@@ -227,10 +232,11 @@ describe("nav and page structure", () => {
     const s = snap({ health: health({ state: "no-dir" }), filter: { tool: "bash" } });
     for (const section of SECTIONS) {
       const html = render(s, section);
-      expect(html).toContain('role="group" aria-label="Month, unit, filter and colours"');
+      expect(html).toContain('role="group" aria-label="Month, unit and filter"');
       expect(html).toContain("Pick month…");
-      // the colours button (v0.8) sits after the unit switch and takes no argument
-      expect(html).toMatch(/<div class="tools"><div class="unit">.*<\/div><a class="btn" href="command:copilotUsageMonitor.selectPalette\?%5B%5D" title="Choose a colour palette for the panel">Colours…<\/a><\/div>/);
+      // the unit switch closes the toolbar; the colours picker lives in Settings (v0.9)
+      expect(html).toMatch(/<div class="tools"><div class="unit">.*<\/div><\/div>\n<\/div><\/div>/);
+      if (section !== "settings") expect(html).not.toContain("selectPalette");
       expect(html).toContain("USD (est.)");
       expect(html).toMatch(/class="fchip"[^>]*>Tool: <b>bash<\/b>/);
       expect(html).toContain("copilotUsageMonitor.copilotHome");

@@ -5,7 +5,7 @@ import { costLabel, costNotes, estWord, formatChangedSentence, homeSettings, LOA
 import { PANEL_CSS } from "../panelCss";
 import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
-import { commandHref, filterHref, navToggleHref, paletteHref, sectionHref } from "./links";
+import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
 import { sourceOrigins } from "./sources";
 import { clock, escapeHtml, monthKey, monthTitle, plural, projectLabel, viewedStart } from "./shared";
@@ -86,7 +86,8 @@ export function stateNote(h: Health): string {
   return "";
 }
 
-/** Filter chips, month navigation, the tokens / cost switch and the colours button: the same on every section. */
+/** Filter chips, month navigation and the tokens / cost switch: the same on every section. The
+ * colours picker moved to the Settings section (v0.9). */
 export function toolbar(s: Snapshot, view: ViewOptions): string {
   const viewed = viewedStart(s);
   const starts = (s.history ?? []).map((h) => h.monthStartMs);
@@ -114,10 +115,9 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
   const filters = f
     ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
     : "";
-  const colours = link("btn", "Colours…", paletteHref(), "Choose a colour palette for the panel");
-  return `<div class="toolbar" role="group" aria-label="Month, unit, filter and colours">${filters}<div class="nav">
+  return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>
-  <div class="tools"><div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div>${colours}</div>
+  <div class="tools"><div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div></div>
 </div></div>`;
 }
 

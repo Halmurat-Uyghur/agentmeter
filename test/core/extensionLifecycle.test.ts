@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MonitorOptions } from "../../src/core/monitor";
-import { SOURCE_LABEL, type Snapshot, type ViewOptions } from "../../src/core/types";
+import { type Prefs, SOURCE_LABEL, type Snapshot, type ViewOptions } from "../../src/core/types";
 import { codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex";
 
 /** Every UsageMonitor the extension constructs, with its options (survives vi.resetModules). */
@@ -47,7 +47,7 @@ async function load(settings: Record<string, unknown> = {}) {
   return {
     fake,
     cmd,
-    testState: () => cmd("_testState")() as { snapshot?: Snapshot; view: ViewOptions; panelPalette: string },
+    testState: () => cmd("_testState")() as { snapshot?: Snapshot; view: ViewOptions; panelPalette: string; panelSection: string; prefs: Prefs },
     deactivate: () => {
       for (const d of ctx.subscriptions) d.dispose();
     },
@@ -134,12 +134,37 @@ describe("extension lifecycle: setUnit (F2)", () => {
     deactivate();
   });
 
-  it("a rejected display write rolls the unit back", async () => {
+  it("a refused display write keeps the unit shown, logs a code, retries once and marks the key unsaved (v0.9, D1)", async () => {
     const { fake, cmd, testState, deactivate } = await load();
     fake.state.updateReject = true;
-    await expect(cmd("setUnit")("cost")).resolves.toBeUndefined();
-    expect(testState().view.unit).toBe("tokens");
-    expect(fake.state.log).toContain("error unit.write WRITE_FAILED");
+    const errors = () => fake.state.log.filter((l) => l.startsWith("error "));
+    const p = cmd("setUnit")("cost");
+    await settle();
+    expect(testState().view.unit).toBe("cost");
+    expect(errors()).toEqual(["error unit.write WRITE_FAILED"]);
+    expect(testState().prefs.unsaved).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(testState().view.unit).toBe("cost");
+    expect(errors()).toEqual(["error unit.write WRITE_FAILED", "error unit.write WRITE_FAILED"]);
+    expect(testState().prefs.unsaved).toEqual(["display"]);
+    expect(fake.state.updates).toEqual([]);
+    deactivate();
+  });
+
+  it("a write refused once and accepted on the retry saves the value and leaves nothing unsaved", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    fake.state.updateReject = "Unable to write into user settings because the file has unsaved changes. Please save the user settings file first and then try again.";
+    const errors = () => fake.state.log.filter((l) => l.startsWith("error "));
+    const p = cmd("setUnit")("cost");
+    await settle();
+    expect(errors()).toEqual(["error unit.write FILE_DIRTY"]);
+    fake.state.updateReject = false;
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(fake.state.updates).toEqual([["display", "cost", fake.ConfigurationTarget.Global]]);
+    expect(testState().prefs.unsaved).toEqual([]);
+    expect(errors()).toHaveLength(1);
     deactivate();
   });
 });
@@ -189,12 +214,187 @@ describe("extension lifecycle: colour palette (v0.8)", () => {
     deactivate();
   });
 
-  it("a rejected palette write is logged and the panel goes back to the saved palette", async () => {
+  it("a refused palette write keeps the chosen palette (no rollback), logs the reason code, retries once and marks it unsaved; a later save clears the mark (v0.9, D1–D2)", async () => {
     const { fake, cmd, testState, deactivate } = await load({ palette: "ember" });
-    fake.state.updateReject = true;
-    await expect(cmd("selectPalette")("ocean")).resolves.toBeUndefined();
-    expect(testState().panelPalette).toBe("ember");
-    expect(fake.state.log).toContain("error palette.write WRITE_FAILED");
+    fake.state.updateReject = "Unable to write into user settings because the content of the file is newer.";
+    const p = cmd("selectPalette")("ocean");
+    await settle();
+    // drawn at once, and still ocean after the first refusal (0.8 redrew ember here, so the pick looked dead)
+    expect(testState().panelPalette).toBe("ocean");
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(testState().panelPalette).toBe("ocean");
+    expect(fake.state.log.filter((l) => l.startsWith("error "))).toEqual(["error palette.write FILE_MODIFIED", "error palette.write FILE_MODIFIED"]);
+    expect(testState().prefs.unsaved).toEqual(["palette"]);
+    expect(fake.state.updates).toEqual([]);
+    fake.state.updateReject = false;
+    await cmd("selectPalette")("rose");
+    expect(testState().panelPalette).toBe("rose");
+    expect(testState().prefs.unsaved).toEqual([]);
+    expect(fake.state.updates).toEqual([["palette", "rose", fake.ConfigurationTarget.Global]]);
+    deactivate();
+  });
+
+  it("the log code names VS Code's reason without its text; unknown reasons stay WRITE_FAILED", async () => {
+    const cases: [string, string][] = [
+      ["Unable to write to User Settings because copilotUsageMonitor.palette is not a registered configuration.", "UNKNOWN_KEY"],
+      ["Unable to write into user settings. Please open the user settings to correct errors/warnings in it and try again.", "INVALID_FILE"],
+      ["Unable to write copilotUsageMonitor.palette because it is configured in system policy.", "POLICY"],
+      ["Unable to write to User Settings because copilotUsageMonitor.palette does not support for global scope.", "INVALID_TARGET"],
+      ["something else entirely", "WRITE_FAILED"],
+    ];
+    for (const [message, code] of cases) {
+      const { fake, cmd, deactivate } = await load();
+      fake.state.updateReject = message;
+      const p = cmd("selectPalette")("ocean");
+      await settle();
+      deactivate(); // no second attempt after deactivate
+      await vi.advanceTimersByTimeAsync(1500);
+      await p;
+      expect(fake.state.log.filter((l) => l.startsWith("error ")), message).toEqual([`error palette.write ${code}`]);
+      expect(fake.state.log.join(" ")).not.toContain("Unable");
+    }
+  });
+});
+
+describe("extension lifecycle: Settings section commands (v0.9)", () => {
+  it("setStatusBar: a value draws at once and writes at the scope that holds the value; no argument offers a picker; junk is ignored", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    const T = fake.ConfigurationTarget;
+    await cmd("setStatusBar")("month");
+    expect(testState().view.statusBar).toBe("month");
+    expect(testState().prefs.statusBar).toBe("month");
+    expect(fake.state.updates).toEqual([["statusBar", "month", T.Global]]);
+    fake.state.workspace[`${SECTION}.statusBar`] = "month";
+    await cmd("setStatusBar")("today");
+    expect(fake.state.updates.at(-1)).toEqual(["statusBar", "today", T.Workspace]);
+    expect(testState().view.statusBar).toBeUndefined();
+    for (const bad of ["Month", "", 1, null, ["session"], { value: "session" }]) await cmd("setStatusBar")(bad);
+    expect(fake.state.updates).toHaveLength(2);
+    let offered: { label: string; description: string; value: string }[] = [];
+    fake.window.showQuickPick = (async (items: typeof offered) => {
+      offered = items;
+      return items.find((i) => i.value === "session");
+    }) as never;
+    await cmd("setStatusBar")();
+    expect(offered.map((i) => [i.label, i.value])).toEqual([["Today", "today"], ["This month", "month"], ["Current session", "session"]]);
+    expect(offered.find((i) => i.value === "today")!.description).toMatch(/ · current$/);
+    expect(testState().view.statusBar).toBe("session");
+    expect(fake.state.updates.at(-1)).toEqual(["statusBar", "session", T.Workspace]);
+    deactivate();
+  });
+
+  it("setTarget: a value writes the setting in the chosen currency, '' clears it, junk is ignored, and the view converts at the rate", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ currency: "CAD" });
+    resolvers[0]!(ok("CAD"));
+    await settle();
+    await cmd("setTarget")("day", "max", "7");
+    await cmd("setTarget")("week", "max", "35.5");
+    await cmd("setTarget")("month", "min", "10");
+    await cmd("setTarget")("month", "max", " 60 ");
+    expect(fake.state.updates.map((u) => [u[0], u[1]])).toEqual([["dailyTargetMax", 7], ["weeklyTargetMax", 35.5], ["monthlyTargetMin", 10], ["monthlyTargetMax", 60]]);
+    const v = testState().view;
+    expect(v.dayTarget!.max).toBeCloseTo(7 / 1.4, 9);
+    expect(v.dayTarget!.min).toBeUndefined();
+    expect(v.weekTarget!.max).toBeCloseTo(35.5 / 1.4, 9);
+    expect(v.range!.min).toBeCloseTo(10 / 1.4, 9);
+    expect(v.range!.max).toBeCloseTo(60 / 1.4, 9);
+    expect(testState().prefs.targets).toEqual({ dayMax: 7, weekMax: 35.5, monthMin: 10, monthMax: 60 });
+    const bad: unknown[][] = [["day", "min", "5"], ["year", "max", "5"], ["day", "max", "-1"], ["day", "max", "abc"], ["day", "max", 5], ["week", "max", "1e3"], ["week", "max", "NaN"], ["week", "max", "Infinity"], [null, "max", "1"]];
+    for (const args of bad) await cmd("setTarget")(...args);
+    expect(fake.state.updates).toHaveLength(4);
+    await cmd("setTarget")("day", "max", "");
+    expect(fake.state.updates.at(-1)).toEqual(["dailyTargetMax", undefined, fake.ConfigurationTarget.Global]);
+    expect(testState().view.dayTarget).toBeUndefined();
+    expect(testState().prefs.targets.dayMax).toBeUndefined();
+    deactivate();
+  });
+
+  it("setTarget without a value asks with an input box (current amount prefilled, validated); cancel writes nothing; empty clears", async () => {
+    const { fake, cmd, deactivate } = await load({ monthlyTargetMax: 60 });
+    let box: { prompt: string; value: string; validateInput: (t: string) => string | undefined } | undefined;
+    fake.window.showInputBox = (async (o: typeof box) => {
+      box = o;
+      return undefined;
+    }) as never;
+    await cmd("setTarget")("month", "max");
+    expect(box!.value).toBe("60");
+    expect(box!.prompt).toBe("Monthly target (most) in USD, as estimated cost. Leave empty to clear it.");
+    expect(box!.validateInput("12.5")).toBeUndefined();
+    expect(box!.validateInput("")).toBeUndefined();
+    expect(box!.validateInput("abc")).toMatch(/number/);
+    expect(box!.validateInput("-3")).toMatch(/number/);
+    expect(fake.state.updates).toEqual([]);
+    fake.window.showInputBox = (async () => "  ") as never;
+    await cmd("setTarget")("month", "max");
+    expect(fake.state.updates).toEqual([["monthlyTargetMax", undefined, fake.ConfigurationTarget.Global]]);
+    fake.window.showInputBox = (async (o: { value: string }) => (o.value === "" ? "42" : "x")) as never;
+    await cmd("setTarget")("day", "max");
+    expect(fake.state.updates.at(-1)).toEqual(["dailyTargetMax", 42, fake.ConfigurationTarget.Global]);
+    deactivate();
+  });
+
+  it("setTarget with no arguments offers the four targets with their current amounts, then asks", async () => {
+    const { fake, cmd, deactivate } = await load({ dailyTargetMax: 5, currency: "CAD" });
+    let offered: { label: string; description: string }[] = [];
+    fake.window.showQuickPick = (async (items: typeof offered) => {
+      offered = items;
+      return undefined;
+    }) as never;
+    await cmd("setTarget")();
+    expect(offered.map((i) => i.label)).toEqual(["Daily target (most)", "Weekly target (most)", "Monthly target (least)", "Monthly target (most)"]);
+    expect(offered.map((i) => i.description)).toEqual(["CA$5.00", "not set", "not set", "not set"]);
+    expect(fake.state.updates).toEqual([]);
+    fake.window.showQuickPick = (async (items: { label: string }[]) => items[1]) as never;
+    fake.window.showInputBox = (async () => "20") as never;
+    await cmd("setTarget")();
+    expect(fake.state.updates).toEqual([["weeklyTargetMax", 20, fake.ConfigurationTarget.Global]]);
+    deactivate();
+  });
+
+  it("setTargetAlert: on, off, a boolean, a toggle; junk is ignored; user settings only", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    const G = fake.ConfigurationTarget.Global;
+    await cmd("setTargetAlert")("on");
+    expect(testState().prefs.targetAlert).toBe(true);
+    await cmd("setTargetAlert")();
+    expect(testState().prefs.targetAlert).toBe(false);
+    await cmd("setTargetAlert")(true);
+    await cmd("setTargetAlert")("off");
+    for (const bad of ["yes", "ON", 1, null, ["on"]]) await cmd("setTargetAlert")(bad);
+    expect(fake.state.updates).toEqual([["targetAlert", true, G], ["targetAlert", false, G], ["targetAlert", true, G], ["targetAlert", false, G]]);
+    deactivate();
+  });
+
+  it("openVsCodeSettings opens VS Code's Settings editor at the extension; showSettings opens the panel's section", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    await cmd("openVsCodeSettings")();
+    expect(fake.state.executed).toEqual([["workbench.action.openSettings", "@ext:local.copilot-usage-monitor"]]);
+    cmd("showSettings")();
+    expect(testState().panelSection).toBe("settings");
+    expect(fake.state.updates).toEqual([]);
+    deactivate();
+  });
+
+  it("prefs: read from the settings, junk falls back, and follow every change in the section", async () => {
+    const { fake, testState, deactivate } = await load({ statusBar: "session", dailyTargetMax: 3, weeklyTargetMax: -1, monthlyTargetMin: "x", monthlyTargetMax: 0, targetAlert: true, historyMonths: 6, projectNames: false, codex: false });
+    expect(testState().prefs).toEqual({
+      currency: "USD",
+      statusBar: "session",
+      targets: { dayMax: 3, monthMax: 0 },
+      targetAlert: true,
+      historyMonths: 6,
+      projectNames: false,
+      sessionTotals: true,
+      sources: { claudeCode: true, codex: false },
+      unsaved: [],
+    });
+    fake.state.global[`${SECTION}.currency`] = "CAD";
+    fake.fireConfigChange(`${SECTION}.currency`);
+    expect(testState().prefs.currency).toBe("CAD");
+    fake.state.global[`${SECTION}.statusBar`] = "bogus";
+    fake.fireConfigChange(`${SECTION}.statusBar`);
+    expect(testState().prefs.statusBar).toBe("today");
     deactivate();
   });
 });

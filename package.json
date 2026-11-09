@@ -14,7 +14,7 @@
   ],
   "publisher": "local",
   "icon": "media/icon.png",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -160,13 +160,41 @@
         "title": "Choose Colours…",
         "category": "Copilot Usage",
         "icon": "$(symbol-color)"
+      },
+      {
+        "command": "copilotUsageMonitor.showSettings",
+        "title": "Settings",
+        "category": "Copilot Usage",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "copilotUsageMonitor.setStatusBar",
+        "title": "Choose Status Bar Figure…",
+        "category": "Copilot Usage",
+        "icon": "$(symbol-ruler)"
+      },
+      {
+        "command": "copilotUsageMonitor.setTarget",
+        "title": "Set Target…",
+        "category": "Copilot Usage",
+        "icon": "$(target)"
+      },
+      {
+        "command": "copilotUsageMonitor.setTargetAlert",
+        "title": "Set Target Alert",
+        "category": "Copilot Usage"
+      },
+      {
+        "command": "copilotUsageMonitor.openVsCodeSettings",
+        "title": "Open VS Code Settings",
+        "category": "Copilot Usage"
       }
     ],
     "walkthroughs": [
       {
         "id": "gettingStarted",
         "title": "Get started with Copilot Usage Monitor (Local)",
-        "description": "Check that your usage logs are found, pick a unit and currency, set a monthly target and open the side bar. Everything stays on this computer.",
+        "description": "Check that your usage logs are found, pick a unit and currency, set a target and open the side bar. Everything stays on this computer.",
         "steps": [
           {
             "id": "folder",
@@ -186,8 +214,8 @@
           },
           {
             "id": "target",
-            "title": "Set a monthly target range",
-            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency. The status bar icon then shows under, in range or over.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
+            "title": "Set a target range",
+            "description": "Optional: the least and the most estimated cost you mean to use per month, in your currency, and a most for today and for the last 7 days. The status bar icon then shows the month as under, in range or over; the panel marks today and the last 7 days.\n[Set the target range](command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D)",
             "media": {
               "markdown": "media/walkthrough/target.md"
             }
@@ -284,7 +312,7 @@
             "Rose accent.",
             "Slate-grey accent, for a quieter panel."
           ],
-          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Colours… button and \"Copilot Usage: Choose Colours…\" set this."
+          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Settings section and \"Copilot Usage: Choose Colours…\" set this."
         },
         "copilotUsageMonitor.statusBar": {
           "type": "string",
@@ -345,6 +373,24 @@
           "minimum": 0,
           "description": "Optional personal target: the most estimated cost (in the chosen currency) you want to use per month. Above it, the status bar turns amber with a flame icon."
         },
+        "copilotUsageMonitor.dailyTargetMax": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the most estimated cost (in the chosen currency) you mean to use in a day. The Overview's Today card and the side bar's Today row then say in range or over; the status bar is not changed. The panel's Settings section sets this."
+        },
+        "copilotUsageMonitor.weeklyTargetMax": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "Optional personal target: the most estimated cost (in the chosen currency) you mean to use over the last 7 days (today and the 6 days before it). The Overview's Last 7 days card and the side bar's Last 7 days row then say in range or over. The panel's Settings section sets this."
+        },
         "copilotUsageMonitor.targetAlert": {
           "type": "boolean",
           "default": false,
@@ -377,6 +423,14 @@
         },
         {
           "command": "copilotUsageMonitor.showSession",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.setTargetAlert",
+          "when": "false"
+        },
+        {
+          "command": "copilotUsageMonitor.openVsCodeSettings",
           "when": "false"
         }
       ],
@@ -425,6 +479,11 @@
           "command": "copilotUsageMonitor.selectPalette",
           "when": "view == copilotUsageMonitor.summary",
           "group": "1_view@5"
+        },
+        {
+          "command": "copilotUsageMonitor.showSettings",
+          "when": "view == copilotUsageMonitor.summary",
+          "group": "1_view@6"
         }
       ]
     }

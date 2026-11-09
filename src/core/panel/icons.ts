@@ -18,6 +18,7 @@ const PATHS = {
   navCollapse: `<rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M10.5 2v12M7 6 5 8l2 2"/>`,
   navExpand: `<rect x="1.5" y="2" width="13" height="12" rx="2"/><path d="M5.5 2v12M9 6l2 2-2 2"/>`,
   trend: `<path d="M2 14h12"/><path d="M3.5 11.5V9M6.5 11.5V6.5M9.5 11.5V8M12.5 11.5V4"/>`,
+  settings: `<circle cx="8" cy="8" r="2.3"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4l1.4-1.4M11 5l1.4-1.4"/>`,
 } as const;
 
 export type IconName = keyof typeof PATHS;

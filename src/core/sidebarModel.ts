@@ -22,12 +22,14 @@ import {
   mixedSources,
   multiSource,
   PRIOR_SHORT_NOTE,
+  rangeState,
   readingLine,
   RANGE_LABEL,
   SESSION_TOTAL_SHORT,
   spoken,
   statusParts,
   thisMonthTotals,
+  usd,
   WEEK_SHORT_NOTE,
   weekChange,
   weekCoverage,
@@ -108,6 +110,8 @@ export interface SidebarModel {
   unitSwitch: { text: string; link: SidebarLink };
   /** the currency picker link in the footer: "Currency: CAD" (the chosen code, even while its rate is pending) */
   currencySwitch: { text: string; title: string; link: SidebarLink };
+  /** the footer link to the panel's Settings section (v0.9) */
+  settingsLink: { text: string; title: string; link: SidebarLink };
   /** footer words before the unit switch: "Local logs only", plus "USD is estimated" in USD view */
   footNote: string;
   /** equal models have equal signatures; the adapter skips a redraw when unchanged */
@@ -268,12 +272,17 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
     title: view.currencyPending ? `No ${chosen} exchange rate yet; figures stay in USD until it arrives. Click to choose another currency.` : "Choose the display currency: USD, or another such as CAD at the daily exchange rate.",
     link: { command: "copilotUsageMonitor.selectCurrency" as const, args: [] },
   };
+  const settingsLink = {
+    text: "Settings",
+    title: "Opens the panel's Settings section: unit, currency, colours, status bar and targets.",
+    link: section("settings"),
+  };
   const footNote = view.unit === "cost" ? `Local logs only · ${currencyCode()} figures are est.` : "Local logs only";
   const state: SidebarState = !s ? "loading" : s.health.state === "no-dir" ? "no-dir" : s.health.state === "permission" ? "permission" : "ready";
   if (!s || state !== "ready") {
     const notice =
       s && state === "no-dir" && multiSource(s.health) ? noDirNotice(s.health) : s && state === "permission" ? permissionNotice(s.health) : NOTICES[state as Exclude<SidebarState, "ready">];
-    return finish({ state, unitWord, notice, groups: [], unitSwitch, currencySwitch, footNote });
+    return finish({ state, unitWord, notice, groups: [], unitSwitch, currencySwitch, settingsLink, footNote });
   }
 
   const h = s.health;
@@ -334,18 +343,37 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
       : view.unit === "cost"
         ? [`Target ${formatRange(view.range)}${mixedSources(month?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[status.state]}.`]
         : [`Estimated ${currencyCode()} this month is ${RANGE_LABEL[status.state]}.`];
+  // The daily and weekly targets (v0.9) mark Today and Last 7 days the way the month target marks This month.
+  const periodTarget = (c: Counts | undefined, range: ViewOptions["range"], what: string, period: string) => {
+    const st = rangeState(c ? usd(c.nanoAiu) : undefined, range);
+    if (st === "none") return { marker: undefined, lines: [] as string[] };
+    const marker = { kind: st, text: st === "over" ? "over" : st === "in" ? "in range" : "under" };
+    const lines = view.unit === "cost" ? [`${what} ${formatRange(range)}${mixedSources(c?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[st]}.`] : [`Estimated ${currencyCode()} ${period} is ${RANGE_LABEL[st]}.`];
+    return { marker, lines };
+  };
+  const dayT = periodTarget(today, view.dayTarget, "Daily target", "today");
+  const weekT = periodTarget(last7, view.weekTarget, "Weekly target", "over the last 7 days");
   groups.push({
     id: "all",
     heading: "All projects",
     title: [SIDEBAR_BANNER, "Every project, never filtered."].join("\n"),
     rows: [
-      r({ id: "today", label: "Today", value: countsFigure(today, view, partial), title: ["Since local midnight on this computer.", ...detailLines(today, view, h), "Opens Daily."], link: section("daily") }),
+      r({
+        id: "today",
+        label: "Today",
+        value: countsFigure(today, view, partial),
+        ...(dayT.marker && { marker: dayT.marker }),
+        title: ["Since local midnight on this computer.", ...dayT.lines, ...detailLines(today, view, h), "Opens Daily."],
+        link: section("daily"),
+      }),
       r({
         id: "week",
         label: "Last 7 days",
         value: countsFigure(last7, view, partial || short),
+        ...(weekT.marker && { marker: weekT.marker }),
         title: [
           "Today and the 6 days before it.",
+          ...weekT.lines,
           ...(change && !prior7Short ? [change.charAt(0).toUpperCase() + change.slice(1) + "."] : []),
           ...(short ? [WEEK_SHORT_NOTE] : prior7Short ? [PRIOR_SHORT_NOTE] : []),
           ...detailLines(last7, view, h),
@@ -450,7 +478,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const health = healthNote(h);
   const message = [readingLine(h), s.filter ? "The panel is filtered; these figures are not." : undefined].filter(Boolean).join(" ") || undefined;
   const coverage = { text: CHAT_NOT_COVERED_SHORT, title: [SIDEBAR_BANNER, CHAT_NOT_COVERED, "Opens Data health."].join("\n"), link: section("health") };
-  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, currencySwitch, footNote });
+  return finish({ state, unitWord, notice: [], groups, ...(insights && { insights }), ...(health && { health }), coverage, ...(message && { message }), unitSwitch, currencySwitch, settingsLink, footNote });
 }
 
 function finish(m: Omit<SidebarModel, "signature">): SidebarModel {
