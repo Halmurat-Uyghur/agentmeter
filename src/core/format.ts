@@ -158,11 +158,16 @@ export function usd(m: Metric): number | undefined {
  */
 export type TargetSpend = { usd: number; partial: boolean } | "unknown";
 
+/** The cost a target compares: Copilot's own when there is a per-source split, else the whole. */
+export function targetMetric(t: Counts & { bySource?: Partial<Record<Source, Counts>> }): Metric | undefined {
+  return t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+}
+
 export function targetSpend(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): TargetSpend {
   if (!t) return { usd: 0, partial: false };
   // Without a per-source split, mixed sources cannot be separated: the Copilot part is unknown.
   if (!t.bySource && mixedSources(t.sources)) return "unknown";
-  const m = t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+  const m = targetMetric(t);
   if (!m || (m.reported === 0 && m.missing === 0)) return { usd: 0, partial: false };
   if (m.reported === 0) return "unknown";
   return { usd: m.sum / 1e11, partial: m.missing > 0 };
@@ -552,17 +557,19 @@ export function escapeMarkdown(text: string): string {
   return text.replace(/[!-/:-@[-`{-~]/g, (c) => "\\" + c);
 }
 
-function tok(m: Metric): string {
-  return escapeMarkdown(formatCount(m)) + " tok";
+/** `partial` (health.partial) stars the figure, as the status bar does. */
+function tok(m: Metric, partial = false): string {
+  const n = formatCount(m);
+  return escapeMarkdown(partial ? star(n) : n) + " tok";
 }
 
-function fieldLine(label: string, m: Metric): string {
+function fieldLine(label: string, m: Metric, partial: boolean): string {
   const note = partialNote(m);
-  return `${label}: ${tok(m)}` + (note ? ` (\\* ${note})` : "");
+  return `${label}: ${tok(m, partial)}` + (note ? ` (\\* ${note})` : "");
 }
 
-function countsLines(c: Counts): string[] {
-  return [fieldLine("Input", c.input), fieldLine("Output", c.output)];
+function countsLines(c: Counts, partial: boolean): string[] {
+  return [fieldLine("Input", c.input, partial), fieldLine("Output", c.output, partial)];
 }
 
 function healthLines(h: Health): string[] {
@@ -630,15 +637,17 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     return parts.join("\n\n");
   }
 
+  // health.partial stars the tooltip's figures as it does the status bar's (the legend below).
+  const pt = s.health.partial;
   if (s.today) {
     const incl = s.today.sessionTotals > 0 ? ` (incl. ${s.today.sessionTotals} session total${s.today.sessionTotals === 1 ? "" : "s"})` : "";
-    parts.push([`**Local today**${incl}`, ...countsLines(s.today)].join("  \n"));
+    parts.push([`**Local today**${incl}`, ...countsLines(s.today, pt)].join("  \n"));
     const t = s.today;
     const present = SOURCES.filter((x) => (t.sources?.[x] ?? 0) > 0);
     if (present.length >= 2) {
       const lines = present.map((x) => {
         const c = t.bySource?.[x];
-        return `- ${SOURCE_LABEL[x]}: ${c ? tok(addMetrics(c.input, c.output)) : DASH}`;
+        return `- ${SOURCE_LABEL[x]}: ${c ? tok(addMetrics(c.input, c.output), pt) : DASH}`;
       });
       parts.push(["**By source today**", ...lines].join("\n"));
     }
@@ -657,8 +666,8 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     if (cur.totals) {
       const both = addMetrics(cur.totals.input, cur.totals.output);
       // In session mode with cost, the status bar shows the session's estimate: say it here too.
-      const est = view.statusBar === "session" && view.unit === "cost" ? ` · ${escapeMarkdown(`${formatUsd(cur.totals.nanoAiu)} est.`)}` : "";
-      parts.push(`${label}: ${tok(both)}${est}`);
+      const est = view.statusBar === "session" && view.unit === "cost" ? ` · ${escapeMarkdown(`${pt ? star(formatUsd(cur.totals.nanoAiu)) : formatUsd(cur.totals.nanoAiu)} est.`)}` : "";
+      parts.push(`${label}: ${tok(both, pt)}${est}`);
     } else {
       parts.push(`${label}: ${DASH}`);
     }
@@ -671,7 +680,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     if (models.length > 0) {
       const lines = models.map((model) => {
         const c = s.today!.byModel[model]!;
-        return `- ${escapeMarkdown(model)}: ${tok(addMetrics(c.input, c.output))}`;
+        return `- ${escapeMarkdown(model)}: ${tok(addMetrics(c.input, c.output), pt)}`;
       });
       parts.push(["**By model today**", ...lines].join("\n"));
     }
@@ -680,19 +689,20 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
   const thisMonth = thisMonthTotals(s);
   if (view.statusBar === "month" && view.unit === "tokens") {
     // The status bar shows this month's tokens (2.5): say the same figure here.
-    parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output)) : DASH}`);
+    parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output), pt) : DASH}`);
   }
   if (view.unit === "cost" || view.range || view.dayTarget || view.weekTarget) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
-    const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
+    const lines = [`**This month (estimated)**: ${escapeMarkdown(pt ? star(spent) : spent)}`];
     const mixed = mixedSources(thisMonth?.sources);
     if (view.range) {
       const st = currentTargetStatus(s, view);
       lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${escapeMarkdown(rangeLabel(st))}`);
     }
     // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
-    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget, s.health)))}`);
-    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget, s.health)))}`);
+    const only = " \\(Copilot only\\)";
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}${mixedSources(s.today?.sources) ? only : ""}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget, s.health)))}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}${mixedSources(s.last7?.sources) ? only : ""}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget, s.health)))}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 
@@ -715,7 +725,8 @@ export function weekChange(cur: number | undefined, prior: number | undefined, p
   if (p <= 0) return "nothing logged in the 7 days before";
   if (c <= 0) return "nothing logged yet";
   const r = c / p;
-  const x = r >= 10 ? String(Math.round(r)) : r.toFixed(1);
+  // Under 0.05 rounds to "0.0": say "<0.1" instead (spoken "less than 0.1").
+  const x = r >= 10 ? String(Math.round(r)) : r < 0.05 ? "<0.1" : r.toFixed(1);
   if (x === "1.0") return "about the same as the 7 days before";
   return `${r > 1 ? "▲" : "▼"} ${x}× the 7 days before`;
 }

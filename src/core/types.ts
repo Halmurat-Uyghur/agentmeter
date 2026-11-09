@@ -228,6 +228,10 @@ export interface Snapshot {
    * current session for that source only. The status bar and the side bar keep the
    * unfiltered fields above; the project and tool filters never apply here. */
   sourceScope?: SourceScope;
+  /** Set by panelSnapshot only, under a source scope other than Copilot: the unfiltered
+   * Today and Last 7 days (undefined = no record), which the panel's daily and weekly
+   * targets compare, so they keep comparing Copilot's logged cost (v0.11.1). */
+  targetBasis?: { today?: Totals; last7?: Totals };
 }
 
 /** The per-source figures the details panel shows in place of the unfiltered ones (v0.11.1). */

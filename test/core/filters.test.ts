@@ -308,8 +308,8 @@ describe("panel: project and tool tables", () => {
     // Chips are chrome: on every section.
     for (const section of ["overview", "projects", "health"] as const) {
       const html = renderPanelHtml(f, "x", undefined, section);
-      expect(html).toMatch(/class="fchip"[^>]*aria-label="Clear project filter: acme\/web">Project: <b>acme\/web<\/b><span aria-hidden="true"> ✕<\/span>/);
-      expect(html).toMatch(/class="fchip"[^>]*aria-label="Clear tool filter: bash">Tool: <b>bash<\/b><span aria-hidden="true"> ✕<\/span>/);
+      expect(html).toMatch(/class="fchip"[^>]*aria-label="Project: acme\/web, clear filter">Project: <b>acme\/web<\/b><span aria-hidden="true"> ✕<\/span>/);
+      expect(html).toMatch(/class="fchip"[^>]*aria-label="Tool: bash, clear filter">Tool: <b>bash<\/b><span aria-hidden="true"> ✕<\/span>/);
       expect(html).toContain(encodeURIComponent(JSON.stringify(["project", ""])));
       expect(html).toContain("Today, the last 7 days, daily activity and the status bar are not filtered.");
     }

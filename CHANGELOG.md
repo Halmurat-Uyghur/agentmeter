@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## Unreleased
 
-Fixes from a Codex review of 0.11.2.
+Fixes from a Codex review of 0.11.2 and a follow-up review of the whole project.
 
 ### Fixed
 
@@ -14,6 +14,20 @@ Fixes from a Codex review of 0.11.2.
 - **A Codex session total is not priced as one long prompt.** Counted only for Codex logs with no per-call records, it is now priced only while its total input is under the long-context threshold and the log names one model; otherwise its cost is unknown (`—`, starred), not overstated.
 - **A call without input or output tokens has an unknown cost.** It showed $0.00 (reasoning tokens only) or an unstarred estimate (output missing); it now shows `—` and stars the total.
 - **Current session shows a resumed session's calls.** When a session folder holds calls that name another session id (a resumed or forked Copilot session), the current session card counted none of them; it now counts the folder's own calls too. Its last prompt is the newest one by time across those sessions (sequence numbers only order calls within one session).
+- **Daily and weekly targets keep comparing Copilot's cost under a Source filter.** With **Source: Claude Code** or **Codex** picked, the Overview's Today and Last 7 days cards compared the target with that source's figures, which hold no Copilot cost, so a target that was over read "(Copilot only): In range". They now compare Copilot's logged cost whatever the filter, as 0.11.1 said.
+- **The target alert states the cost it compared.** With Claude Code or Codex calls in the month, the notification gave the month's total across all sources as "Copilot usage". It now gives Copilot's logged cost, the figure that went over the target.
+- **The status bar tooltip marks incomplete figures.** When the data is partial the status bar text carries a `*`, but the tooltip's own figures did not, though its legend explains the mark. Today, by source, by model, the current session and this month now carry it. The tooltip's daily and weekly target lines also say "(Copilot only)" when more than one source is counted, like its monthly line.
+- **Small figures read sensibly.** A week far below the one before reads "▼ <0.1× the 7 days before", not "▼ 0.0×". An insight's evidence reads "1.0M", not "1000.0K". Low cache reuse reads "fewer than 1 in 10 prompt tokens" (or "no prompt tokens"), not "about 0 in 10".
+- **A filter chip's accessible name starts with its visible text.** A screen reader hears "Project: webapp, clear filter" instead of "Clear project filter: webapp", for the project, tool and source chips.
+- **A mistyped `historyMonths` falls back to 12 months.** A value that is not a number in settings.json (`"6"`, `true`) read 1 month; it now reads the default, like every other setting.
+- **A Codex event with no usage is not a format change.** A `token_count` event whose `info` is `null` counted as unrecognized and turned Codex's Data health to "format changed". It is now ignored. An `info` object without the known token fields still counts as unrecognized.
+- **The walkthrough's target step sets every target.** Its link opened a Settings search that showed only the monthly targets; it now opens **AgentMeter: Set Target…**, which offers all four. The walkthrough and the `display` setting say how Claude Code and Codex cost is estimated, and name the logo and the Settings section.
+- **README and `docs/SCHEMA.md` describe Codex discovery as it has worked since 0.11.2:** date folders older than the history window are listed on the first read, when the window changes, on **Refresh** and every 5 minutes.
+
+### Security
+
+- **The schema probes no longer print names taken from the logs.** `npm run probe` printed the keys of maps that are keyed by data (tool names, agent names, watermark keys), and `npm run probe:chat` printed tool-call ids and the keys of debug-log attributes. Those keys are now masked (`<tool>`, `<agent>`, `<id>`, `<key>`); only known field names are printed. The extension itself never did this.
+- **Stricter privacy gates.** The source and bundle scans now also flag an `fs` call outside the read-only ones the readers use (the two log opens are pinned to their exact read-only flags), a VS Code command other than opening the Settings editor, `fetch` used as a value or reached through `globalThis`, and a bracketed settings write. They are text scans, not a sandbox: code that hides an API behind a variable key is still not seen. A new gate checks that `package-lock.json` and the latest released CHANGELOG heading carry the package version.
 
 ## 0.11.2 - 2026-11-09
 

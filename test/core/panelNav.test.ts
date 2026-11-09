@@ -444,6 +444,22 @@ describe("insights content (D32)", () => {
     expect(text(render(withItems([cache]), "insights", { unit: "cost" }))).toContain("54 calls · 5 sessions · about $6.80 (est.)");
   });
 
+  it("evidence carries 999,960 tokens over to 1.0M, never 1000.0K (UI-2)", () => {
+    const v = text(render(withItems([{ ...cache, tokens: 999_960 }]), "insights"));
+    expect(v).toContain("54 calls · 5 sessions · 1.0M input + output tokens");
+    expect(v).not.toContain("1000.0K");
+  });
+
+  it("a cache share under 1 in 10 reads 'fewer than 1 in 10', and none reads 'no' (UI-6)", () => {
+    const v = text(render(withItems([{ ...cache, share: 0.09 }]), "insights"));
+    expect(v).toContain("Over 54 calls in 5 sessions, fewer than 1 in 10 prompt tokens were read from cache.");
+    expect(v).not.toContain("about 0 in 10");
+    // The rule fires on a share of 0 too (cache reads 0 of the prompt tokens).
+    const z = text(render(withItems([{ ...cache, share: 0 }]), "insights"));
+    expect(z).toContain("Over 54 calls in 5 sessions, no prompt tokens were read from cache.");
+    expect(z).not.toContain("in 10 prompt tokens");
+  });
+
   it("empty state", () => {
     const v = text(render(withItems([]), "insights"));
     expect(v).toContain("Nothing to point out in November.");

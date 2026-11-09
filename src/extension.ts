@@ -163,7 +163,9 @@ function readFolders(): string[] {
 }
 
 function readHistory(): number {
-  return clampHistory(vscode.workspace.getConfiguration(SECTION).get<unknown>("historyMonths") ?? 12);
+  // get() returns the raw settings.json value: only a finite number is clamped, anything else is the default 12 (HOST-3).
+  const v = vscode.workspace.getConfiguration(SECTION).get<unknown>("historyMonths");
+  return typeof v === "number" && Number.isFinite(v) ? clampHistory(v) : 12;
 }
 
 /** `copilotUsageMonitor.panelNavCollapsed`: the panel's section nav shows as an icon rail. */

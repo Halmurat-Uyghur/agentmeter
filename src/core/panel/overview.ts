@@ -58,9 +58,10 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.
   let wState = "";
   if (view.weekTarget) {
-    const st = targetStatus(w, view.weekTarget, s.health);
+    // Under another source, the unfiltered 7 days: the target compares Copilot's logged cost.
+    const st = targetStatus(s.targetBasis ? s.targetBasis.last7 : w, view.weekTarget, s.health);
     wState = st.state;
-    wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
+    wSub += ` · Weekly target ${formatRange(view.weekTarget)}${s.targetBasis || mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
     wNotes.unshift(rangeLabel(st));
   }
   const wNote = wNotes.filter(Boolean).join(" ");

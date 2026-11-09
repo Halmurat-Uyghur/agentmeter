@@ -109,7 +109,9 @@ const RECORD_PATHS: readonly ScanPath[] = [
 const TURN_PATHS: readonly ScanPath[] = [["type"], ["payload", "turn_id"], ["payload", "model"]];
 const META_PATHS: readonly ScanPath[] = [["type"]];
 const META_LABEL_PATHS: readonly ScanPath[] = [["type"], ["payload", "cwd"]];
-const EVENT_TOTAL_PATHS: readonly ScanPath[] = [["type"], ["timestamp"], ["payload", "type"], ...scalarPaths(TOTAL_BASE)];
+/** payload.info itself is requested only to tell a rate-limits-only event (info: null) from a format change. */
+const EVENT_INFO = "payload.info";
+const EVENT_TOTAL_PATHS: readonly ScanPath[] = [["type"], ["timestamp"], ["payload", "type"], ["payload", "info"], ...scalarPaths(TOTAL_BASE)];
 
 /** Same shape as extract.ts (review A3): seconds and a zone are required. */
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
@@ -206,6 +208,14 @@ function tokensAt(buf: Buffer, res: ScanResult, base: ScanPath): Tokens | "too-l
   return any ? tokens : undefined;
 }
 
+const NULL_BYTES = Buffer.from("null");
+/** True when the one range at `path` is the JSON literal null (compared as raw bytes, never decoded). */
+function isNullAt(buf: Buffer, res: ScanResult, path: string): boolean {
+  const list = res.ranges.get(path);
+  const r = list?.length === 1 ? list[0] : undefined;
+  return r !== undefined && r.end - r.start === NULL_BYTES.length && buf.compare(NULL_BYTES, 0, NULL_BYTES.length, r.start, r.end) === 0;
+}
+
 const allZero = (t: Tokens): boolean => Object.values(t).every((v) => v === 0);
 
 /** Scans buf[start, end) for `paths`; undefined when the line is truncated, has a duplicate key, or its depth-1 type is not `type`. */
@@ -295,6 +305,8 @@ function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileSta
   if (res === "other") return { kind: "ignored" };
   if ("redirect" in res) return res;
   if (stringAt(buf, res, "payload.type") !== TOKEN_COUNT) return { kind: "ignored" };
+  // A rate-limits-only event (info: null) carries no usage and is not a format change (ING-1).
+  if (isNullAt(buf, res, EVENT_INFO)) return { kind: "ignored" };
   const timestampMs = timestampOf(stringAt(buf, res, "timestamp"));
   if (Number.isNaN(timestampMs)) return { kind: "unrecognized", reason: "bad-timestamp" };
   const tokens = tokensAt(buf, res, TOTAL_BASE);
