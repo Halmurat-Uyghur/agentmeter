@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { Logger } from "../../src/core/log";
 import { ClaudeSourceReader } from "../../src/core/claude";
 import { UsageMonitor } from "../../src/core/monitor";
-import type { SourceReader } from "../../src/core/source";
+import { emptyReadResult, type SourceReader } from "../../src/core/source";
 import type { Snapshot } from "../../src/core/types";
 import { sourcesHealthBox } from "../../src/core/panel/sources";
 import { jsonl, sessionTree, usageEvent } from "../fixtures/build";
@@ -281,5 +281,62 @@ describe("discovery failure after a root error (review C, U, D)", () => {
     await monitor!.refresh();
     expect(calls.n).toBe(2);
     expect(calls.opts.at(-1)).toEqual({ full: false });
+  });
+
+  it("permission, then OTHER, then recovery: a file whose read failed is re-read without a manual refresh", async () => {
+    // Inactive file: not hot, so only a change mark gets it read again.
+    await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: T0 - 2 * 3_600_000 }]);
+    const mode: { next?: "no-dir" | "permission" | "OTHER"; dirFails?: boolean } = {};
+    const calls = { n: 0, opts: [] as unknown[] };
+    const readFails = { on: false };
+    const base = scriptedClaude(mode, calls);
+    const reader: SourceReader = {
+      ...base,
+      open: (p, c) => {
+        const r = base.open(p, c);
+        return { read: () => (readFails.on ? Promise.resolve({ ...emptyReadResult(), error: "EACCES" as const }) : r.read()) };
+      },
+    };
+    make({ readers: [reader] });
+    // 1. Read OK.
+    await monitor!.refresh({ full: true });
+    expect(last().today?.records).toBe(1);
+    expect(last().health.partial).toBe(false);
+
+    // 2. A directory permission failure: the root error re-reads the file once, and that read fails.
+    mode.next = "permission";
+    readFails.on = true;
+    await monitor!.refresh({ full: true });
+    expect(last().health.sources?.["claude-code"]?.state).toBe("permission");
+    expect(last().health.unreadableFiles).toBe(1);
+
+    // 3. Discovery then fails otherwise.
+    mode.next = "OTHER";
+    await monitor!.refresh({ full: true });
+    expect(last().health.sources?.["claude-code"]?.discoveryFailed).toBe(true);
+
+    // 4. Access recovers; size and mtime are unchanged. Ticks only, no manual refresh.
+    mode.next = undefined;
+    readFails.on = false;
+    clock += 11_000;
+    await monitor!.refresh();
+    clock += 1000;
+    await monitor!.refresh();
+    const h = last().health;
+    expect(h.sources?.["claude-code"]?.discoveryFailed).toBeUndefined();
+    expect(h.sources?.["claude-code"]?.unreadableFiles).toBe(0);
+    expect(h.unreadableFiles).toBe(0);
+    expect(h.partial).toBe(false);
+    expect(last().today?.records).toBe(1);
+
+    // Idle ticks afterwards stay cheap: no rediscovery within the cadence, no rebuild.
+    const built = snaps.length;
+    const n = calls.n;
+    for (let i = 0; i < 5; i++) {
+      clock += 1000;
+      await monitor!.refresh();
+    }
+    expect(calls.n).toBe(n);
+    expect(snaps.length).toBe(built);
   });
 });

@@ -10,7 +10,7 @@
 // inference is Copilot's only: Claude Code and Codex input is normalized at ingestion to
 // include the cache (D47), even when a Copilot model shares the id (review finding #8).
 import type { PromptConvention } from "./insights";
-import { BUILT_IN_TOOLS, countTokens, promptOf, toolGroup } from "./store";
+import { BUILT_IN_TOOLS, countPairedCache, countTokens, promptOf, toolGroup } from "./store";
 import type { CacheStats, CallRow, LastPrompt, Metric, ModelCache, PromptStats, SessionDetail, ToolOverhead, ToolOverheadGroup, UsageRecord } from "./types";
 
 /** Calls a session ledger keeps in a snapshot (the newest ones); older calls are counted, not listed. */
@@ -122,8 +122,9 @@ function emptyCache(): CacheStats {
 }
 
 function addCache(c: CacheStats, r: UsageRecord, conventions: Conventions): void {
-  add(c.prompt, promptOf(r, conventions));
-  add(c.cacheRead, r.tokens.cacheRead);
+  // Paired like the session rows and the dashboard ring: prompt tokens and cache reads of
+  // the calls that reported both, so every view of one session or model shows one share.
+  countPairedCache(c.prompt, c.cacheRead, r, conventions);
   const tc = r.typeCost;
   // The uncached-input cost is known whenever the call has a per-type split; the
   // comparison at the cache-read rate pairs both figures over the same calls.

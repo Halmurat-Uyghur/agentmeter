@@ -5,7 +5,7 @@
 import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
 import { PRICES_AS_OF } from "./pricing";
-import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
+import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, type SourceHealth, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.";
@@ -175,14 +175,37 @@ export interface TargetStatus {
   partial: boolean;
 }
 
-/** The state of `t` against `range`, keeping unknown cost apart from $0 (review finding #3). */
-export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOptions["range"]): TargetStatus {
+/** A source's read left records out: an unreadable log or folder, a listing that failed,
+ * malformed or over-long lines, or files over the discovery cap. */
+function sourceIncomplete(x: SourceHealth | undefined): boolean {
+  return x !== undefined && (x.unreadableFiles + x.malformed + x.overlong + (x.capped ?? 0) > 0 || x.discoveryFailed === true);
+}
+
+/**
+ * Whether Copilot's logs were read incompletely, so its logged cost (all a target compares)
+ * may be a lower bound. Other sources' read failures do not count: targets are Copilot only.
+ * Without a per-source split (older snapshots) the whole read is Copilot's. An unread
+ * session.shutdown line has no per-source count; it is Copilot's (only Copilot writes it).
+ */
+export function copilotIncomplete(h: Health | undefined): boolean {
+  if (!h) return false;
+  const src = h.sources;
+  if (!src) return h.partial;
+  if (sourceIncomplete(src.copilot)) return true;
+  // What health.partial holds beyond the sources' own counts (an unread session.shutdown line).
+  return h.partial && (h.shutdownOversize > 0 || !SOURCES.some((x) => x !== "copilot" && sourceIncomplete(src[x])));
+}
+
+/** The state of `t` against `range`, keeping unknown cost apart from $0 (review finding #3).
+ * `health`: the snapshot's read; when Copilot's logs were read incompletely the spend is a
+ * lower bound too, so "under" and "in" are starred like a record without a logged cost. */
+export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOptions["range"], health?: Health): TargetStatus {
   const spend = targetSpend(t);
   const state = rangeState(spend, range);
   // Spend already above the max is over whatever is missing; below it, it is a lower bound.
   // "In" a min-only range stays in whatever is missing, so only a max makes "in" uncertain.
   const open = state === "under" || (state === "in" && range?.max !== undefined);
-  return { state, partial: typeof spend === "object" && spend.partial && open };
+  return { state, partial: typeof spend === "object" && (spend.partial || copilotIncomplete(health)) && open };
 }
 
 /** RANGE_LABEL with "*" when the spend is a lower bound ("in target range*"). */
@@ -334,7 +357,7 @@ export function currentRangeState(s: Snapshot, view: ViewOptions): RangeState {
 
 /** Target status of the current month in `s`, with whether its spend is a lower bound. */
 export function currentTargetStatus(s: Snapshot, view: ViewOptions): TargetStatus {
-  return targetStatus(thisMonthTotals(s), view.range);
+  return targetStatus(thisMonthTotals(s), view.range, s.health);
 }
 
 /** Codicon id for a range state; the status bar and the side bar share it (D31). */
@@ -627,8 +650,8 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${escapeMarkdown(rangeLabel(st))}`);
     }
     // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
-    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget)))}`);
-    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget)))}`);
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget, s.health)))}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget, s.health)))}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 

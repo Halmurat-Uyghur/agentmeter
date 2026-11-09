@@ -2,6 +2,7 @@
 // fields a UsageRecord already keeps, so the privacy surface is unchanged.
 // Every rule needs logged AIU, is computed from per-call records only (session
 // totals have no per-call data) and never claims a saving.
+import { pairedCache } from "./store";
 import type { Insight, InsightsView, SessionSummary, UsageRecord } from "./types";
 
 /** Sessions whose late calls cost this many times their early ones are flagged (D24). */
@@ -176,8 +177,10 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
     // Copilot calls only (D46): an unpriced Claude Code or Codex call of the same model id
     // would lower the share without adding to the AIU, firing the card on calls it cannot price.
     if (r.source !== "copilot" || r.kind !== "call" || r.model === undefined || firsts.has(r.key)) continue;
-    if (r.tokens.input === undefined || r.tokens.cacheRead === undefined) continue;
-    const prompt = promptTokens(r, conventions.get(r.model));
+    // Paired, like every other cache share: only calls that reported both figures.
+    const pair = pairedCache(r, conventions);
+    if (pair === undefined) continue;
+    const prompt = pair.prompt;
     if (prompt < CACHE_MIN_PROMPT) continue;
     let g = byModel.get(r.model);
     if (!g) {
@@ -186,7 +189,7 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
     }
     g.calls++;
     g.sessions.add(r.sessionId);
-    g.cacheRead += r.tokens.cacheRead;
+    g.cacheRead += pair.read;
     g.prompt += prompt;
     g.tokens += (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
     if (r.nanoAiu !== undefined) {

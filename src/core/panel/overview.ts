@@ -58,7 +58,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.
   let wState = "";
   if (view.weekTarget) {
-    const st = targetStatus(w, view.weekTarget);
+    const st = targetStatus(w, view.weekTarget, s.health);
     wState = st.state;
     wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
     wNotes.unshift(rangeLabel(st));
@@ -83,7 +83,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const monthNotes = [mt ? partialNote(headlineMetric(mt, view)) : undefined];
   if (view.range) {
     // The target state of the viewed month, spent so far in estimated USD.
-    const st = targetStatus(mt, view.range);
+    const st = targetStatus(mt, view.range, s.health);
     monthCls += ` st-${st.state}`;
     monthSub += ` · Target ${formatRange(view.range)}${mixedSources(mt?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
     monthNotes.unshift(rangeLabel(st));
@@ -129,7 +129,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     const v = values[i];
     const m = h.totals ? headlineMetric(h.totals, view) : undefined;
     const text = m ? withStar(fmt(m), s.health.partial) : DASH;
-    const st = range ? targetStatus(h.totals, range) : { state: "none" as const, partial: false };
+    const st = range ? targetStatus(h.totals, range, s.health) : { state: "none" as const, partial: false };
     const state = st.state;
     const d = new Date(h.monthStartMs);
     const label = MONTHS[d.getMonth()]!.slice(0, 3) + (d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : "");

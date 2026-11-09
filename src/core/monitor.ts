@@ -411,8 +411,11 @@ export class UsageMonitor {
       if (entering) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
       return;
     }
-    // A root that recovers re-reads its files once, so errors of the locked period clear.
+    // A root that recovers re-reads its files once, so errors of the locked period clear. After an
+    // OTHER failure (which clears rs.error, perhaps one that followed a locked root) the files whose
+    // last read failed are retried too: an unchanged size and mtime would never re-read them.
     if (rs.error !== undefined) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
+    if (rs.discoverFailed === true) for (const f of this.files.values()) if (f.source === reader.source && f.error !== undefined) f.changed = true;
     rs.error = undefined;
     delete rs.discoverFailed;
     rs.lastDirMtimeMs = result.dirMtimeMs;

@@ -43,10 +43,17 @@ function td(inner: string, cls = "num", note?: string): string {
   return `<td class="${cls}"${titleAttr(note)}>${inner}</td>`;
 }
 
-/** Cache read share of prompt tokens, as "N in 100" ("—" when not reported). */
+/** Cache read share of prompt tokens, as "N in 100" ("—" when not reported). Prompt tokens
+ * and cache reads sum the same calls (those that reported both), as on the dashboard. */
 function cacheShare(c: CacheStats): string {
   if (c.prompt.reported === 0 || c.cacheRead.reported === 0) return val(DASH);
   return share(c.cacheRead.sum, c.prompt.sum, c.prompt.missing > 0 || c.cacheRead.missing > 0);
+}
+
+/** "from N of M records that reported both" when some calls lacked either figure, else undefined. */
+function cacheCover(c: CacheStats): string | undefined {
+  if (c.prompt.reported === 0 || c.prompt.missing === 0) return undefined;
+  return `from ${c.prompt.reported} of ${c.prompt.reported + c.prompt.missing} records that reported both`;
 }
 
 /** Tool-definition tokens as a share of the same calls' input. */
@@ -108,7 +115,7 @@ function rowHtml(r: CallRow): string {
 function detailTiles(d: SessionDetail, view: ViewOptions): string {
   const c = d.cache;
   const total = view.unit === "cost" ? tile(costLabel(), val(formatUsd(d.nanoAiu))) : tile("Tokens", val(formatCount(d.tokens)));
-  return `<div class="tiles">${tile("Calls", val(String(d.calls)))}${tile("Prompts", val(d.prompts.prompts > 0 || d.prompts.unknown === 0 ? String(d.prompts.prompts) : DASH))}${tile("Agent calls", val(d.prompts.prompts > 0 || d.prompts.unknown === 0 ? String(d.prompts.agentCalls) : DASH))}${total}${tile("Cache read, of input", cacheShare(c))}${tile(`Uncached input, ${costLabel()}`, val(formatUsd(c.uncachedNano)))}${tile(`Same at cache-read price, ${costLabel()}`, val(formatUsd(c.atReadRateNano)))}${tile("Tool definitions, of input", toolShare(d.tools))}</div>`;
+  return `<div class="tiles">${tile("Calls", val(String(d.calls)))}${tile("Prompts", val(d.prompts.prompts > 0 || d.prompts.unknown === 0 ? String(d.prompts.prompts) : DASH))}${tile("Agent calls", val(d.prompts.prompts > 0 || d.prompts.unknown === 0 ? String(d.prompts.agentCalls) : DASH))}${total}${tile("Cache read, of input", cacheShare(c), cacheCover(c))}${tile(`Uncached input, ${costLabel()}`, val(formatUsd(c.uncachedNano)))}${tile(`Same at cache-read price, ${costLabel()}`, val(formatUsd(c.atReadRateNano)))}${tile("Tool definitions, of input", toolShare(d.tools))}</div>`;
 }
 
 /** The selected session's ledger, shown at the top of the Sessions section, or "". */
@@ -151,7 +158,7 @@ export function modelCacheCard(s: Snapshot): string {
     return td(val(t), t === DASH ? "num muted" : "num");
   };
   const rows = list.map((c) => ({
-    html: `<tr><td><span class="chipm f-${modelFamily(c.model)}" title="${escapeHtml(c.model)}">${escapeHtml(c.model)}</span></td>${td(cacheShare(c))}${money(c.uncachedNano)}${money(c.atReadRateNano)}${money(c.cacheReadNano)}${money(c.cacheWriteNano)}</tr>`,
+    html: `<tr><td><span class="chipm f-${modelFamily(c.model)}" title="${escapeHtml(c.model)}">${escapeHtml(c.model)}</span></td>${td(cacheShare(c), "num", cacheCover(c))}${money(c.uncachedNano)}${money(c.atReadRateNano)}${money(c.cacheReadNano)}${money(c.cacheWriteNano)}</tr>`,
   }));
   const cur = costLabel();
   const head = `<th>Model</th><th>Cache read, of input</th><th>Uncached input, ${escapeHtml(cur)}</th><th>Same at cache-read price, ${escapeHtml(cur)}</th><th>Cache reads, ${escapeHtml(cur)}</th><th>Cache writes, ${escapeHtml(cur)}</th>`;

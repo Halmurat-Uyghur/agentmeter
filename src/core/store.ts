@@ -693,6 +693,25 @@ export function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, Prompt
   return r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
 }
 
+/** Prompt tokens and cache reads of a record that reported both, else undefined. Every cache
+ * share (session rows, the dashboard ring, session detail, Cache by model, Insights) pairs
+ * like with like through this: a record missing either is left out of both figures. */
+export function pairedCache(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): { prompt: number; read: number } | undefined {
+  const read = r.tokens.cacheRead;
+  if (read === undefined) return undefined;
+  const prompt = promptOf(r, conventions);
+  return prompt === undefined ? undefined : { prompt, read };
+}
+
+/** Counts a record into paired prompt and cache-read Metrics (see pairedCache): reported on
+ * both when it logged both, missing on both otherwise, so `reported` of `reported + missing`
+ * records support the share. */
+export function countPairedCache(prompt: Metric, cacheRead: Metric, r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): void {
+  const p = pairedCache(r, conventions);
+  count(prompt, p?.prompt);
+  count(cacheRead, p?.read);
+}
+
 /**
  * Per-session summaries for records in [fromMs, toMs), costliest first, at most `limit`.
  * `conventions` (from insights' promptConventions) says per model whether input already
@@ -728,10 +747,7 @@ export function sessionSummaries(
       if (pricedSource(r)) count(nanoAiu, r.nanoAiu);
       // The cache share pairs like with like: prompt tokens and cache reads of the records that
       // reported both; a record missing either counts as missing on both, never half-summed.
-      const prompt = promptOf(r, conventions);
-      const read = r.tokens.cacheRead;
-      count(input, prompt === undefined || read === undefined ? undefined : prompt);
-      count(cacheRead, prompt === undefined || read === undefined ? undefined : read);
+      countPairedCache(input, cacheRead, r, conventions);
       calls += callsOf(r);
       callsMissing += callsMissingOf(r);
       // A session total's start is the sessionStartTime Copilot logged with it (N9).

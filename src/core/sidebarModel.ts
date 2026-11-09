@@ -357,7 +357,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         : [`Estimated ${currencyCode()} this month${status.state === "unknown" ? ":" : " is"} ${rangeLabel(status)}.`];
   // The daily and weekly targets (v0.9) mark Today and Last 7 days the way the month target marks This month.
   const periodTarget = (c: Totals | undefined, range: ViewOptions["range"], what: string, period: string) => {
-    const ts = targetStatus(c, range);
+    const ts = targetStatus(c, range, s.health);
     const st = ts.state;
     if (st === "none") return { marker: undefined, lines: [] as string[] };
     const marker = { kind: st, text: markerText(ts) };

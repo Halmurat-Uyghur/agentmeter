@@ -218,6 +218,17 @@ export function activate(context: vscode.ExtensionContext): void {
   const saveGen = new Map<SettingKey, number>();
   /** keys with a write that has not settled yet */
   const saving = new Set<string>();
+  /** Every write issued for a key since its latest write began, that VS Code did not refuse: an
+   * older pick's save can land (and fire its change event) while a newer one is in flight, and
+   * that event is ours, not an outside edit. Cleared once the key's latest write settles. */
+  const issued = new Map<string, { value: unknown; target: vscode.ConfigurationTarget }[]>();
+  const settled = (key: string) => {
+    saving.delete(key);
+    issued.delete(key);
+  };
+  /** whether the stored value at a write's scope is one of our in-flight or just-landed writes */
+  const ours = (k: string, o: { value: unknown; target: vscode.ConfigurationTarget }) =>
+    atScope(k, o.target) === o.value || (issued.get(k) ?? []).some((w) => atScope(k, w.target) === w.value);
   /** cancels a key's pending retry wait (a newer write for that key, or deactivate) */
   const retryWait = new Map<SettingKey, () => void>();
   let view = readView(rate, get);
@@ -253,10 +264,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const latest = () => !disposed && saveGen.get(key) === gen;
     const c = vscode.workspace.getConfiguration(SECTION);
     for (let attempt = 0; ; attempt++) {
+      const w = { value, target };
+      const mine = issued.get(key) ?? [];
+      mine.push(w);
+      issued.set(key, mine);
       try {
         await c.update(key, value, target);
         if (!latest()) return true;
-        saving.delete(key);
+        settled(key);
         overrides.delete(key);
         unsaved.delete(key);
         // Redraw from the saved settings: VS Code fires no change event when the value written
@@ -264,6 +279,10 @@ export function activate(context: vscode.ExtensionContext): void {
         applyEffective(key);
         return true;
       } catch (e) {
+        // a refused write never reached the file, so no change event can be its own
+        const list = issued.get(key);
+        const i = list?.indexOf(w) ?? -1;
+        if (list && i >= 0) list.splice(i, 1);
         log.error(where, saveErrorCode(e));
         if (attempt > 0 || !latest()) break;
         await new Promise<void>((r) => {
@@ -279,7 +298,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
     if (!latest()) return false;
-    saving.delete(key);
+    settled(key);
     unsaved.add(key);
     applyEffective(key);
     return false;
@@ -665,15 +684,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       // An outside edit of a setting whose save was refused replaces the unsaved choice (review fix 2).
       // While a write is in flight or waiting to retry, the event of our own save leaves the written
-      // value at its scope; anything else there is an outside edit: it wins, and the retry stands down (review fix A).
+      // value at its scope (or, with overlapping picks, an older pick's value that just landed);
+      // anything else there is an outside edit: it wins, and the retry stands down (review fix A).
       for (const [k, o] of [...overrides]) {
         if (!e.affectsConfiguration(`${SECTION}.${k}`)) continue;
         if (saving.has(k)) {
-          if (atScope(k, o.target) === o.value) continue;
+          if (ours(k, o)) continue;
           const key = k as SettingKey;
           saveGen.set(key, (saveGen.get(key) ?? 0) + 1);
           retryWait.get(key)?.();
-          saving.delete(k);
+          settled(k);
         }
         overrides.delete(k);
         unsaved.delete(k);
