@@ -186,14 +186,25 @@ export function activate(context: vscode.ExtensionContext): void {
   let view = readView(rate);
   /** setting keys whose last save VS Code refused, for the Settings section (D1) */
   const unsaved = new Set<string>();
-  const pushPrefs = () => panel.setPrefs(readPrefs(unsaved));
+  /** The prefs in effect: the saved ones, except a status-bar choice whose save was refused is
+   * still drawn from `view` (D1), so the Settings section and picker mark what the bar shows. */
+  const currentPrefs = (): Prefs => {
+    const p = readPrefs(unsaved);
+    return unsaved.has("statusBar") ? { ...p, statusBar: view.statusBar ?? "today" } : p;
+  };
+  const pushPrefs = () => panel.setPrefs(currentPrefs());
   pushPrefs();
+  /** bumped per updateSetting call for a key; a pending retry for an older value is dropped */
+  const saveGen = new Map<string, number>();
 
   /** The one place a setting is written (D3). A refused write is logged as a code (D2), tried
    * once more after SAVE_RETRY_MS, then remembered in `unsaved`; the caller never rolls back
-   * what the user chose (D1). Returns whether the value was saved. */
+   * what the user chose (D1). A retry superseded by a newer write of the same key is dropped,
+   * so it cannot overwrite the newer choice. Returns whether the value was saved. */
   const updateSetting = async (key: SettingKey, value: unknown, target: vscode.ConfigurationTarget, where: string): Promise<boolean> => {
     const c = vscode.workspace.getConfiguration(SECTION);
+    const gen = (saveGen.get(key) ?? 0) + 1;
+    saveGen.set(key, gen);
     for (let attempt = 0; ; attempt++) {
       try {
         await c.update(key, value, target);
@@ -204,6 +215,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (attempt > 0 || disposed) break;
         await new Promise((r) => setTimeout(r, SAVE_RETRY_MS));
         if (disposed) break;
+        if (saveGen.get(key) !== gen) return false; // a newer write of this key owns the outcome
       }
     }
     unsaved.add(key);
@@ -373,7 +385,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const setStatusBar = async (arg?: unknown) => {
     let value: StatusBarContent;
     if (arg === undefined) {
-      const now = readPrefs(unsaved).statusBar;
+      const now = currentPrefs().statusBar;
       const items = STATUS_BAR_OPTIONS.map((o) => ({ label: o.label, description: o.description + (o.value === now ? " · current" : ""), value: o.value }));
       const pick = await vscode.window.showQuickPick(items, { placeHolder: "What the status bar shows" });
       if (!pick) return;
@@ -390,7 +402,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * chosen currency: "" clears it, a number saves it, no value asks with an input box; no arguments
    * offer the four targets in a picker. Anything outside those lists is ignored (v0.9). */
   const setTarget = async (period?: unknown, bound?: unknown, value?: unknown) => {
-    const prefs = readPrefs(unsaved);
+    const prefs = currentPrefs();
     let def = TARGET_DEFS.find((d) => d.period === period && d.bound === bound);
     if (period === undefined) {
       const items = TARGET_DEFS.map((d) => ({ label: d.label, description: prefs.targets[d.key] === undefined ? "not set" : enteredAmount(prefs.targets[d.key]!, prefs.currency), def: d }));
@@ -428,7 +440,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * else is ignored (v0.9). User settings only, like "Don't show again". */
   const setTargetAlert = async (arg?: unknown) => {
     let on: boolean;
-    if (arg === undefined) on = !readPrefs(unsaved).targetAlert;
+    if (arg === undefined) on = !currentPrefs().targetAlert;
     else if (arg === "on" || arg === true) on = true;
     else if (arg === "off" || arg === false) on = false;
     else return;

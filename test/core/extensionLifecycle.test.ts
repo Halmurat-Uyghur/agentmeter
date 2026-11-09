@@ -167,6 +167,40 @@ describe("extension lifecycle: setUnit (F2)", () => {
     expect(errors()).toHaveLength(1);
     deactivate();
   });
+
+  it("a pending retry superseded by a newer save of the same key is dropped, so it cannot overwrite the newer choice", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    fake.state.updateReject = true;
+    const stale = cmd("setStatusBar")("month");
+    await settle();
+    fake.state.updateReject = false;
+    await cmd("setStatusBar")("session");
+    await vi.advanceTimersByTimeAsync(1500);
+    await stale;
+    expect(fake.state.updates).toEqual([["statusBar", "session", fake.ConfigurationTarget.Global]]);
+    expect(fake.state.global[`${SECTION}.statusBar`]).toBe("session");
+    expect(testState().view.statusBar).toBe("session");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+
+  it("after a refused status-bar save the Settings section marks the option the bar shows, not the saved one", async () => {
+    const { fake, cmd, testState, deactivate } = await load();
+    fake.state.updateReject = true;
+    const p = cmd("setStatusBar")("month");
+    await settle();
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(testState().view.statusBar).toBe("month");
+    expect(testState().prefs.statusBar).toBe("month");
+    expect(testState().prefs.unsaved).toEqual(["statusBar"]);
+    // choosing the saved option again from the Settings section is possible and clears the mark
+    fake.state.updateReject = false;
+    await cmd("setStatusBar")("today");
+    expect(testState().prefs.statusBar).toBe("today");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
 });
 
 describe("extension lifecycle: colour palette (v0.8)", () => {
