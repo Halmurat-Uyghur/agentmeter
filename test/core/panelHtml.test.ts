@@ -182,7 +182,7 @@ describe("renderPanelHtml", () => {
 
   it("overview shows its blocks in order and nothing from other sections", () => {
     const t = text(renderPanelHtml(snap({ history: [{ monthStartMs: new Date(2026, 10, 1).getTime(), totals: totals() }] }), "x"));
-    const order = ["Copilot Usage", "Local", "Overview", "Today", "Yesterday", "Daily activity", "Cache reuse", "Month to date", "Last 7 days", "Current session", "Daily tokens", "Monthly trend"];
+    const order = ["AgentMeter", "Local", "Overview", "Today", "Yesterday", "Daily activity", "Cache reuse", "Month to date", "Last 7 days", "Current session", "Daily tokens", "Monthly trend"];
     let at = 0;
     for (const s of order) {
       const i = t.indexOf(s, at);

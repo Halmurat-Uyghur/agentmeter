@@ -4,6 +4,6 @@ import * as vscode from "vscode";
 import type { LogSink } from "../core/log";
 
 export function createOutputSink(): { sink: LogSink; channel: vscode.OutputChannel } {
-  const channel = vscode.window.createOutputChannel("Copilot Usage Monitor");
+  const channel = vscode.window.createOutputChannel("AgentMeter");
   return { sink: (line) => channel.appendLine(line), channel };
 }

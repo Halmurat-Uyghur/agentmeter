@@ -9,9 +9,9 @@ import { CANARY, jsonl, sessionTree, usageEvent } from "../fixtures/build";
 import { CLAUDE_SESSION, claudeAssistantLine, claudeTree } from "../fixtures/claude";
 import { CODEX_SESSION, codexMeta, codexRecord, codexTree, codexTurn } from "../fixtures/codex";
 
-const ROOT = join(tmpdir(), "copilot-usage-monitor-fixture");
-const CLAUDE_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-claude");
-const CODEX_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-codex");
+const ROOT = join(tmpdir(), "agentmeter-fixture");
+const CLAUDE_ROOT = join(tmpdir(), "agentmeter-fixture-claude");
+const CODEX_ROOT = join(tmpdir(), "agentmeter-fixture-codex");
 const LIVE = "0000aaaa-0000-4000-8000-000000000001";
 
 interface SidebarRow {
@@ -86,7 +86,7 @@ async function waitFor(pred: (s: TestState) => boolean, ms = 5000): Promise<Test
 
 const config = () => vscode.workspace.getConfiguration("copilotUsageMonitor");
 
-suite("Copilot Usage Monitor", () => {
+suite("AgentMeter", () => {
   suiteSetup(async () => {
     await rm(ROOT, { recursive: true, force: true });
     const now = Date.now();
@@ -119,7 +119,7 @@ suite("Copilot Usage Monitor", () => {
     await codexTree(CODEX_ROOT, [
       { date, sessionId: CODEX_SESSION, lines: [codexMeta({ timestamp: ts(120_000) }), codexTurn({ timestamp: ts(90_000) }), codexRecord({ timestamp: ts(60_000), usage })] },
     ]);
-    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor");
+    const ext = vscode.extensions.getExtension("local.agentmeter");
     assert.ok(ext, "extension present");
     await ext.activate();
     await vscode.commands.executeCommand("copilotUsageMonitor.refresh");
@@ -152,7 +152,7 @@ suite("Copilot Usage Monitor", () => {
   test("showDetails opens the panel", async () => {
     await vscode.commands.executeCommand("copilotUsageMonitor.showDetails");
     const s = await waitFor((x) => x.panelOpen);
-    assert.strictEqual(s.panelTitle, "Copilot Usage (Local)");
+    assert.strictEqual(s.panelTitle, "AgentMeter (Local)");
   });
 
   test("showSection switches the panel's section; bad ids are ignored; other commands keep it", async () => {
@@ -209,7 +209,7 @@ suite("Copilot Usage Monitor", () => {
   });
 
   test("side bar: contributions are present", async () => {
-    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const ext = vscode.extensions.getExtension("local.agentmeter")!;
     const c = ext.packageJSON.contributes;
     assert.strictEqual(c.viewsContainers.activitybar[0].id, "copilotUsageMonitor");
     assert.strictEqual(c.viewsContainers.activitybar[0].icon, "media/activity.svg");
@@ -482,18 +482,18 @@ suite("Copilot Usage Monitor", () => {
   });
 
   test("v0.6: the getting-started walkthrough is contributed and opens", async () => {
-    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const ext = vscode.extensions.getExtension("local.agentmeter")!;
     const w = ext.packageJSON.contributes.walkthroughs;
     assert.strictEqual(w.length, 1);
     assert.strictEqual(w[0].id, "gettingStarted");
     assert.deepStrictEqual(w[0].steps.map((x: { id: string }) => x.id), ["folder", "unit", "target", "open"]);
-    await vscode.commands.executeCommand("workbench.action.openWalkthrough", "local.copilot-usage-monitor#gettingStarted", false);
+    await vscode.commands.executeCommand("workbench.action.openWalkthrough", "local.agentmeter#gettingStarted", false);
     await sleep(500);
     await vscode.commands.executeCommand("workbench.action.closeActiveEditor");
   });
 
   test("v0.6: the target alert is off by default and shows nothing when over target; on, it shows once", async () => {
-    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const ext = vscode.extensions.getExtension("local.agentmeter")!;
     assert.strictEqual(ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.targetAlert"].default, false);
     assert.strictEqual(config().get("targetAlert"), false);
     type A = { alertsShown: number };
@@ -569,7 +569,7 @@ suite("Copilot Usage Monitor", () => {
   });
 
   test("the folder setting is machine-scoped", () => {
-    const ext = vscode.extensions.getExtension("local.copilot-usage-monitor")!;
+    const ext = vscode.extensions.getExtension("local.agentmeter")!;
     const prop = ext.packageJSON.contributes.configuration.properties["copilotUsageMonitor.copilotHome"];
     assert.strictEqual(prop.scope, "machine");
   });

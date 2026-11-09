@@ -18,7 +18,7 @@ export function page(body: string, cspSource: string, sectionLabel: string, extr
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${escapeHtml(cspSource)} 'unsafe-inline';">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(sectionLabel)} · Copilot Usage (Local)</title>
+<title>${escapeHtml(sectionLabel)} · AgentMeter (Local)</title>
 <style>${PANEL_CSS}${extraCss}</style>
 </head>
 <body>
@@ -66,7 +66,7 @@ export function topBar(s: Snapshot | undefined, view: ViewOptions): string {
   const reading = s ? readingLine(s.health) : undefined;
   const when = !s ? LOADING_NOTE : reading ?? `Last change ${clock(s.generatedAtMs)} · day starts at local midnight`;
   return `<header class="top">
-  <div><h1 class="wordmark">${logo()}<span class="wm">Copilot Usage</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
+  <div><h1 class="wordmark">${logo()}<span class="wm">AgentMeter</span> <span class="pill">Local</span></h1><div class="when">${escapeHtml(when)}</div></div>
   <div class="chips">${chips.join("")}</div>
 </header>
 ${aboutNote(view, mixedSources(s?.month?.totals?.sources))}`;

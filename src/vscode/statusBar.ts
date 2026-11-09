@@ -10,7 +10,7 @@ export class StatusBar implements vscode.Disposable {
 
   constructor(command: string) {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    this.item.name = "Copilot Usage (Local)";
+    this.item.name = "AgentMeter (Local)";
     this.item.command = command;
     this.update(undefined);
     this.item.show();

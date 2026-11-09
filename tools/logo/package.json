@@ -1,5 +1,5 @@
 {
-  "name": "copilot-usage-monitor-logo",
+  "name": "agentmeter-logo",
   "private": true,
   "description": "Remotion project that draws the extension logo and exports media/*.svg and media/icon.png. Dev tooling only; never packaged (see .vscodeignore).",
   "type": "module",

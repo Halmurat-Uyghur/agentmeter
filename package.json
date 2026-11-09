@@ -1,6 +1,6 @@
 {
-  "name": "copilot-usage-monitor",
-  "displayName": "Copilot Usage Monitor (Local)",
+  "name": "agentmeter",
+  "displayName": "AgentMeter (Local)",
   "description": "Shows your own Copilot, Claude Code and Codex CLI usage, in tokens and estimated USD (Claude Code and Codex at API list prices), as observed in their local session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.",
   "keywords": [
     "copilot",
@@ -14,7 +14,7 @@
   ],
   "publisher": "local",
   "icon": "media/icon.png",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "license": "MIT",
   "engines": {
@@ -67,7 +67,7 @@
       "activitybar": [
         {
           "id": "copilotUsageMonitor",
-          "title": "Copilot Usage (Local)",
+          "title": "AgentMeter (Local)",
           "icon": "media/activity.svg"
         }
       ]
@@ -78,7 +78,7 @@
           "type": "webview",
           "id": "copilotUsageMonitor.summary",
           "name": "Summary",
-          "contextualTitle": "Copilot Usage (Local)",
+          "contextualTitle": "AgentMeter (Local)",
           "icon": "media/activity.svg",
           "visibility": "visible"
         }
@@ -89,111 +89,111 @@
         "command": "copilotUsageMonitor.showDetails",
         "title": "Show Local Details",
         "shortTitle": "Open panel",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(dashboard)"
       },
       {
         "command": "copilotUsageMonitor.pinSession",
         "title": "Pin Session…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(pinned)"
       },
       {
         "command": "copilotUsageMonitor.refresh",
         "title": "Refresh",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(refresh)"
       },
       {
         "command": "copilotUsageMonitor.selectMonth",
         "title": "Show Month…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(calendar)"
       },
       {
         "command": "copilotUsageMonitor.toggleUnit",
         "title": "Switch Tokens / USD (est.)",
         "shortTitle": "Switch unit",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(arrow-swap)"
       },
       {
         "command": "copilotUsageMonitor.setUnit",
         "title": "Set Unit",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       },
       {
         "command": "copilotUsageMonitor.filter",
         "title": "Filter by Project, Tool or Source…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(filter)"
       },
       {
         "command": "copilotUsageMonitor.setFilter",
         "title": "Set Filter",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       },
       {
         "command": "copilotUsageMonitor.showSection",
         "title": "Show Section…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(list-flat)"
       },
       {
         "command": "copilotUsageMonitor.showSession",
         "title": "Show Session Calls",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       },
       {
         "command": "copilotUsageMonitor.toggleNav",
         "title": "Collapse or Expand Panel Navigation",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       },
       {
         "command": "copilotUsageMonitor.selectCurrency",
         "title": "Choose Currency…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(globe)"
       },
       {
         "command": "copilotUsageMonitor.selectPalette",
         "title": "Choose Colours…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(symbol-color)"
       },
       {
         "command": "copilotUsageMonitor.showSettings",
         "title": "Settings",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(gear)"
       },
       {
         "command": "copilotUsageMonitor.setStatusBar",
         "title": "Choose Status Bar Figure…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(symbol-ruler)"
       },
       {
         "command": "copilotUsageMonitor.setTarget",
         "title": "Set Target…",
-        "category": "Copilot Usage",
+        "category": "AgentMeter",
         "icon": "$(target)"
       },
       {
         "command": "copilotUsageMonitor.setTargetAlert",
         "title": "Set Target Alert",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       },
       {
         "command": "copilotUsageMonitor.openVsCodeSettings",
         "title": "Open VS Code Settings",
-        "category": "Copilot Usage"
+        "category": "AgentMeter"
       }
     ],
     "walkthroughs": [
       {
         "id": "gettingStarted",
-        "title": "Get started with Copilot Usage Monitor (Local)",
+        "title": "Get started with AgentMeter (Local)",
         "description": "Check that your usage logs are found, pick a unit and currency, set a target and open the side bar. Everything stays on this computer.",
         "steps": [
           {
@@ -232,7 +232,7 @@
       }
     ],
     "configuration": {
-      "title": "Copilot Usage Monitor",
+      "title": "AgentMeter",
       "properties": {
         "copilotUsageMonitor.copilotHome": {
           "type": "string",
@@ -312,7 +312,7 @@
             "Rose accent.",
             "Slate-grey accent, for a quieter panel."
           ],
-          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Settings section and \"Copilot Usage: Choose Colours…\" set this."
+          "description": "Colours for the details panel. \"theme\" follows your VS Code colour theme's chart colours. A named palette fixes the accent (today, the active section, the heatmap, the cache ring) and the four model-family colours, with its own shades for light and dark themes; high-contrast themes always keep the theme's colours. The panel's Settings section and \"AgentMeter: Choose Colours…\" set this."
         },
         "copilotUsageMonitor.statusBar": {
           "type": "string",
