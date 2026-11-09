@@ -184,7 +184,7 @@ export class CopilotSourceReader implements SourceReader {
     }
   }
 
-  async discover(windowStartMs: number, dayStartMs: number, _nowMs: number): Promise<SourceDiscoverResult> {
+  async discover(windowStartMs: number, dayStartMs: number, _nowMs: number, _opts?: { full?: boolean }): Promise<SourceDiscoverResult> {
     const r = await discover(this.root, windowStartMs, this.isLive, dayStartMs);
     if (!r.ok) return r;
     return {

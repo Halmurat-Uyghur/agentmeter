@@ -102,6 +102,9 @@ interface ReaderState {
   lastDirCheckAt: number;
   lastDirMtimeMs: number | undefined;
   error: "no-dir" | "permission" | undefined;
+  /** the last discovery failed for another reason (EIO, EMFILE...): the last good candidates are
+   * kept, but new sessions may be missing, so the source counts one unreadable root (partial) */
+  discoverFailed?: boolean;
   /** sessionId → candidate from the last successful discover */
   candidates: Map<string, SourceCandidate>;
   /** paths whose lstat failed (not ENOENT) in the last discover: kept, partial */
@@ -271,7 +274,7 @@ export class UsageMonitor {
       this.dirty = false;
       for (const rs of this.readers) {
         if (await this.shouldDiscover(rs, full, nowMs, dayStartMs)) {
-          if (await this.rediscover(rs, nowMs, dayStartMs)) changed = true;
+          if (await this.rediscover(rs, nowMs, dayStartMs, full)) changed = true;
         }
       }
       // The first read of the window goes newest file first (D50); the rest keep their order.
@@ -329,11 +332,14 @@ export class UsageMonitor {
    * Copilot: every REDISCOVER_MS, or when its directory mtime changes (checked every tick; it is
    * one stat). Claude Code and Codex: every COLD_REDISCOVER_MS, or sooner when their directory
    * mtimes, checked every REDISCOVER_MS, change (D50). Always on a full refresh, a new day, before
-   * the first discovery and while the last one failed.
+   * the first discovery and while the root is missing or locked. A discovery that failed otherwise
+   * (EIO, EMFILE...) is retried every REDISCOVER_MS, whatever the directory check says (it may fail
+   * too), not on every tick.
    */
   private async shouldDiscover(rs: ReaderState, full: boolean, nowMs: number, dayStartMs: number): Promise<boolean> {
     if (full || !rs.discovered || rs.error !== undefined) return true;
     if (dayStartMs !== this.lastDayStartMs) return true;
+    if (rs.discoverFailed === true) return Math.abs(nowMs - rs.lastDiscoverAt) >= REDISCOVER_MS;
     const copilot = rs.reader.source === "copilot";
     if (Math.abs(nowMs - rs.lastDiscoverAt) >= (copilot ? REDISCOVER_MS : COLD_REDISCOVER_MS)) return true;
     if (!copilot) {
@@ -345,7 +351,11 @@ export class UsageMonitor {
 
   /** What a discovery found, as one string: error, candidate files, unreadable and refused paths, extras. */
   private fingerprint(rs: ReaderState): string {
-    if (rs.error !== undefined) return rs.error;
+    const fp = rs.error ?? this.goodFingerprint(rs);
+    return rs.discoverFailed === true ? `OTHER\0${fp}` : fp;
+  }
+
+  private goodFingerprint(rs: ReaderState): string {
     const files: string[] = [];
     for (const c of rs.candidates.values()) for (const f of c.files) files.push(`${f.path}\0${c.sessionId}\0${f.mtimeMs}\0${f.size}\0${c.live ? 1 : 0}`);
     files.sort();
@@ -353,12 +363,13 @@ export class UsageMonitor {
   }
 
   /** Discovers one reader's files; true when the outcome differs from the last discovery's. */
-  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<boolean> {
+  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number, full: boolean): Promise<boolean> {
     // Claude Code and Codex: the 10 s check compares rootDirMtime() with its own value taken just
     // before the walk (a change during the walk still differs), so a walk's dirMtimeMs that covers
     // fewer directories than rootDirMtime() can never make every check look like a change (D50).
     const before = rs.reader.source === "copilot" ? undefined : await rs.reader.rootDirMtime();
-    const result = await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs);
+    // A full refresh asks the reader for its complete walk (Codex: the old date folders too).
+    const result = await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs, { full });
     this.discoverOnce(rs, result, nowMs, dayStartMs);
     if (result.ok && rs.reader.source !== "copilot") rs.lastDirMtimeMs = before;
     const fp = this.fingerprint(rs);
@@ -375,9 +386,18 @@ export class UsageMonitor {
     if (!result.ok) {
       rs.lastDirMtimeMs = undefined;
       if (result.error === "OTHER") {
-        this.log.error("discover", "OTHER");
-        return; // keep the last known candidates and state
+        // Keep the last known candidates (their figures stay), but mark the source partial until
+        // a discovery succeeds: sessions started since may be missing. A missing or locked root
+        // seen before is no longer known: its state goes (it had no candidates to keep), so the
+        // row says the folder could not be listed and ticks stop rediscovering on rs.error.
+        // Logged once per episode; the fingerprint changes only on entering it, so a failure
+        // that repeats does not rebuild the snapshot.
+        if (rs.discoverFailed !== true) this.log.error("discover", "OTHER");
+        rs.discoverFailed = true;
+        rs.error = undefined;
+        return;
       }
+      delete rs.discoverFailed;
       // A new or different error (permission → no-dir and back) re-reads the files once.
       const entering = rs.error !== result.error;
       rs.error = result.error;
@@ -391,9 +411,13 @@ export class UsageMonitor {
       if (entering) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
       return;
     }
-    // A root that recovers re-reads its files once, so errors of the locked period clear.
+    // A root that recovers re-reads its files once, so errors of the locked period clear. After an
+    // OTHER failure (which clears rs.error, perhaps one that followed a locked root) the files whose
+    // last read failed are retried too: an unchanged size and mtime would never re-read them.
     if (rs.error !== undefined) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
+    if (rs.discoverFailed === true) for (const f of this.files.values()) if (f.source === reader.source && f.error !== undefined) f.changed = true;
     rs.error = undefined;
+    delete rs.discoverFailed;
     rs.lastDirMtimeMs = result.dirMtimeMs;
     if (result.capped !== undefined) rs.capped = result.capped;
     else delete rs.capped;
@@ -587,7 +611,7 @@ export class UsageMonitor {
       s.add(r.folderId);
     });
     const sources = Object.create(null) as Partial<Record<Source, SourceHealth>>;
-    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, capped: 0 };
+    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, capped: 0, notListed: 0 };
     const states: SourceHealth["state"][] = [];
     for (const rs of this.readers) {
       const src = rs.reader.source;
@@ -598,7 +622,9 @@ export class UsageMonitor {
         // Candidates of the last discovery, including ones whose files were all refused or
         // dropped on ENOENT since (until the next discovery).
         sessions: rs.candidates.size,
-        // An unreadable directory (a listing that failed) counts as one file here.
+        // An unreadable directory (a listing that failed) counts as one file here. A root whose
+        // last discovery failed (not ENOENT or a permission error) is no log: it shows as
+        // discoveryFailed and keeps the read partial on its own (Codex review of PR #22).
         unreadableFiles: rs.unreadable.size + rs.refused.size,
         unrecognized: 0,
         malformed: 0,
@@ -606,6 +632,7 @@ export class UsageMonitor {
         overlongOther: 0,
         ...(rs.capped !== undefined && { capped: rs.capped }),
         ...(rs.archived !== undefined && { archived: rs.archived }),
+        ...(rs.discoverFailed === true && { discoveryFailed: true as const }),
       };
       /** per session: the files' activity and usage summed (a Claude session has several files) */
       const sessions = new Map<string, { activity: number; usage: number; candidates: number; hasTotals: boolean; windowActivity: number; windowUsage: number }>();
@@ -656,6 +683,7 @@ export class UsageMonitor {
       g.overlongOther += h.overlongOther;
       g.unreadableFiles += h.unreadableFiles;
       g.capped += rs.capped ?? 0;
+      if (rs.discoverFailed === true) g.notListed++;
       sources[src] = h;
     }
     const missing = (s: SourceHealth["state"]) => s === "no-dir" || s === "permission";
@@ -678,7 +706,8 @@ export class UsageMonitor {
       // A log with per-call records hides its session total anyway, so an unread
       // shutdown line there loses nothing (review 3); Data health still counts it.
       // A capped discovery left files unread (D42, D50): the figures miss them, so they are partial.
-      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded + g.capped > 0,
+      // So does a folder whose last listing failed: sessions started since may be missing.
+      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded + g.capped + g.notListed > 0,
       unrecognized: g.unrecognized,
       malformed: g.malformed,
       overlong: g.overlong,

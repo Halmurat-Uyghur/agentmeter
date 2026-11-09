@@ -26,7 +26,7 @@ a:not(.row):focus-visible{outline-offset:1px}
 .mk{flex:none;font-size:10px;line-height:14px;padding:0 4px;border-radius:7px;border:1px solid currentColor;white-space:nowrap}
 .mk.over{color:color-mix(in srgb,var(--vscode-editorWarning-foreground) 60%,var(--vscode-foreground))}
 .mk.in{color:color-mix(in srgb,var(--vscode-charts-green,var(--vscode-foreground)) 70%,var(--vscode-foreground))}
-.mk.under,.mk.filtered{color:var(--vscode-descriptionForeground)}
+.mk.under,.mk.unknown,.mk.filtered{color:var(--vscode-descriptionForeground)}
 .muted,.empty,.note{color:var(--vscode-descriptionForeground)}
 .empty{padding:1px 0}
 .note{margin:8px 0 0;font-size:11px}

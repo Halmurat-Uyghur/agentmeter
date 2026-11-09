@@ -6,7 +6,7 @@ import { mkdtemp as mkdtempP, rm as rmP } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { LOCAL_BANNER, SESSION_TOTAL_SHORT, setDisplayCurrency, statusParts, statusText } from "../../src/core/format";
+import { LOCAL_BANNER, SESSION_TOTAL_SHORT, setDisplayCurrency, statusAccessibilityLabel, statusParts, statusText } from "../../src/core/format";
 import { Logger } from "../../src/core/log";
 import { UsageMonitor } from "../../src/core/monitor";
 import { isSectionId } from "../../src/core/panelHtml";
@@ -724,5 +724,37 @@ describe("sidebar model: daily and weekly targets, Settings link (v0.9)", () => 
       expect(model.settingsLink).toEqual({ text: "Settings", title: "Opens the panel's Settings section: unit, currency, colours, status bar and targets.", link: { command: "copilotUsageMonitor.showSection", args: ["settings"] } });
       expect(renderSidebarHtml(model, "x")).toContain(`<a href="command:copilotUsageMonitor.showSection?%5B%22settings%22%5D" title="Opens the panel&#39;s Settings section: unit, currency, colours, status bar and targets.">Settings</a></div>`);
     }
+  });
+});
+
+describe("review findings J and N (side bar)", () => {
+  it("J: an unknown amount in tokens view passes the stricter copy gate, page and spoken label included", () => {
+    const unknown = m(0, 0, 3);
+    const c = totals({}, { nanoAiu: unknown, callNanoAiu: unknown });
+    const s = snap({ today: c, last7: c, thisMonth: c });
+    const view: ViewOptions = { unit: "tokens", range: { max: 60 }, dayTarget: { max: 5 }, weekTarget: { max: 20 } };
+    const model = buildSidebarModel(s, view, ["web"]);
+    const marked = sidebarRows(model).filter((x) => x.marker && x.marker.kind !== "filtered");
+    expect(marked.length).toBeGreaterThanOrEqual(3);
+    for (const x of marked) {
+      expect(x.marker).toEqual({ kind: "unknown", text: "not compared" });
+      expect(x.spoken).toContain("amount not logged, target not compared");
+    }
+    for (const t of strings(model)) expect(t).not.toMatch(STRICT_RE);
+    expect(text(renderSidebarHtml(model, "x")).split(LOCAL_BANNER).join("")).not.toMatch(STRICT_RE);
+    expect(statusText(s, view)).not.toMatch(STRICT_RE);
+    expect(statusAccessibilityLabel(s, view)).not.toMatch(STRICT_RE);
+    expect(statusAccessibilityLabel(s, view)).toContain("amount not logged, target up to 60.00 US dollars not compared");
+  });
+
+  it("N: a folder that could not be listed is not counted as an unreadable log", () => {
+    const h = health({ partial: true, unreadableFiles: 0, sources: { copilot: { state: "ok", rootSource: "default", files: 0, sessions: 0, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } } });
+    const model = buildSidebarModel(snap({ health: h }), TOKENS);
+    expect(model.health?.text).toBe("Partial data · a log folder could not be listed; new sessions may be missing");
+    expect(model.health?.title).toContain("a log folder could not be listed; new sessions may be missing");
+    expect(model.health?.title).not.toContain("could not be read");
+    // a failed folder and two unreadable logs: both named (a failed listing is not in unreadableFiles)
+    const both = buildSidebarModel(snap({ health: { ...h, unreadableFiles: 2 } }), TOKENS);
+    expect(both.health?.title).toContain("a log folder could not be listed; new sessions may be missing; 2 logs could not be read");
   });
 });

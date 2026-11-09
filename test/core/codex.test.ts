@@ -560,7 +560,7 @@ describe("discoverCodex (D45)", () => {
     expect(await discoverCodex(join(root, "missing"), windowStart, dayStart, now)).toEqual({ ok: false, error: "no-dir" });
   });
 
-  it("prunes date folders before the window's first day less one day of slack, and keeps the slack day", async () => {
+  it("with the old folders' last findings given, skips date folders before the window's first day less one day of slack, and keeps the slack day", async () => {
     const ids = ["aaaaaaaa-0000-0000-0000-000000000001", "aaaaaaaa-0000-0000-0000-000000000002", "aaaaaaaa-0000-0000-0000-000000000003", "aaaaaaaa-0000-0000-0000-000000000004", "aaaaaaaa-0000-0000-0000-000000000005"];
     const mtime = new Date(now - 3_600_000);
     await codexTree(root, [
@@ -571,7 +571,7 @@ describe("discoverCodex (D45)", () => {
       { date: "2026/11/08", sessionId: ids[3]!, lines: [codexMeta()], mtime: new Date(now - 1000) },
     ]);
     const readdir = vi.spyOn(fs.promises, "readdir");
-    const res = await discoverCodex(root, windowStart, dayStart, now);
+    const res = await discoverCodex(root, windowStart, dayStart, now, { paths: [], unreadable: [] });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const byId = new Map(res.candidates.map((c) => [c.sessionId, c]));
@@ -587,6 +587,9 @@ describe("discoverCodex (D45)", () => {
     expect(listed.some((p) => p.includes(`${sep}2025`))).toBe(false);
     expect(listed.some((p) => p.endsWith(join("09", "29")))).toBe(false);
     expect(listed.some((p) => p.endsWith(join("09", "30")))).toBe(true);
+    // Without them every folder is walked: a session resumed in the window is found wherever it started.
+    const all = await discoverCodex(root, windowStart, dayStart, now);
+    expect(all.ok && all.candidates.map((c) => c.sessionId).sort()).toEqual([...ids].sort());
   });
 
   it("the slack day crosses a month and year boundary", async () => {
@@ -595,7 +598,7 @@ describe("discoverCodex (D45)", () => {
       { date: "2026/12/30", sessionId: ids0(1), lines: [codexMeta()], mtime: new Date(jan1 + 1000) },
       { date: "2026/12/31", sessionId: ids0(2), lines: [codexMeta()], mtime: new Date(jan1 + 1000) },
     ]);
-    const res = await discoverCodex(root, jan1, jan1, jan1 + 2000);
+    const res = await discoverCodex(root, jan1, jan1, jan1 + 2000, { paths: [], unreadable: [] });
     expect(res.ok && res.candidates.map((c) => c.sessionId)).toEqual([ids0(2)]);
   });
 

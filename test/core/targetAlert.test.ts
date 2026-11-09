@@ -79,3 +79,34 @@ describe("target-crossed alert at display precision", () => {
     expect(a.next(snap(151), view, true)).toBe("Copilot usage this month is over your target: $151 est. (target $20.00–$150). Locally observed from Copilot session logs on this computer.");
   });
 });
+
+describe("TargetAlert (review fix B)", () => {
+  const SECTION = "copilotUsageMonitor";
+  const view: ViewOptions = { unit: "cost", range: { max: 60 } };
+
+  it("fires on the effective setting it is given, even when the saved one is off", async () => {
+    const fake = await import("../fakes/vscode");
+    const { TargetAlert } = await import("../../src/vscode/targetAlert");
+    delete fake.state.global[`${SECTION}.targetAlert`];
+    const a = new TargetAlert(() => undefined);
+    a.check(snap(80), view, true);
+    expect(a.shown).toBe(1);
+    const off = new TargetAlert(() => undefined);
+    off.check(snap(80), view, false);
+    expect(off.shown).toBe(0);
+  });
+
+  it("\"Don't show again\" goes through the given writer, not straight to the settings", async () => {
+    const fake = await import("../fakes/vscode");
+    const { TargetAlert } = await import("../../src/vscode/targetAlert");
+    const before = fake.state.updates.length;
+    fake.state.infoPick = "Don't show again";
+    let muted = 0;
+    const a = new TargetAlert(() => undefined, undefined, async () => void muted++);
+    a.check(snap(80), view, true);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    fake.state.infoPick = undefined;
+    expect(muted).toBe(1);
+    expect(fake.state.updates.length).toBe(before);
+  });
+});

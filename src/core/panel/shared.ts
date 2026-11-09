@@ -1,6 +1,6 @@
 // Helpers shared by the panel's section renderers. Every log-derived string
 // goes through escapeHtml; "—" means not reported (never 0), "*" incomplete.
-import { type Change, costLabel, estWord, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
+import { type Change, costLabel, estWord, folderListNote, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, unreadableParts, usd } from "../format";
 import { addMetrics } from "../store";
 import { type Counts, type Health, type Metric, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, type IconName } from "./icons";
@@ -156,10 +156,11 @@ export function val(text: string): string {
   return escapeHtml(text);
 }
 
-/** Text with ▲ ▼ × or "<" in it: shown as is, read as words ("up 2.7 times"). The "<" may
+/** Text with ▲ ▼ × "*" or "<" in it: shown as is, read as words ("up 2.7 times"). The "<" may
  * precede a digit or a currency symbol of up to 4 characters ("<$0.001", "<CA$0.001", "<CHF 0.001"). */
 export function sym(text: string): string {
-  if (!/[▲▼×]|<[^\s\d<>]{0,4}\s?\d/.test(text)) return escapeHtml(text);
+  // A "*" after a figure or a word ("$1.20*", "In range*") is read as "(may be incomplete)".
+  if (!/[▲▼×]|<[^\s\d<>]{0,4}\s?\d|[\dMKa-z]\*/.test(text)) return escapeHtml(text);
   return `<span aria-hidden="true">${escapeHtml(text)}</span><span class="sr">${escapeHtml(spoken(text))}</span>`;
 }
 
@@ -244,7 +245,9 @@ export function totalsFine(n: number, what: string): string {
 
 export function partialReasons(h: Health): string {
   const parts: string[] = [];
-  if (h.unreadableFiles > 0) parts.push(`${plural(h.unreadableFiles, "log")} could not be read`);
+  const u = unreadableParts(h);
+  if (u.folders > 0) parts.push(folderListNote(u.folders));
+  if (u.logs > 0) parts.push(`${plural(u.logs, "log")} could not be read`);
   if (h.malformed > 0) parts.push(`${plural(h.malformed, "malformed line")} skipped`);
   if (h.overlong > 0)
     parts.push(`${plural(h.overlong, "over-long line")} that may contain usage ${h.overlong === 1 ? "was" : "were"} skipped`);

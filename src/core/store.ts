@@ -19,8 +19,25 @@ interface Entry {
   /** the first (owning) holder and its folderId; a call key counts as held by every folder of its holders (D29) */
   file: string;
   folderId: string;
-  /** later holders, file → folderId, in the order they arrived; undefined while there are none */
-  more: Map<string, string> | undefined;
+  /** later holders, file → folderId (or, when that file's copy named another session,
+   * its folderId and sessionId; an exact folder copy is filed under its own folder's session),
+   * in the order they arrived; undefined while there are none */
+  more: Map<string, Holder> | undefined;
+}
+
+/** A later holder: its folderId, or its folderId and sessionId when the sessionId differs
+ * from the record's (a copy rarely does, so the common case stores one string). */
+type Holder = string | { folderId: string; sessionId: string };
+
+function folderOf(h: Holder): string {
+  return typeof h === "string" ? h : h.folderId;
+}
+
+/** The session a holder in folder `folderId` files the call under once it owns it. An exact copy
+ * of a folder carries the owner folder's name as its session id; under its own folder it is that
+ * folder's session (the monitor finds a folder's current session by sessionId === folderId). */
+function copySession(sessionId: string, folderId: string, ownerFolderId: string): string {
+  return sessionId === ownerFolderId && folderId !== ownerFolderId ? folderId : sessionId;
 }
 
 function newEntry(record: UsageRecord, file: string, folderId: string): Entry {
@@ -33,30 +50,31 @@ function hasFile(e: Entry, file: string): boolean {
 
 function holds(e: Entry, folderId: string): boolean {
   if (e.folderId === folderId) return true;
-  if (e.more) for (const f of e.more.values()) if (f === folderId) return true;
+  if (e.more) for (const h of e.more.values()) if (folderOf(h) === folderId) return true;
   return false;
 }
 
 /** Drops `file` from `e`'s holders. Returns the folderId it held the key for (undefined if it
- * did not hold it) and whether no holder is left. A removed first holder is replaced by the
- * earliest later one, as the first key of an insertion-ordered Map would be. */
-function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean } {
+ * did not hold it), whether no holder is left, and, when the owner was replaced by the earliest
+ * later holder (as the first key of an insertion-ordered Map would be), that holder's sessionId
+ * (undefined when it named the record's own session). */
+function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean; promoted?: { sessionId: string | undefined } } {
   if (e.file === file) {
     const folderId = e.folderId;
     const next = e.more?.entries().next();
     if (next === undefined || next.done) return { folderId, empty: true };
-    const [f, id] = next.value;
+    const [f, h] = next.value;
     e.more!.delete(f);
     e.file = f;
-    e.folderId = id;
+    e.folderId = folderOf(h);
     if (e.more!.size === 0) e.more = undefined;
-    return { folderId, empty: false };
+    return { folderId, empty: false, promoted: { sessionId: typeof h === "string" ? undefined : h.sessionId } };
   }
-  const folderId = e.more?.get(file);
-  if (folderId === undefined) return { folderId, empty: false };
+  const h = e.more?.get(file);
+  if (h === undefined) return { folderId: undefined, empty: false };
   e.more!.delete(file);
   if (e.more!.size === 0) e.more = undefined;
-  return { folderId, empty: false };
+  return { folderId: folderOf(h), empty: false };
 }
 
 /** Records keyed by kind and source, then by record key: call keys and session-total keys
@@ -209,6 +227,10 @@ export class UsageStore {
    * per line, and thousands of records of one session would otherwise each keep a copy (D50).
    * Bounded: cleared when full, which only costs sharing, never correctness. */
   private readonly pool = new Map<string, string>();
+  /** A call entry whose owning file was reset while another file held it → that original file.
+   * When the original re-delivers the key (a tailer reset re-reads the whole file), ownership and
+   * attribution return to it. Weak and only for promoted entries, so an entry stays flat (D50). */
+  private readonly promotedFrom = new WeakMap<Entry, string>();
 
   private intern(s: string): string {
     const known = this.pool.get(s);
@@ -260,10 +282,19 @@ export class UsageStore {
       return true;
     }
     if (existing) {
+      if (r.kind === "call" && this.promotedFrom.get(existing) === file) return this.restoreOwner(existing, r, file);
+      // The folder the call's session is named after arrives after a copy of it was read first:
+      // the original owns the call, as if it had been read first.
+      if (
+        r.kind === "call" && !hasFile(existing, file) && r.folderId !== existing.folderId &&
+        r.sessionId === existing.record.sessionId && r.folderId === r.sessionId
+      ) return this.restoreOwner(existing, r, file);
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
         if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
-        (existing.more ??= new Map()).set(file, r.folderId);
+        const sessionId = copySession(r.sessionId, r.folderId, existing.folderId);
+        const holder: Holder = sessionId === existing.record.sessionId ? r.folderId : { folderId: this.intern(r.folderId), sessionId: this.intern(sessionId) };
+        (existing.more ??= new Map()).set(file, holder);
       }
       return false;
     }
@@ -274,6 +305,36 @@ export class UsageStore {
       bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
     }
     return true;
+  }
+
+  /** `file`, the original owner of `e`'s call whose holding was promoted to a later copy,
+   * delivers the key again (a re-read after truncation or rewrite): it owns the call again and
+   * the record is its line `r`, attributed to its folder and session, as a first read of it
+   * would leave it; its repeats merge from here and the promoted copy goes back to being a
+   * later holder (so the copy's merged repeats never add to the original's; D42). */
+  private restoreOwner(e: Entry, r: UsageRecord, file: string): boolean {
+    this.promotedFrom.delete(e);
+    const old = e.record;
+    const changed = JSON.stringify(r) !== JSON.stringify(old);
+    this.share(r);
+    const { sessionId, folderId } = r;
+    if (!holds(e, folderId)) bump(this.callsPerFolder, idOf(old.source, folderId), 1);
+    if (sessionId !== old.sessionId) {
+      bump(this.callsPerSession, idOf(old.source, old.sessionId), -1);
+      bump(this.callsPerSession, idOf(old.source, sessionId), 1);
+    }
+    // Later holders are stored relative to the record's sessionId: restate them, the demoted owner first.
+    const rel = (f: string, held: string): Holder => {
+      const s = copySession(held, f, folderId);
+      return s === sessionId ? f : { folderId: f, sessionId: s };
+    };
+    const more = new Map<string, Holder>([[e.file, rel(e.folderId, old.sessionId)]]);
+    if (e.more) for (const [f, h] of e.more) more.set(f, rel(folderOf(h), typeof h === "string" ? old.sessionId : h.sessionId));
+    e.more = more;
+    e.file = file;
+    e.folderId = folderId;
+    e.record = r;
+    return changed;
   }
 
   /**
@@ -314,9 +375,30 @@ export class UsageStore {
   resetFile(file: string): void {
     for (const m of this.spaces.values()) {
       for (const [key, entry] of m) {
-        const { folderId, empty } = dropFile(entry, file);
+        const { folderId, empty, promoted } = dropFile(entry, file);
         if (folderId === undefined) continue;
-        const r = entry.record;
+        let r = entry.record;
+        // Remember the original owner (not a later promoted one), so its re-read restores it.
+        if (promoted !== undefined && r.kind === "call" && !this.promotedFrom.has(entry)) this.promotedFrom.set(entry, file);
+        // The surviving copy now owns the call: attribute it to that copy's folder (and session,
+        // when the copy named another one; an exact copy names its own folder, see add), so
+        // projects and the current session follow it.
+        // A session total stays put: totalKeys finds it by the folder it was set for.
+        if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
+          const sessionId = promoted.sessionId ?? r.sessionId;
+          if (sessionId !== r.sessionId) {
+            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+            bump(this.callsPerSession, idOf(r.source, sessionId), 1);
+            // Later holders are stored relative to the record's sessionId: restate them.
+            if (entry.more) {
+              for (const [f, h] of entry.more) {
+                const hs = typeof h === "string" ? r.sessionId : h.sessionId;
+                entry.more.set(f, hs === sessionId ? folderOf(h) : { folderId: folderOf(h), sessionId: hs });
+              }
+            }
+          }
+          r = entry.record = { ...r, folderId: entry.folderId, sessionId };
+        }
         if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
         if (empty) {
           m.delete(key);
@@ -478,13 +560,59 @@ export function byMonth(store: UsageStore, starts: number[], keep: (r: UsageReco
 }
 
 const GROWTH_SPAN = 5;
+/** A growing session's replies count as longer when its last 5 calls' output tokens are at
+ * least this many times its first 5's (SessionSummary.growthCauses). */
+export const OUTPUT_GROWTH_FLAG = 2;
+/** ... and its cache reuse as fallen when the cache-read share of its last 5 calls' prompt
+ * tokens is at least this much (out of 1) below its first 5's. */
+export const CACHE_SHARE_DROP = 0.25;
+
+/** What, besides input, changed from a growing session's first calls `head` to its last
+ * `tail`: only causes measured on every one of those calls, undefined when none holds. */
+function causesOf(head: UsageRecord[], tail: UsageRecord[], conventions: ReadonlyMap<string, PromptConvention>): SessionSummary["growthCauses"] {
+  const out: NonNullable<SessionSummary["growthCauses"]> = [];
+  const early = new Set(head.map((r) => r.model));
+  if (!early.has(undefined) && tail.some((r) => r.model !== undefined && !early.has(r.model))) out.push("model");
+  const outputs = (xs: UsageRecord[]) => xs.map((r) => r.tokens.output);
+  const ho = outputs(head);
+  const to = outputs(tail);
+  if (ho.every((x) => x !== undefined) && to.every((x) => x !== undefined)) {
+    const a = (ho as number[]).reduce((x, y) => x + y, 0);
+    const b = (to as number[]).reduce((x, y) => x + y, 0);
+    if (b > 0 && b >= OUTPUT_GROWTH_FLAG * a) out.push("output");
+  }
+  const share = (xs: UsageRecord[]): number | undefined => {
+    let prompt = 0;
+    let read = 0;
+    for (const r of xs) {
+      const p = pairedCache(r, conventions);
+      if (p === undefined) return undefined;
+      prompt += p.prompt;
+      read += p.read;
+    }
+    return prompt > 0 ? read / prompt : undefined;
+  };
+  const hs = share(head);
+  const ts = share(tail);
+  if (hs !== undefined && ts !== undefined && hs - ts >= CACHE_SHARE_DROP) out.push("cache");
+  return out.length > 0 ? out : undefined;
+}
 const ALL = () => true;
 
 export const NO_PROJECT = "(no project)";
 
-/** Input + output of one record, or undefined when neither was reported. */
-function recordTokens(r: UsageRecord): number | undefined {
-  return r.tokens.input === undefined && r.tokens.output === undefined ? undefined : (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+/** Counts input + output of `r` into `m` as the headline does (addMetrics of input and
+ * output): a record that reported one side adds it and counts as reported, and a record
+ * missing either side counts as missing too, so its row keeps the "*" the headline shows. */
+export function countTokens(m: Metric, r: UsageRecord): void {
+  const { input, output } = r.tokens;
+  if (input === undefined && output === undefined) {
+    m.missing += 1;
+    return;
+  }
+  m.sum += (input ?? 0) + (output ?? 0);
+  m.reported += 1;
+  if (input === undefined || output === undefined) m.missing += 1;
 }
 
 function byCost<T extends { name: string; nanoAiu: Metric; tokens: Metric }>(a: T, b: T): number {
@@ -514,7 +642,7 @@ export function projectSummaries(
     g.ids.add(r.sessionId);
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
-    count(g.s.tokens, recordTokens(r));
+    countTokens(g.s.tokens, r);
     if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
     bumpSource(g.s.sources!, r.source);
   }
@@ -535,7 +663,7 @@ export function recentProjects(
   type Acc = { s: GroupSummary; ids: Set<string> };
   const week = new Map<string, Acc>();
   const day = new Map<string, Acc>();
-  const add = (into: Map<string, Acc>, name: string, r: UsageRecord, tok: number | undefined) => {
+  const add = (into: Map<string, Acc>, name: string, r: UsageRecord) => {
     let g = into.get(name);
     if (!g) {
       g = { s: emptyGroup(name), ids: new Set() };
@@ -545,16 +673,15 @@ export function recentProjects(
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     if (r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
-    count(g.s.tokens, tok);
+    countTokens(g.s.tokens, r);
     if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
     bumpSource(g.s.sources!, r.source);
   };
   store.each((r) => {
     if (r.timestampMs < last7StartMs) return;
     const name = projectOf(r);
-    const tok = recordTokens(r);
-    add(week, name, r, tok);
-    if (r.timestampMs >= todayStartMs) add(day, name, r, tok);
+    add(week, name, r);
+    if (r.timestampMs >= todayStartMs) add(day, name, r);
   });
   const done = (m: Map<string, Acc>) => [...m.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
   return { today: done(day), last7: done(week) };
@@ -606,7 +733,7 @@ export function toolSummaries(
       if (BUILT_IN_TOOLS[r.source].has(name)) t.builtIn = true;
       t.uses += uses;
       t.calls++;
-      count(t.tokens, recordTokens(r));
+      countTokens(t.tokens, r);
       if (pricedSource(r)) count(t.nanoAiu, r.nanoAiu);
       bumpSource(t.sources!, r.source);
     }
@@ -620,6 +747,25 @@ export function promptOf(r: UsageRecord, conventions: ReadonlyMap<string, Prompt
   const t = r.tokens;
   if (t.input === undefined) return undefined;
   return r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate" ? t.input + (t.cacheRead ?? 0) + (t.cacheWrite ?? 0) : t.input;
+}
+
+/** Prompt tokens and cache reads of a record that reported both, else undefined. Every cache
+ * share (session rows, the dashboard ring, session detail, Cache by model, Insights) pairs
+ * like with like through this: a record missing either is left out of both figures. */
+export function pairedCache(r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): { prompt: number; read: number } | undefined {
+  const read = r.tokens.cacheRead;
+  if (read === undefined) return undefined;
+  const prompt = promptOf(r, conventions);
+  return prompt === undefined ? undefined : { prompt, read };
+}
+
+/** Counts a record into paired prompt and cache-read Metrics (see pairedCache): reported on
+ * both when it logged both, missing on both otherwise, so `reported` of `reported + missing`
+ * records support the share. */
+export function countPairedCache(prompt: Metric, cacheRead: Metric, r: UsageRecord, conventions: ReadonlyMap<string, PromptConvention>): void {
+  const p = pairedCache(r, conventions);
+  count(prompt, p?.prompt);
+  count(cacheRead, p?.read);
 }
 
 /**
@@ -653,10 +799,11 @@ export function sessionSummaries(
     let callsMissing = 0;
     let firstMs = Number.POSITIVE_INFINITY;
     for (const r of recs) {
-      count(tokens, recordTokens(r));
+      countTokens(tokens, r);
       if (pricedSource(r)) count(nanoAiu, r.nanoAiu);
-      count(input, promptOf(r, conventions));
-      count(cacheRead, r.tokens.cacheRead);
+      // The cache share pairs like with like: prompt tokens and cache reads of the records that
+      // reported both; a record missing either counts as missing on both, never half-summed.
+      countPairedCache(input, cacheRead, r, conventions);
       calls += callsOf(r);
       callsMissing += callsMissingOf(r);
       // A session total's start is the sessionStartTime Copilot logged with it (N9).
@@ -673,9 +820,12 @@ export function sessionSummaries(
       }
     }
     // Growth compares calls; a session total is one figure, not a call.
-    const priced = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
+    const pricedRecs = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined);
+    const priced = pricedRecs.map((r) => r.nanoAiu!);
     let growth: number | undefined;
     let excessNanoAiu: number | undefined;
+    let inputGrowth: number | undefined;
+    let growthCauses: SessionSummary["growthCauses"];
     if (priced.length >= 2 * GROWTH_SPAN) {
       const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
       const early = mean(priced.slice(0, GROWTH_SPAN));
@@ -683,6 +833,17 @@ export function sessionSummaries(
       if (early > 0) {
         growth = late / early;
         excessNanoAiu = priced.slice(GROWTH_SPAN).reduce((a, x) => a + Math.max(0, x - early), 0);
+        // The same calls' prompt tokens: only their growth says the context grew (another
+        // model, longer replies or fewer cache reads also raise cost; growthCauses checks those).
+        // Undefined when any of them lacks input.
+        const prompts = (xs: UsageRecord[]) => xs.map((r) => promptOf(r, conventions));
+        const head = prompts(pricedRecs.slice(0, GROWTH_SPAN));
+        const tail = prompts(pricedRecs.slice(-GROWTH_SPAN));
+        if (head.every((x) => x !== undefined) && tail.every((x) => x !== undefined)) {
+          const earlyIn = mean(head as number[]);
+          if (earlyIn > 0) inputGrowth = mean(tail as number[]) / earlyIn;
+        }
+        growthCauses = causesOf(pricedRecs.slice(0, GROWTH_SPAN), pricedRecs.slice(-GROWTH_SPAN), conventions);
       }
     }
     const sessionTotal = recs.every((r) => r.kind === "sessionTotal");
@@ -698,6 +859,8 @@ export function sessionSummaries(
       tokens,
       nanoAiu,
       ...(growth !== undefined && { growth }),
+      ...(inputGrowth !== undefined && { inputGrowth }),
+      ...(growthCauses !== undefined && { growthCauses }),
       ...(sessionTotal && { sessionTotal }),
       input,
       cacheRead,

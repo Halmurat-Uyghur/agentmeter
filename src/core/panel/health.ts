@@ -1,5 +1,5 @@
 // Data health (D32): what was read, what was skipped and what is not counted.
-import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE, mixedSources } from "../format";
+import { CHAT_NOT_COVERED, NOT_COVERED, SESSION_TOTAL_NOTE, mixedSources, unreadableParts } from "../format";
 import type { Snapshot, ViewOptions } from "../types";
 import { aboutText } from "./chrome";
 import { escapeHtml, fact } from "./shared";
@@ -7,11 +7,14 @@ import { sourcesHealthBox } from "./sources";
 
 export function healthBox(s: Snapshot): string {
   const h = s.health;
+  // A folder whose listing failed is its own fact, not an unreadable log (Codex review of PR #22).
+  const folders = unreadableParts(h).folders;
   // Always shown, first (2.6): Copilot Chat in VS Code is the gap most readers hit.
   const chat = `<div class="note"><p>${escapeHtml(CHAT_NOT_COVERED)}</p></div>`;
   return `${chat}<section class="box"><h3>Logs read<small>read-only · nothing leaves this computer</small></h3><div class="facts">
 ${fact("Sessions this month", s.sessions.length)}
 ${fact("Months of history", s.history?.length ?? 1)}
+${folders > 0 ? fact("Log folders that could not be listed", folders, true) : ""}
 ${fact("Unreadable logs", h.unreadableFiles, true)}
 ${fact("Sessions counted from session totals", h.sessionsFromTotals)}
 ${fact("Sessions without usage data", h.sessionsWithoutUsage)}

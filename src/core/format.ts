@@ -5,7 +5,7 @@
 import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
 import { PRICES_AS_OF } from "./pricing";
-import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
+import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, type SourceHealth, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.";
@@ -149,14 +149,111 @@ export function usd(m: Metric): number | undefined {
   return m.reported === 0 ? undefined : m.sum / 1e11;
 }
 
-/** The spend a target compares (v0.10): Copilot's logged cost only. Claude Code and Codex cost is
- * an estimate from list prices, shown with the figures but never counted against a target. */
-export function targetUsd(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): number | undefined {
-  if (!t) return undefined;
-  if (!t.bySource) return mixedSources(t.sources) ? undefined : usd(t.nanoAiu);
-  const c = t.bySource.copilot;
-  return c ? usd(c.nanoAiu) : undefined;
+/**
+ * What a target compares (review finding #3): `usd` spent so far and whether it is
+ * `partial` (some records in scope logged no cost, so it is a lower bound), or "unknown"
+ * when records are in scope but none of them logged a cost. No record in scope is $0.
+ * Copilot's logged cost only (v0.10): Claude Code and Codex cost is an estimate from list
+ * prices, shown with the figures but never counted against a target.
+ */
+export type TargetSpend = { usd: number; partial: boolean } | "unknown";
+
+export function targetSpend(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): TargetSpend {
+  if (!t) return { usd: 0, partial: false };
+  // Without a per-source split, mixed sources cannot be separated: the Copilot part is unknown.
+  if (!t.bySource && mixedSources(t.sources)) return "unknown";
+  const m = t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+  if (!m || (m.reported === 0 && m.missing === 0)) return { usd: 0, partial: false };
+  if (m.reported === 0) return "unknown";
+  return { usd: m.sum / 1e11, partial: m.missing > 0 };
 }
+
+/** A target's state and whether the spend it compared is a lower bound. */
+export interface TargetStatus {
+  state: RangeState;
+  /** the spend is a lower bound and the state could still change ("under" or "in" only) */
+  partial: boolean;
+  /** "unknown" because Copilot's logs could not be read (a locked folder, or lines in a
+   * format this version does not recognize) and no Copilot amount is known, not because the
+   * records in scope logged none */
+  unread?: true;
+}
+
+/** A source's read left records out: an unreadable log or folder, a listing that failed,
+ * malformed or over-long lines, or files over the discovery cap. */
+function sourceIncomplete(x: SourceHealth | undefined): boolean {
+  return x !== undefined && (x.unreadableFiles + x.malformed + x.overlong + (x.capped ?? 0) > 0 || x.discoveryFailed === true);
+}
+
+/**
+ * Whether Copilot's logs could not be read as they are now (Codex review of PR #22): its folder
+ * is locked ("permission": nothing in it was read, with no unreadable-file count to show it) or
+ * its lines are in a format this version does not recognize ("format-changed"). Whatever Copilot
+ * amount these logs hold was not read: a missing amount is unknown, not $0, and a known one is a
+ * lower bound. A missing folder ("no-dir") is Copilot not installed: $0 stays $0. Without a
+ * per-source split (older snapshots) the whole read is Copilot's.
+ */
+export function copilotUnread(h: Health | undefined): boolean {
+  if (!h) return false;
+  const st = h.sources ? h.sources.copilot?.state : h.state;
+  return st === "permission" || st === "format-changed";
+}
+
+/** Whether `t` holds any Copilot record with a usage figure (a cost or a missing one): the
+ * part a target compares, split out like targetSpend does. */
+function hasCopilotAmount(t: Parameters<typeof targetSpend>[0]): boolean {
+  if (!t) return false;
+  const m = t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+  return m !== undefined && m.reported + m.missing > 0;
+}
+
+/**
+ * Whether Copilot's logs were read incompletely, so its logged cost (all a target compares)
+ * may be a lower bound. Other sources' read failures do not count: targets are Copilot only.
+ * Without a per-source split (older snapshots) the whole read is Copilot's. An unread
+ * session.shutdown line has no per-source count; it is Copilot's (only Copilot writes it).
+ */
+export function copilotIncomplete(h: Health | undefined): boolean {
+  if (!h) return false;
+  const src = h.sources;
+  if (copilotUnread(h)) return true;
+  if (!src) return h.partial;
+  if (sourceIncomplete(src.copilot)) return true;
+  // What health.partial holds beyond the sources' own counts (an unread session.shutdown line).
+  return h.partial && (h.shutdownOversize > 0 || !SOURCES.some((x) => x !== "copilot" && sourceIncomplete(src[x])));
+}
+
+/** The state of `t` against `range`, keeping unknown cost apart from $0 (review finding #3).
+ * `health`: the snapshot's read; when Copilot's logs were read incompletely the spend is a
+ * lower bound too, so "under" and "in" are starred like a record without a logged cost.
+ * When Copilot's logs could not be read at all (copilotUnread) and no Copilot amount is in
+ * scope, nothing was read to compare: the state is "unknown" ("Not compared"), never a
+ * definite $0 "In range". A Copilot amount kept from an earlier good read is a lower bound. */
+export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOptions["range"], health?: Health): TargetStatus {
+  let spend = targetSpend(t);
+  const unread = range !== undefined && typeof spend === "object" && copilotUnread(health) && !hasCopilotAmount(t);
+  if (unread) spend = "unknown";
+  const state = rangeState(spend, range);
+  // Spend already above the max is over whatever is missing; below it, it is a lower bound.
+  // "In" a min-only range stays in whatever is missing, so only a max makes "in" uncertain.
+  const open = state === "under" || (state === "in" && range?.max !== undefined);
+  const partial = typeof spend === "object" && (spend.partial || copilotIncomplete(health)) && open;
+  return unread ? { state, partial, unread: true } : { state, partial };
+}
+
+/** RANGE_LABEL with "*" when the spend is a lower bound ("in target range*"). */
+export function rangeLabel(st: TargetStatus): string {
+  if (st.unread === true) return UNREAD_LABEL;
+  return st.partial ? RANGE_LABEL[st.state] + "*" : RANGE_LABEL[st.state];
+}
+
+/** The short word for a target state in a figure's subtitle: "Under", "In range", "Over", "Not compared". */
+export function rangeWord(st: TargetStatus): string {
+  const w = RANGE_WORD[st.state];
+  return st.partial ? w + "*" : w;
+}
+
+export const RANGE_WORD: Record<RangeState, string> = { none: "", under: "Under", in: "In range", over: "Over", unknown: "Not compared" };
 
 /** Display currency for every cost figure; undefined = USD. Set by the extension
  * (setDisplayCurrency) from the chosen currency and its daily rate. */
@@ -239,10 +336,12 @@ export function cleanRange(min: unknown, max: unknown): ViewOptions["range"] {
   return { ...(lo !== undefined && { min: lo }), ...(hi !== undefined && { max: hi }) };
 }
 
-/** Where spend so far sits against the range; no month data counts as $0. */
-export function rangeState(spent: number | undefined, range: ViewOptions["range"]): RangeState {
+/** Where spend so far sits against the range; no month data counts as $0, but a
+ * TargetSpend of "unknown" (records with no cost logged) is never compared (review finding #3). */
+export function rangeState(spent: number | undefined | TargetSpend, range: ViewOptions["range"]): RangeState {
   if (!range) return "none";
-  const v = spent ?? 0;
+  if (spent === "unknown") return "unknown";
+  const v = typeof spent === "object" ? spent.usd : (spent ?? 0);
   // Compared as shown: spend that displays as the bound is not past it.
   if (range.max !== undefined && v > range.max && money(v) !== money(range.max)) return "over";
   if (range.min !== undefined && v < range.min && money(v) !== money(range.min)) return "under";
@@ -261,13 +360,19 @@ export const RANGE_LABEL: Record<RangeState, string> = {
   under: "under target",
   in: "in target range",
   over: "over target",
+  // No "cost", "spend" or "credits": the tokens view's stricter copy gate applies here too.
+  unknown: "amount not logged, target not compared",
 };
+
+/** rangeLabel of an "unknown" state whose Copilot logs could not be read (TargetStatus.unread). */
+export const UNREAD_LABEL = "Copilot logs not read, target not compared";
 
 const RANGE_ICON_ID: Record<RangeState, string> = {
   none: "pulse",
   under: "arrow-down",
   in: "pass",
   over: "flame",
+  unknown: "question",
 };
 
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -284,13 +389,30 @@ export function thisMonthTotals(s: Snapshot): Totals | undefined {
 
 /** Range state of the current month in `s` (unfiltered; never a selected past month). */
 export function currentRangeState(s: Snapshot, view: ViewOptions): RangeState {
-  const t = thisMonthTotals(s);
-  return rangeState(targetUsd(t), view.range);
+  return currentTargetStatus(s, view).state;
+}
+
+/** Target status of the current month in `s`, with whether its spend is a lower bound. */
+export function currentTargetStatus(s: Snapshot, view: ViewOptions): TargetStatus {
+  return targetStatus(thisMonthTotals(s), view.range, s.health);
 }
 
 /** Codicon id for a range state; the status bar and the side bar share it (D31). */
 export function rangeIconId(state: RangeState): string {
   return RANGE_ICON_ID[state];
+}
+
+/** What made a read incomplete beyond its lines: source folders whose last listing failed
+ * (SourceHealth.discoveryFailed, review finding N) and log files that could not be read
+ * (`h.unreadableFiles`; a failed listing is not counted there, Codex review of PR #22). */
+export function unreadableParts(h: Health): { logs: number; folders: number } {
+  const folders = Object.values(h.sources ?? {}).filter((x) => x?.discoveryFailed === true).length;
+  return { folders, logs: h.unreadableFiles };
+}
+
+/** "a log folder could not be listed; new sessions may be missing" (2 or more: "2 log folders"). */
+export function folderListNote(folders: number): string {
+  return `${folders === 1 ? "a log folder" : `${folders} log folders`} could not be listed; new sessions may be missing`;
 }
 
 export function partialNote(m: Metric): string | undefined {
@@ -313,12 +435,18 @@ export interface StatusParts {
   /** " / $20.00–$60.00" in USD with a range set, else "" */
   suffix: string;
   state: RangeState;
+  /** the month's spend is a lower bound, so `state` ("under" or "in") may still change */
+  partial: boolean;
+  /** see TargetStatus.unread */
+  unread?: true;
 }
 
 export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): StatusParts {
   // The icon is chosen independently, so a format change that stops every
   // record from parsing (no `today`) still shows the warning.
-  const state = currentRangeState(s, view);
+  const st = currentTargetStatus(s, view);
+  const { state, partial } = st;
+  const unread = st.unread === true ? { unread: true as const } : {};
   const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
   const mode = view.statusBar ?? "today";
   const monthAbbr = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
@@ -331,12 +459,12 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
     // The current month is unfiltered (D31): a project or tool filter never reaches the status bar.
     let n = c ? formatUsd(c.nanoAiu) : DASH;
     if (s.health.partial) n = star(n);
-    return { icon, place, figure: n, suffix, state };
+    return { icon, place, figure: n, suffix, state, partial, ...unread };
   }
-  if (!c) return { icon, place, figure: DASH, suffix: "", state };
+  if (!c) return { icon, place, figure: DASH, suffix: "", state, partial, ...unread };
   let n = formatCount(addMetrics(c.input, c.output));
   if (s.health.partial) n = star(n);
-  return { icon, place, figure: `${n} tok`, suffix: "", state };
+  return { icon, place, figure: `${n} tok`, suffix: "", state, partial, ...unread };
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
@@ -380,7 +508,7 @@ export function spoken(text: string): string {
   return text
     .replace(/\$\(([a-z-]+)(~[a-z]+)?\)\s*/g, "")
     .replace(/—/g, "not reported")
-    .replace(/([\dMK])\*/g, "$1 (may be incomplete)")
+    .replace(/([\dMKa-z])\*/g, "$1 (may be incomplete)")
     .replace(currencyRe(), (_, sym: string, n: string) => `${n} ${sym === "$" ? "US dollars" : SYMBOL_CODE.get(sym)}`)
     .replace(/(\d(?:\.\d)?)M\b/g, "$1 million")
     .replace(/(\d(?:\.\d)?)K\b/g, "$1 thousand")
@@ -407,7 +535,12 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [multiSource(s.health) ? `Local usage, ${place}: ${spoken(p.figure)}` : `Copilot usage, local ${place}: ${spoken(p.figure)}`];
   // The target is monthly: name the month when the figure is today or the session (review fix 5).
-  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
+  if (p.state !== "none") {
+    const month = period === "this month" ? "" : "this month ";
+    const range = spoken(formatRange(view.range));
+    // "amount not logged, target up to 60.00 US dollars not compared": the range belongs to the target.
+    parts.push(p.state === "unknown" ? `${month}${p.unread === true ? "Copilot logs not read" : "amount not logged"}, target ${range} not compared` : `${month}${spoken(rangeLabel(p))} ${range}`);
+  }
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
 }
@@ -451,8 +584,13 @@ function healthLines(h: Health): string[] {
   }
   if (h.partial) {
     const reasons = ["Figures marked \\* may be incomplete:"];
-    if (h.unreadableFiles > 0)
-      reasons.push(`- ${h.unreadableFiles} log file(s) could not be read.`);
+    const u = unreadableParts(h);
+    if (u.folders > 0) {
+      const n = folderListNote(u.folders);
+      reasons.push(`- ${n.charAt(0).toUpperCase()}${n.slice(1)}.`);
+    }
+    if (u.logs > 0)
+      reasons.push(`- ${u.logs} log file(s) could not be read.`);
     if (h.malformed > 0)
       reasons.push(`- ${h.malformed} malformed line(s) were skipped.`);
     if (h.overlong > 0)
@@ -549,12 +687,12 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
     const mixed = mixedSources(thisMonth?.sources);
     if (view.range) {
-      const state = currentRangeState(s, view);
-      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
+      const st = currentTargetStatus(s, view);
+      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${escapeMarkdown(rangeLabel(st))}`);
     }
     // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
-    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.today), view.dayTarget)]}`);
-    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.last7), view.weekTarget)]}`);
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget, s.health)))}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget, s.health)))}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 

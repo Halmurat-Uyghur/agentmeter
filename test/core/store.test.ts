@@ -568,16 +568,23 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect(s.records(all)[0]!.tools).toEqual({ Read: 1, Bash: 1 });
   });
 
-  it("after the owner is reset, its re-read lines do not merge into the next holder's record", () => {
+  it("after the owner is reset, its re-read takes the record back as a first read would, without the next holder's repeats (review G)", () => {
     const s = new UsageStore();
     s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A");
     s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "B");
     s.resetFile("A");
-    expect(s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A")).toBe(false);
-    expect(s.add(cc("x", { tokens: { input: 50 }, tools: { Read: 1 } }), "A")).toBe(false);
+    // B owns it meanwhile and its repeat merges.
+    expect(s.add(cc("x", { tokens: { input: 70 }, tools: { Read: 1 } }), "B")).toBe(true);
+    expect(s.records(all)[0]!.tools).toEqual({ Read: 2 });
+    // A's re-read: its first line is the record again (B's merged repeat is not kept) ...
+    expect(s.add(cc("x", { tokens: { input: 10 }, tools: { Read: 1 } }), "A")).toBe(true);
+    expect(s.records(all)[0]!.tools).toEqual({ Read: 1 });
+    // ... and its repeat merges once, as on its first read; B's no longer does.
+    expect(s.add(cc("x", { tokens: { input: 50 }, tools: { Read: 1 } }), "A")).toBe(true);
+    expect(s.add(cc("x", { tokens: { input: 90 }, tools: { Read: 1 } }), "B")).toBe(false);
     const [r] = s.records(all);
-    expect(r!.tokens).toStrictEqual({ input: 10 });
-    expect(r!.tools).toEqual({ Read: 1 });
+    expect(r!.tokens).toStrictEqual({ input: 50 });
+    expect(r!.tools).toEqual({ Read: 2 });
     expect(s.totals(all)!.records).toBe(1);
   });
 

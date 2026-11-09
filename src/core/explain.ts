@@ -6,9 +6,11 @@
 // Token semantics (Phase 0 probe, 46 of 46 records): input = uncached + cache read +
 // cache write; reasoning is inside output; toolTokenCount is part of input. A model whose
 // records show cached > input is taken as reporting input apart from the cache (the
-// per-model inference of Insights), and its input is then the uncached part.
+// per-model inference of Insights), and its input is then the uncached part. That
+// inference is Copilot's only: Claude Code and Codex input is normalized at ingestion to
+// include the cache (D47), even when a Copilot model shares the id (review finding #8).
 import type { PromptConvention } from "./insights";
-import { BUILT_IN_TOOLS, promptOf, toolGroup } from "./store";
+import { BUILT_IN_TOOLS, countPairedCache, countTokens, promptOf, toolGroup } from "./store";
 import type { CacheStats, CallRow, LastPrompt, Metric, ModelCache, PromptStats, SessionDetail, ToolOverhead, ToolOverheadGroup, UsageRecord } from "./types";
 
 /** Calls a session ledger keeps in a snapshot (the newest ones); older calls are counted, not listed. */
@@ -32,7 +34,7 @@ function add(m: Metric, v: number | undefined): void {
 export function uncachedOf(r: UsageRecord, conventions: Conventions): number | undefined {
   const t = r.tokens;
   if (t.input === undefined) return undefined;
-  if (r.model !== undefined && conventions.get(r.model) === "separate") return t.input;
+  if (r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate") return t.input;
   if (t.cacheRead === undefined || t.cacheWrite === undefined) return undefined;
   return Math.max(0, t.input - t.cacheRead - t.cacheWrite);
 }
@@ -71,8 +73,10 @@ function chainsOf(calls: UsageRecord[], acc: { notLinked: number; unknown: numbe
   const join = (c: Chain, r: UsageRecord) => {
     if (r.nanoAiu === undefined) c.priced = false;
     else c.nano += r.nanoAiu;
-    if (r.tokens.input === undefined && r.tokens.output === undefined) c.tokensKnown = false;
-    else c.tokens += (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+    // A call that logged only one side leaves the chain's tokens incomplete (as store.countTokens):
+    // such a prompt is left out of the average rather than counted short.
+    if (r.tokens.input === undefined || r.tokens.output === undefined) c.tokensKnown = false;
+    c.tokens += (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
   };
   for (const r of calls) {
     if (r.initiator === "user") {
@@ -118,8 +122,9 @@ function emptyCache(): CacheStats {
 }
 
 function addCache(c: CacheStats, r: UsageRecord, conventions: Conventions): void {
-  add(c.prompt, promptOf(r, conventions));
-  add(c.cacheRead, r.tokens.cacheRead);
+  // Paired like the session rows and the dashboard ring: prompt tokens and cache reads of
+  // the calls that reported both, so every view of one session or model shows one share.
+  countPairedCache(c.prompt, c.cacheRead, r, conventions);
   const tc = r.typeCost;
   // The uncached-input cost is known whenever the call has a per-type split; the
   // comparison at the cache-read rate pairs both figures over the same calls.
@@ -222,7 +227,7 @@ export function sessionDetail(sessionId: string, records: UsageRecord[], convent
   const tokens = emptyMetric();
   for (const r of calls) {
     add(nanoAiu, r.nanoAiu);
-    add(tokens, r.tokens.input === undefined && r.tokens.output === undefined ? undefined : (r.tokens.input ?? 0) + (r.tokens.output ?? 0));
+    countTokens(tokens, r);
   }
   const kept = calls.slice(Math.max(0, calls.length - limit));
   const totalsOnly = calls.length === 0 && records.some((r) => r.kind === "sessionTotal" && r.sessionId === sessionId);

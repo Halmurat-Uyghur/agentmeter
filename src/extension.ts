@@ -40,25 +40,29 @@ const SAVE_RETRY_MS = 1500;
 type SettingKey = "display" | "currency" | "palette" | "panelNavCollapsed" | "statusBar" | "targetAlert" | "dailyTargetMax" | "weeklyTargetMax" | "monthlyTargetMin" | "monthlyTargetMax";
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-function readCurrency(): string {
-  return cleanCurrencyCode(vscode.workspace.getConfiguration(SECTION).get<unknown>("currency"));
+/** Reads one setting of SECTION by its short key. */
+type Read = (key: string) => unknown;
+/** The saved settings only; activate() reads through its layer of unsaved choices instead (review fix 2). */
+const persisted: Read = (k) => vscode.workspace.getConfiguration(SECTION).get<unknown>(k);
+
+function readCurrency(get: Read = persisted): string {
+  return cleanCurrencyCode(get("currency"));
 }
 
 /** Targets are entered in the chosen currency and held in USD; with no rate yet they are left out.
  * Also sets the display currency every cost formatter uses. */
-function readView(rate: Currency | undefined): ViewOptions {
-  const c = vscode.workspace.getConfiguration(SECTION);
-  const unit = c.get<string>("display") === "cost" ? "cost" : "tokens";
-  const code = readCurrency();
+function readView(rate: Currency | undefined, get: Read = persisted): ViewOptions {
+  const unit = get("display") === "cost" ? "cost" : "tokens";
+  const code = readCurrency(get);
   const cur = code !== DEFAULT_CURRENCY && rate?.code === code ? rate : undefined;
   const pending = code !== DEFAULT_CURRENCY && !cur ? code : undefined;
   setDisplayCurrency(cur);
-  const raw = cleanRange(c.get<unknown>("monthlyTargetMin"), c.get<unknown>("monthlyTargetMax"));
+  const raw = cleanRange(get("monthlyTargetMin"), get("monthlyTargetMax"));
   const range = pending ? undefined : rangeToUsd(raw, cur);
   // The daily and weekly targets (v0.9) are ceilings in the chosen currency, held in USD like the range.
-  const dayTarget = pending ? undefined : rangeToUsd(cleanRange(undefined, c.get<unknown>("dailyTargetMax")), cur);
-  const weekTarget = pending ? undefined : rangeToUsd(cleanRange(undefined, c.get<unknown>("weeklyTargetMax")), cur);
-  const sb = c.get<unknown>("statusBar");
+  const dayTarget = pending ? undefined : rangeToUsd(cleanRange(undefined, get("dailyTargetMax")), cur);
+  const weekTarget = pending ? undefined : rangeToUsd(cleanRange(undefined, get("weeklyTargetMax")), cur);
+  const sb = get("statusBar");
   // "today" (the default) and anything unknown keep the earlier status bar text (2.5).
   const statusBar = STATUS_BAR_CONTENTS.includes(sb as StatusBarContent) && sb !== "today" ? (sb as StatusBarContent) : undefined;
   return {
@@ -99,12 +103,26 @@ function scopeOf(key: SettingKey): vscode.ConfigurationTarget {
   return at?.workspaceFolderValue !== undefined ? T.WorkspaceFolder : at?.workspaceValue !== undefined ? T.Workspace : T.Global;
 }
 
+/** The value saved at one scope (undefined if none). */
+function atScope(key: string, target: vscode.ConfigurationTarget): unknown {
+  const at = vscode.workspace.getConfiguration(SECTION).inspect(key);
+  const T = vscode.ConfigurationTarget;
+  return target === T.WorkspaceFolder ? at?.workspaceFolderValue : target === T.Workspace ? at?.workspaceValue : at?.globalValue;
+}
+
+/** The effective value with one scope's entry left out: what a clear at that scope leaves (review fix H). */
+function withoutScope(key: string, target: vscode.ConfigurationTarget): unknown {
+  const at = vscode.workspace.getConfiguration(SECTION).inspect(key);
+  const T = vscode.ConfigurationTarget;
+  const pick = (t: vscode.ConfigurationTarget, v: unknown) => (t === target ? undefined : v);
+  return pick(T.WorkspaceFolder, at?.workspaceFolderValue) ?? pick(T.Workspace, at?.workspaceValue) ?? pick(T.Global, at?.globalValue) ?? at?.defaultValue;
+}
+
 /** The settings the panel's Settings section lists (v0.9), as entered; `unsaved` are the keys whose last save was refused. */
-function readPrefs(unsaved: Iterable<string>): Prefs {
-  const c = vscode.workspace.getConfiguration(SECTION);
-  const sb = c.get<unknown>("statusBar");
+function readPrefs(unsaved: Iterable<string>, get: Read = persisted): Prefs {
+  const sb = get("statusBar");
   const amount = (k: string): number | undefined => {
-    const v = c.get<unknown>(k);
+    const v = get(k);
     return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
   };
   const targets: Prefs["targets"] = {};
@@ -113,14 +131,14 @@ function readPrefs(unsaved: Iterable<string>): Prefs {
     if (v !== undefined) targets[d.key] = v;
   }
   return {
-    currency: readCurrency(),
+    currency: readCurrency(get),
     statusBar: STATUS_BAR_CONTENTS.includes(sb as StatusBarContent) ? (sb as StatusBarContent) : "today",
     targets,
-    targetAlert: c.get<unknown>("targetAlert") === true,
+    targetAlert: get("targetAlert") === true,
     historyMonths: readHistory(),
     projectNames: readProjects(),
     sessionTotals: readTotals(),
-    sources: { claudeCode: c.get<unknown>("claudeCode") !== false, codex: c.get<unknown>("codex") !== false },
+    sources: { claudeCode: get("claudeCode") !== false, codex: get("codex") !== false },
     unsaved: [...unsaved].sort(),
   };
 }
@@ -149,13 +167,13 @@ function readHistory(): number {
 }
 
 /** `copilotUsageMonitor.panelNavCollapsed`: the panel's section nav shows as an icon rail. */
-function readNavCollapsed(): boolean {
-  return vscode.workspace.getConfiguration(SECTION).get<unknown>("panelNavCollapsed") === true;
+function readNavCollapsed(get: Read = persisted): boolean {
+  return get("panelNavCollapsed") === true;
 }
 
 /** `copilotUsageMonitor.palette`: the panel's colour palette; anything unknown is "theme" (v0.8). */
-function readPalette(): PaletteId {
-  return cleanPaletteId(vscode.workspace.getConfiguration(SECTION).get<unknown>("palette"));
+function readPalette(get: Read = persisted): PaletteId {
+  return cleanPaletteId(get("palette"));
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -167,7 +185,8 @@ export function activate(context: vscode.ExtensionContext): void {
   panel.setPalette(readPalette());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */
-  const alert = new TargetAlert(() => panel.show(), log);
+  // "Don't show again" goes through updateSetting like every other write (review fix B)
+  const alert = new TargetAlert(() => panel.show(), log, () => writeTargetAlert(false, "alert.mute"));
   /** basenames of the open workspace folders, for the side bar's "This workspace" group */
   let folders = readFolders();
   context.subscriptions.push(channel, status, panel, sidebar);
@@ -182,32 +201,122 @@ export function activate(context: vscode.ExtensionContext): void {
   let rateTimer: ReturnType<typeof setTimeout> | undefined;
   /** bumped per refreshRate call; a fetch that settles after a newer call (or after dispose) is dropped (v0.7) */
   let rateGen = 0;
+  /** the currency the latest refreshRate call is for */
+  let rateCode: string | undefined;
   let disposed = false;
-  let view = readView(rate);
+  /** The user's choices not (yet) saved: written but not settled, or refused. Every read of a
+   * setting the extension writes goes through this layer, so re-reading the saved settings for
+   * an unrelated change never reverses a refused pick (D1, review fix 2). */
+  const overrides = new Map<string, { value: unknown; target: vscode.ConfigurationTarget }>();
+  const get: Read = (k) => {
+    const o = overrides.get(k);
+    if (!o) return persisted(k);
+    // a clear (undefined) at one scope falls through to the other scopes, as it will once saved (review fix H)
+    return o.value !== undefined ? o.value : withoutScope(k, o.target);
+  };
+  /** latest write per setting key; an older write (and its retry) stands down (review fix 2, like rateGen) */
+  const saveGen = new Map<SettingKey, number>();
+  /** keys with a write that has not settled yet */
+  const saving = new Set<string>();
+  /** Our writes for a key whose change event may still arrive: an older pick's save can land (and
+   * fire its event) while a newer one is in flight, and that event is ours, not an outside edit.
+   * Each write accounts for at most one event: its entry is consumed by the first event that shows
+   * its value, dropped when VS Code refuses it, and dropped once a later write of ours lands at the
+   * same scope (VS Code fires no event for an unchanged value, so a landed entry may never be
+   * consumed). Cleared once the key's latest write settles. A stored value matching only a consumed
+   * or superseded write is an outside edit (review fix: latest choice wins). */
+  type Issued = { value: unknown; target: vscode.ConfigurationTarget; landed: boolean };
+  const issued = new Map<string, Issued[]>();
+  const settled = (key: string) => {
+    saving.delete(key);
+    issued.delete(key);
+  };
+  /** whether a change event for `k` is one of our writes; consumes that write's entry if so */
+  const claimOwn = (k: string) => {
+    const list = issued.get(k);
+    const i = list?.findIndex((w) => atScope(k, w.target) === w.value) ?? -1;
+    if (!list || i < 0) return false;
+    list.splice(i, 1);
+    return true;
+  };
+  /** cancels a key's pending retry wait (a newer write for that key, or deactivate) */
+  const retryWait = new Map<SettingKey, () => void>();
+  let view = readView(rate, get);
   /** setting keys whose last save VS Code refused, for the Settings section (D1) */
   const unsaved = new Set<string>();
-  const pushPrefs = () => panel.setPrefs(readPrefs(unsaved));
+  const pushPrefs = () => panel.setPrefs(readPrefs(unsaved, get));
   pushPrefs();
 
-  /** The one place a setting is written (D3). A refused write is logged as a code (D2), tried
-   * once more after SAVE_RETRY_MS, then remembered in `unsaved`; the caller never rolls back
-   * what the user chose (D1). Returns whether the value was saved. */
+  /** Redraws whatever reads `key` from the effective settings (after a refused save keeps a pick). */
+  const applyEffective = (key: SettingKey) => {
+    if (key === "palette") panel.setPalette(readPalette(get));
+    else if (key === "panelNavCollapsed") panel.setNavCollapsed(readNavCollapsed(get));
+    else {
+      view = readView(rate, get);
+      render();
+      // the change event may already have started this currency's fetch; one request per change
+      if (key === "currency" && readCurrency(get) !== rateCode) void refreshRate();
+    }
+    pushPrefs();
+  };
+
+  /** The one place a setting is written (D3). The value is effective at once; a refused write
+   * is logged as a code (D2), tried once more after SAVE_RETRY_MS, then remembered in `unsaved`
+   * and kept effective; the caller never rolls back what the user chose (D1). A newer write for
+   * the same key cancels this one's retry and owns the key from then on (review fix 2).
+   * Returns whether this value was saved. */
   const updateSetting = async (key: SettingKey, value: unknown, target: vscode.ConfigurationTarget, where: string): Promise<boolean> => {
+    const gen = (saveGen.get(key) ?? 0) + 1;
+    saveGen.set(key, gen);
+    retryWait.get(key)?.();
+    overrides.set(key, { value, target });
+    saving.add(key);
+    const latest = () => !disposed && saveGen.get(key) === gen;
     const c = vscode.workspace.getConfiguration(SECTION);
     for (let attempt = 0; ; attempt++) {
+      const w: Issued = { value, target, landed: false };
+      const mine = issued.get(key) ?? [];
+      mine.push(w);
+      issued.set(key, mine);
       try {
         await c.update(key, value, target);
-        if (unsaved.delete(key)) pushPrefs();
+        // an earlier landed write at this scope can no longer be the source of an event
+        const list = issued.get(key);
+        if (list) {
+          for (let j = list.length - 1; j >= 0; j--) if (list[j]!.landed && list[j]!.target === target) list.splice(j, 1);
+          w.landed = true;
+        }
+        if (!latest()) return true;
+        settled(key);
+        overrides.delete(key);
+        unsaved.delete(key);
+        // Redraw from the saved settings: VS Code fires no change event when the value written
+        // equals the stored one, and an event during the write was read through the override (review fix H).
+        applyEffective(key);
         return true;
       } catch (e) {
+        // a refused write never reached the file, so no change event can be its own
+        const list = issued.get(key);
+        const i = list?.indexOf(w) ?? -1;
+        if (list && i >= 0) list.splice(i, 1);
         log.error(where, saveErrorCode(e));
-        if (attempt > 0 || disposed) break;
-        await new Promise((r) => setTimeout(r, SAVE_RETRY_MS));
-        if (disposed) break;
+        if (attempt > 0 || !latest()) break;
+        await new Promise<void>((r) => {
+          const cancel = () => {
+            clearTimeout(t);
+            if (retryWait.get(key) === cancel) retryWait.delete(key);
+            r();
+          };
+          const t = setTimeout(cancel, SAVE_RETRY_MS);
+          retryWait.set(key, cancel);
+        });
+        if (!latest()) break;
       }
     }
+    if (!latest()) return false;
+    settled(key);
     unsaved.add(key);
-    pushPrefs();
+    applyEffective(key);
     return false;
   };
   /** viewed month start, kept across monitor restarts; undefined = current */
@@ -239,14 +348,14 @@ export function activate(context: vscode.ExtensionContext): void {
     status.update(s, view);
     panel.update(s, view);
     sidebar.update(s, view, folders);
-    alert.check(s, view);
+    alert.check(s, view, get("targetAlert") === true);
   };
 
   const render = () => {
     status.update(snapshot, view);
     panel.update(snapshot, view);
     sidebar.update(snapshot, view, folders);
-    alert.check(snapshot, view);
+    alert.check(snapshot, view, get("targetAlert") === true);
   };
 
   /** "current", "YYYY-MM" or "pick"; anything else is ignored. */
@@ -373,7 +482,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const setStatusBar = async (arg?: unknown) => {
     let value: StatusBarContent;
     if (arg === undefined) {
-      const now = readPrefs(unsaved).statusBar;
+      const now = readPrefs(unsaved, get).statusBar;
       const items = STATUS_BAR_OPTIONS.map((o) => ({ label: o.label, description: o.description + (o.value === now ? " · current" : ""), value: o.value }));
       const pick = await vscode.window.showQuickPick(items, { placeHolder: "What the status bar shows" });
       if (!pick) return;
@@ -390,7 +499,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * chosen currency: "" clears it, a number saves it, no value asks with an input box; no arguments
    * offer the four targets in a picker. Anything outside those lists is ignored (v0.9). */
   const setTarget = async (period?: unknown, bound?: unknown, value?: unknown) => {
-    const prefs = readPrefs(unsaved);
+    const prefs = readPrefs(unsaved, get);
     let def = TARGET_DEFS.find((d) => d.period === period && d.bound === bound);
     if (period === undefined) {
       const items = TARGET_DEFS.map((d) => ({ label: d.label, description: prefs.targets[d.key] === undefined ? "not set" : enteredAmount(prefs.targets[d.key]!, prefs.currency), def: d }));
@@ -426,13 +535,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /** "on" | "off" (or a boolean) sets the opt-in target alert; no argument toggles it; anything
    * else is ignored (v0.9). User settings only, like "Don't show again". */
+  function writeTargetAlert(on: boolean, where: string): Promise<boolean> {
+    return updateSetting("targetAlert", on, vscode.ConfigurationTarget.Global, where);
+  }
   const setTargetAlert = async (arg?: unknown) => {
     let on: boolean;
-    if (arg === undefined) on = !readPrefs(unsaved).targetAlert;
+    if (arg === undefined) on = !readPrefs(unsaved, get).targetAlert;
     else if (arg === "on" || arg === true) on = true;
     else if (arg === "off" || arg === false) on = false;
     else return;
-    await updateSetting("targetAlert", on, vscode.ConfigurationTarget.Global, "alert.write");
+    await writeTargetAlert(on, "alert.write");
   };
 
   /** Fetches the chosen currency's rate now and every 6 hours; USD clears it and makes no request. */
@@ -440,7 +552,8 @@ export function activate(context: vscode.ExtensionContext): void {
     if (rateTimer) clearTimeout(rateTimer);
     rateTimer = undefined;
     const gen = ++rateGen;
-    const code = readCurrency();
+    const code = readCurrency(get);
+    rateCode = code;
     if (code === DEFAULT_CURRENCY) {
       rate = undefined;
       return;
@@ -457,13 +570,13 @@ export function activate(context: vscode.ExtensionContext): void {
       log.error("rate.fetch", e instanceof Error && /^[A-Z0-9_]+$/.test(e.message) ? e.message : "NETWORK");
       next = RATE_RETRY_MS;
     }
-    view = readView(rate);
+    view = readView(rate, get);
     render();
     rateTimer = setTimeout(() => void refreshRate(), next);
   };
 
   const pickCurrency = async () => {
-    const now = readCurrency();
+    const now = readCurrency(get);
     const items = CURRENCIES.map(([code, name]) => ({ label: code, description: name + (code === now ? " · current" : ""), code }));
     const pick = await vscode.window.showQuickPick(items, { placeHolder: "Currency for estimated cost (non-USD fetches the daily USD rate)" });
     if (!pick) return;
@@ -539,6 +652,7 @@ export function activate(context: vscode.ExtensionContext): void {
     {
       dispose: () => {
         disposed = true;
+        for (const cancel of [...retryWait.values()]) cancel();
         if (rateTimer) clearTimeout(rateTimer);
         rateTimer = undefined;
       },
@@ -584,13 +698,30 @@ export function activate(context: vscode.ExtensionContext): void {
       render();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
+      // An outside edit of a setting whose save was refused replaces the unsaved choice (review fix 2).
+      // While a write is in flight or waiting to retry, each of our saves accounts for one event that
+      // leaves its value at its scope (with overlapping picks, possibly an older pick's); anything
+      // else, including a value of ours already accounted for, is an outside edit: it wins, and the
+      // retry stands down (review fix A).
+      for (const k of [...overrides.keys()]) {
+        if (!e.affectsConfiguration(`${SECTION}.${k}`)) continue;
+        if (saving.has(k)) {
+          if (claimOwn(k)) continue;
+          const key = k as SettingKey;
+          saveGen.set(key, (saveGen.get(key) ?? 0) + 1);
+          retryWait.get(key)?.();
+          settled(k);
+        }
+        overrides.delete(k);
+        unsaved.delete(k);
+      }
       if (["display", "monthlyTargetMin", "monthlyTargetMax", "dailyTargetMax", "weeklyTargetMax", "currency", "statusBar", "targetAlert"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
-        view = readView(rate);
+        view = readView(rate, get);
         render();
       }
       if (e.affectsConfiguration(`${SECTION}.currency`)) void refreshRate();
-      if (e.affectsConfiguration(`${SECTION}.panelNavCollapsed`)) panel.setNavCollapsed(readNavCollapsed());
-      if (e.affectsConfiguration(`${SECTION}.palette`)) panel.setPalette(readPalette());
+      if (e.affectsConfiguration(`${SECTION}.panelNavCollapsed`)) panel.setNavCollapsed(readNavCollapsed(get));
+      if (e.affectsConfiguration(`${SECTION}.palette`)) panel.setPalette(readPalette(get));
       if (e.affectsConfiguration(SECTION)) pushPrefs();
       const h = readHistory();
       let rootChanged = false;

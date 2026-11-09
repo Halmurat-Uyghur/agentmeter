@@ -1,7 +1,7 @@
 // Overview (D32, laid out by A2): the Today hero (with the activity heatmap and the
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
-import { costLabel, formatCount, targetUsd, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
+import { costLabel, formatCount, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, rangeLabel, rangeWord, SESSION_TOTAL_NOTE, spoken, targetStatus, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
 import { type MonthSummary, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
@@ -58,10 +58,10 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.
   let wState = "";
   if (view.weekTarget) {
-    const state = rangeState(targetUsd(w), view.weekTarget);
-    wState = state;
-    wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
-    wNotes.unshift(RANGE_LABEL[state]);
+    const st = targetStatus(w, view.weekTarget, s.health);
+    wState = st.state;
+    wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
+    wNotes.unshift(rangeLabel(st));
   }
   const wNote = wNotes.filter(Boolean).join(" ");
 
@@ -83,10 +83,10 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const monthNotes = [mt ? partialNote(headlineMetric(mt, view)) : undefined];
   if (view.range) {
     // The target state of the viewed month, spent so far in estimated USD.
-    const state = rangeState(targetUsd(mt), view.range);
-    monthCls += ` st-${state}`;
-    monthSub += ` · Target ${formatRange(view.range)}${mixedSources(mt?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
-    monthNotes.unshift(RANGE_LABEL[state]);
+    const st = targetStatus(mt, view.range, s.health);
+    monthCls += ` st-${st.state}`;
+    monthSub += ` · Target ${formatRange(view.range)}${mixedSources(mt?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`;
+    monthNotes.unshift(rangeLabel(st));
   }
 
   const empty = mt
@@ -109,7 +109,7 @@ ${kpi("k2", "session", "Current session", curSub, curVal, cur?.totals ? partialN
 </div>${empty}${totalsNote}`;
 }
 
-const STATE_MARK = { under: "▼", in: "✓", over: "▲" } as const;
+const STATE_MARK = { under: "▼", in: "✓", over: "▲", unknown: "?" } as const;
 
 /** Monthly bars over the history window; each bar opens that month (D21). */
 export function trend(s: Snapshot, view: ViewOptions): string {
@@ -129,7 +129,8 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     const v = values[i];
     const m = h.totals ? headlineMetric(h.totals, view) : undefined;
     const text = m ? withStar(fmt(m), s.health.partial) : DASH;
-    const state = range ? rangeState(targetUsd(h.totals), range) : "none";
+    const st = range ? targetStatus(h.totals, range, s.health) : { state: "none" as const, partial: false };
+    const state = st.state;
     const d = new Date(h.monthStartMs);
     const label = MONTHS[d.getMonth()]!.slice(0, 3) + (d.getMonth() === 0 || i === 0 ? ` ${String(d.getFullYear()).slice(2)}` : "");
     const isSel = h.monthStartMs === viewed;
@@ -137,8 +138,8 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     // A month with no record shows nothing above its bar (design #7); "—" is for a month
     // whose records carry no figure in the unit.
     const said = !h.totals ? "nothing logged" : view.unit === "cost" ? spoken(text === DASH ? text : `${text} est.`) : `${spoken(text)}${text === DASH ? "" : " tokens"}`;
-    const title = `${monthTitle(h.monthStartMs)}: ${h.totals ? `${text}${view.unit === "cost" ? ` ${costLabel()}` : " tokens"}` : "no usage records"}${range ? ` · ${RANGE_LABEL[state]}` : ""}`;
-    const aria = `${monthTitle(h.monthStartMs)}: ${said}${range ? `, ${RANGE_LABEL[state]}` : ""}${isSel ? ", viewing" : ""}`;
+    const title = `${monthTitle(h.monthStartMs)}: ${h.totals ? `${text}${view.unit === "cost" ? ` ${costLabel()}` : " tokens"}` : "no usage records"}${range ? ` · ${rangeLabel(st)}` : ""}`;
+    const aria = `${monthTitle(h.monthStartMs)}: ${said}${range ? `, ${spoken(rangeLabel(st))}` : ""}${isSel ? ", viewing" : ""}`;
     // A visible mark beside the month (never colour alone, M2): ▲ over, ✓ in range, ▼ under.
     const mark = range && state !== "none" ? ` ${STATE_MARK[state]}` : "";
     const shown = h.totals ? `<span aria-hidden="true">${text.endsWith("*") ? `${escapeHtml(text.slice(0, -1))}<span class="star">*</span>` : escapeHtml(text)}</span>` : "";
@@ -151,8 +152,11 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     const hi = range.max ?? scale;
     band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}${only}`)}"></span>`;
   }
+  // "?" (not compared) is listed only when a month in the window has records but no logged amount.
+  const anyUnknown = range !== undefined && hist.some((h) => targetStatus(h.totals, range, s.health).state === "unknown");
+  const unknownLg = anyUnknown ? ` <b class="st-unknown"></b>${STATE_MARK.unknown} Not compared` : "";
   const legend = range
-    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`
+    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over${unknownLg} <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`
     : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : `Switch to ${costLabel()} to compare against a target.`}</span>`;
   const filtered = s.filter ? " · filtered" : "";
   return `<section class="card" aria-labelledby="trend-title"><h3 id="trend-title" class="ch">${icon("trend")}<span>Monthly trend</span><small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h3><div class="trend"><div class="plot">${band}<ol class="tcols" role="list" aria-label="Months, oldest first">${cols.join("")}</ol></div></div><div class="scale">${legend}</div></section>`;

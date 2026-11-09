@@ -2,10 +2,26 @@
 // fields a UsageRecord already keeps, so the privacy surface is unchanged.
 // Every rule needs logged AIU, is computed from per-call records only (session
 // totals have no per-call data) and never claims a saving.
+import { pairedCache } from "./store";
 import type { Insight, InsightsView, SessionSummary, UsageRecord } from "./types";
 
 /** Sessions whose late calls cost this many times their early ones are flagged (D24). */
 export const GROWTH_FLAG = 3;
+/** A flagged session's growth is put down to its context only when the prompt tokens of its
+ * last 5 calls are at least this many times those of its first 5 (SessionSummary.inputGrowth). */
+export const INPUT_GROWTH_FLAG = 2;
+
+/** Whether `s`'s later calls cost more because their prompts grew, not only their price. */
+export function contextGrew(s: { inputGrowth?: number }): boolean {
+  return s.inputGrowth !== undefined && s.inputGrowth >= INPUT_GROWTH_FLAG;
+}
+
+/** What each of SessionSummary.growthCauses names in the panel's copy. */
+export const GROWTH_CAUSE_TEXT: Record<"model" | "output" | "cache", string> = {
+  model: "a switch to another model",
+  output: "longer replies",
+  cache: "fewer cache reads",
+};
 
 const NANO_PER_USD = 1e11;
 /** Shared floors: the flagged AIU must reach $1.00 and 5 in 100 of the viewed month's AIU. */
@@ -119,7 +135,22 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
     calls: flagged.reduce((a, s) => a + s.calls, 0),
     sessions: flagged.length,
     top: flagged.slice(0, 3).map((s) => ({ sessionId: s.sessionId, ...(s.label !== undefined && { label: s.label }), growth: s.growth! })),
+    // Per-session, not "any": one growing session must not speak for the others.
+    inputGrew: flagged.every(contextGrew),
+    inputGrewSessions: flagged.filter(contextGrew).length,
+    inputUnmeasuredSessions: flagged.filter((s) => s.inputGrowth === undefined).length,
+    // Where input was logged and did not grow: only the causes their own calls show.
+    flatCauses: flatCauses(flagged.filter((s) => s.inputGrowth !== undefined && !contextGrew(s))),
   };
+}
+
+function flatCauses(flat: SessionSummary[]): { model: number; output: number; cache: number; unclear: number } {
+  const out = { model: 0, output: 0, cache: 0, unclear: 0 };
+  for (const s of flat) {
+    if (s.growthCauses === undefined || s.growthCauses.length === 0) out.unclear++;
+    else for (const c of s.growthCauses) out[c]++;
+  }
+  return out;
 }
 
 /** I1: calls past a model's long-context price threshold; the costliest model wins. */
@@ -164,8 +195,10 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
     // Copilot calls only (D46): an unpriced Claude Code or Codex call of the same model id
     // would lower the share without adding to the AIU, firing the card on calls it cannot price.
     if (r.source !== "copilot" || r.kind !== "call" || r.model === undefined || firsts.has(r.key)) continue;
-    if (r.tokens.input === undefined || r.tokens.cacheRead === undefined) continue;
-    const prompt = promptTokens(r, conventions.get(r.model));
+    // Paired, like every other cache share: only calls that reported both figures.
+    const pair = pairedCache(r, conventions);
+    if (pair === undefined) continue;
+    const prompt = pair.prompt;
     if (prompt < CACHE_MIN_PROMPT) continue;
     let g = byModel.get(r.model);
     if (!g) {
@@ -174,7 +207,7 @@ function cacheReuse(monthRecords: UsageRecord[], scan: ReturnType<typeof scanCal
     }
     g.calls++;
     g.sessions.add(r.sessionId);
-    g.cacheRead += r.tokens.cacheRead;
+    g.cacheRead += pair.read;
     g.prompt += prompt;
     g.tokens += (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
     if (r.nanoAiu !== undefined) {

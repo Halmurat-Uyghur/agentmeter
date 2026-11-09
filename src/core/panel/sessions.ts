@@ -1,7 +1,7 @@
 // Sessions (D32): the current session's tiles, then the viewed month's
 // costliest sessions (the snapshot keeps up to 50; 10 show, the rest fold).
 import { costLabel, formatCount, formatUsd, multiSource, notLiveWord, SESSION_TOTAL_NOTE, usd } from "../format";
-import { GROWTH_FLAG } from "../insights";
+import { contextGrew, GROWTH_CAUSE_TEXT, GROWTH_FLAG } from "../insights";
 import { modelFamily } from "../store";
 import type { SessionSummary, Snapshot, ViewOptions } from "../types";
 import { promptsCard, sessionDetailCard } from "./explain";
@@ -20,9 +20,26 @@ function cacheCell(x: SessionSummary): string {
   const cr = x.cacheRead;
   if (!input || !cr || input.reported === 0 || cr.reported === 0 || input.sum <= 0) return `<td class="num muted">${val(DASH)}</td>`;
   const text = inHundred(cr.sum, input.sum);
+  // input and cacheRead sum the same records (those that reported both); say how many.
   const partial = input.missing > 0 || cr.missing > 0;
   const shown = withStar(text, partial);
-  return `<td class="num" title="${escapeHtml(`${text} input tokens were cache reads`)}">${shown.startsWith("<") ? sym(shown) : val(shown)}</td>`;
+  const cover = partial ? `, from ${input.reported} of ${input.reported + input.missing} records that reported both` : "";
+  return `<td class="num" title="${escapeHtml(`${text} input tokens were cache reads${cover}`)}">${shown.startsWith("<") ? sym(shown) : val(shown)}</td>`;
+}
+
+/** Why a flagged session's later calls cost more: its context when its input grew too; unclear
+ * when the compared calls logged no input (unmeasured, not disproven); otherwise only what its
+ * calls show (another model, longer replies, fewer cache reads), else unclear. */
+function growthCause(x: SessionSummary): string {
+  if (contextGrew(x)) return `: later calls became more expensive as their input grew ${x.inputGrowth!.toFixed(1)}×, so the context grew; a fresh session may be cheaper`;
+  if (x.inputGrowth === undefined) return ": later calls became more expensive; input tokens were not logged for these calls, so the cause is unclear";
+  const causes = x.growthCauses ?? [];
+  const why = causes.length === 0 ? "the cause is unclear" : `their calls show ${listOf(causes.map((c) => GROWTH_CAUSE_TEXT[c]))}`;
+  return `: later calls became more expensive, but their input did not grow as much; ${why}`;
+}
+
+function listOf(xs: string[]): string {
+  return xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 }
 
 function sessionsTable(s: Snapshot, view: ViewOptions): string {
@@ -43,7 +60,7 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
       ? "Not available for a session total: it has no per-call records"
       : x.growth === undefined
         ? "Needs at least 10 calls with logged AI credits"
-        : `Last 5 calls cost ${x.growth.toFixed(1)}× the first 5${flagged ? ": the context grew; a fresh session may be cheaper" : ""}`;
+        : `Last 5 calls cost ${x.growth.toFixed(1)}× the first 5${!flagged ? "" : growthCause(x)}`;
     const model = x.topModel
       ? `<span class="chipm f-${modelFamily(x.topModel)}" title="${escapeHtml(x.topModel)}">${escapeHtml(x.topModel)}</span>`
       : `<span class="muted">${val(DASH)}</span>`;
@@ -65,8 +82,11 @@ function sessionsTable(s: Snapshot, view: ViewOptions): string {
   const count = s.month?.sessionCount ?? list.length;
   const anyFlag = list.some((x) => x.growth !== undefined && x.growth >= GROWTH_FLAG);
   const notes: string[] = [];
-  if (anyFlag)
-    notes.push(`<p><b aria-hidden="true">▲</b><span class="sr">Up:</span> Later calls in this session cost ${GROWTH_FLAG}× or more than its first ones: the context kept growing. Starting a fresh session for a new task is usually cheaper. Insights lists the costly ones.</p>`);
+  if (anyFlag) {
+    const grew = list.some((x) => x.growth !== undefined && x.growth >= GROWTH_FLAG && contextGrew(x));
+    const why = grew ? " Where their input grew too, the context kept growing: starting a fresh session for a new task is usually cheaper." : "";
+    notes.push(`<p><b aria-hidden="true">▲</b><span class="sr">Up:</span> The session's last 5 calls cost ${GROWTH_FLAG}× or more than its first 5.${why} Insights lists the costly ones.</p>`);
+  }
   if (list.some((x) => x.sessionTotal)) notes.push(`<p>${escapeHtml(SESSION_TOTAL_NOTE)} Its calls are the request count Copilot logged with the total.</p>`);
   if (count > list.length) notes.push(`<p>${escapeHtml(`${plural(count - list.length, "more session")} in ${name} ${count - list.length === 1 ? "is" : "are"} not listed.`)}</p>`);
   notes.push(`<p>Click a session to list its calls above.</p>`);
