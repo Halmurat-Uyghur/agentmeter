@@ -369,7 +369,7 @@ describe("extension lifecycle: Settings section commands (v0.9)", () => {
   it("openVsCodeSettings opens VS Code's Settings editor at the extension; showSettings opens the panel's section", async () => {
     const { fake, cmd, testState, deactivate } = await load();
     await cmd("openVsCodeSettings")();
-    expect(fake.state.executed).toEqual([["workbench.action.openSettings", "@ext:local.copilot-usage-monitor"]]);
+    expect(fake.state.executed).toEqual([["workbench.action.openSettings", "@ext:local.agentmeter"]]);
     cmd("showSettings")();
     expect(testState().panelSection).toBe("settings");
     expect(fake.state.updates).toEqual([]);

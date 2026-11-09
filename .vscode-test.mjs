@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Synthetic fixture root, seeded by the integration tests (Task 8). Never the real ~/.copilot.
-export const FIXTURE_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture");
+export const FIXTURE_ROOT = join(tmpdir(), "agentmeter-fixture");
 // Claude Code and Codex fixture roots, likewise seeded by the tests; never the real ~/.claude or ~/.codex.
-export const FIXTURE_CLAUDE_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-claude");
-export const FIXTURE_CODEX_ROOT = join(tmpdir(), "copilot-usage-monitor-fixture-codex");
+export const FIXTURE_CLAUDE_ROOT = join(tmpdir(), "agentmeter-fixture-claude");
+export const FIXTURE_CODEX_ROOT = join(tmpdir(), "agentmeter-fixture-codex");
 
 export default defineConfig({
   files: "out/test/integration/**/*.test.js",

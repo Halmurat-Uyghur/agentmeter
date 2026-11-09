@@ -270,7 +270,7 @@ describe("gates", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const c = pkg.contributes;
     // The logo's one-colour SVG (media/activity.svg); the .vsix adds it with the other icons and the walkthrough markdown.
-    expect(c.viewsContainers.activitybar).toEqual([{ id: "copilotUsageMonitor", title: "Copilot Usage (Local)", icon: "media/activity.svg" }]);
+    expect(c.viewsContainers.activitybar).toEqual([{ id: "copilotUsageMonitor", title: "AgentMeter (Local)", icon: "media/activity.svg" }]);
     expect(pkg.icon).toBe("media/icon.png");
     expect(c.views.copilotUsageMonitor.map((v: { id: string; name: string; type?: string }) => [v.id, v.name, v.type])).toEqual([["copilotUsageMonitor.summary", "Summary", "webview"]]);
     // Welcome content and item menus work for trees only; the webview shows its states in-page (A1).
@@ -283,12 +283,12 @@ describe("gates", () => {
     for (const id of nav) {
       const cmd = c.commands.find((x: { command: string }) => x.command === id);
       expect(cmd.icon, id).toMatch(/^\$\([a-z-]+\)$/);
-      expect(cmd.category).toBe("Copilot Usage");
+      expect(cmd.category).toBe("AgentMeter");
     }
-    // Palette text stays "Copilot Usage: …": every command has the category and no prefix in its title.
+    // Palette text stays "AgentMeter: …": every command has the category and no prefix in its title.
     for (const cmd of c.commands) {
-      expect(cmd.category).toBe("Copilot Usage");
-      expect(cmd.title).not.toMatch(/^Copilot Usage:/);
+      expect(cmd.category).toBe("AgentMeter");
+      expect(cmd.title).not.toMatch(/^AgentMeter:/);
     }
   });
 
@@ -473,7 +473,7 @@ describe("gates", () => {
     expect(p.enum[0]).toBe("theme");
     expect(p.enumDescriptions).toHaveLength(p.enum.length);
     for (const t of [p.description, ...p.enumDescriptions]) expect(t).not.toMatch(COPY_RE);
-    expect(pkg.contributes.commands).toContainEqual({ command: "copilotUsageMonitor.selectPalette", title: "Choose Colours…", category: "Copilot Usage", icon: "$(symbol-color)" });
+    expect(pkg.contributes.commands).toContainEqual({ command: "copilotUsageMonitor.selectPalette", title: "Choose Colours…", category: "AgentMeter", icon: "$(symbol-color)" });
     expect(pkg.contributes.menus["view/title"]).toContainEqual({ command: "copilotUsageMonitor.selectPalette", when: "view == copilotUsageMonitor.summary", group: "1_view@5" });
     // the handler writes the user settings only, after validating the id against the closed list
     const ext = readFileSync(join(ROOT, "src", "extension.ts"), "utf8");
@@ -528,7 +528,7 @@ describe("gates", () => {
   it("README and walkthrough facts track the code (v0.7)", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
-    expect(readme).toContain(`copilot-usage-monitor-${pkg.version}.vsix`);
+    expect(readme).toContain(`agentmeter-${pkg.version}.vsix`);
     expect(SIDEBAR_COMMANDS).toHaveLength(5);
     expect(readme).toContain("only five command links (open the panel, show a section, set the project filter, switch the unit, choose the currency)");
     expect(readFileSync(join(ROOT, "media", "walkthrough", "folder.md"), "utf8")).toContain("the folder in `copilotUsageMonitor.copilotHome`, else `COPILOT_HOME`, else `~/.copilot`");

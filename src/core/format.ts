@@ -340,7 +340,7 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
-  if (!s) return "$(sync~spin) Copilot usage: loading";
+  if (!s) return "$(sync~spin) AgentMeter: loading";
   if (s.health.state === "no-dir")
     return "$(circle-slash) Local: no usage logs found";
   if (s.health.state === "permission") return "$(lock) Local: usage logs unreadable";
@@ -398,7 +398,7 @@ export function spoken(text: string): string {
 
 /** The status bar item's spoken label (D33); same figures as statusText, in words. */
 export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
-  if (!s) return "Copilot usage: loading";
+  if (!s) return "AgentMeter: loading";
   if (s.health.state === "no-dir") return "No usage logs found. Opens details.";
   if (s.health.state === "permission") return "Usage logs unreadable. Opens details.";
   const p = statusParts(s, view);

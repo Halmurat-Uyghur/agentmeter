@@ -92,12 +92,12 @@ export function renderSidebarHtml(m: SidebarModel, cspSource: string): string {
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${escapeHtml(cspSource)} 'unsafe-inline';">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Summary · Copilot Usage (Local)</title>
+<title>Summary · AgentMeter (Local)</title>
 <style>${SIDEBAR_CSS}</style>
 </head>
 <body>
-<main aria-label="Copilot usage summary">
-<h1 class="sr">Copilot usage summary</h1>
+<main aria-label="AgentMeter summary">
+<h1 class="sr">AgentMeter summary</h1>
 ${parts.join("\n")}
 </main>
 </body>

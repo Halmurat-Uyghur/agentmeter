@@ -582,8 +582,8 @@ describe("sidebar: v0.4 review fixes", () => {
     expect(html).toContain(".btn:focus-visible{outline-offset:2px}");
     expect(html).not.toMatch(/(?:\.star|\.mk\.over|\.health a)\{color:var\(--vscode-editorWarning-foreground\)\}/);
     expect(html).toMatch(/\.star\{color:color-mix\(in srgb,var\(--vscode-editorWarning-foreground\) 60%,var\(--vscode-foreground\)\)\}/);
-    expect(html).toContain('<main aria-label="Copilot usage summary">');
-    expect(html).toContain('<h1 class="sr">Copilot usage summary</h1>');
+    expect(html).toContain('<main aria-label="AgentMeter summary">');
+    expect(html).toContain('<h1 class="sr">AgentMeter summary</h1>');
     expect(html.match(/<main[ >]/g)).toHaveLength(1);
   });
   it("cost view in CAD: side bar labels and figures are converted", () => {

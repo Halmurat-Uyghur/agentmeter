@@ -84,7 +84,7 @@ describe("changeVs", () => {
 describe("header (A2)", () => {
   it("wordmark with an inline mark and the Local chip, one h1, nothing borrowed", () => {
     const html = render(snap());
-    expect(html).toMatch(/<h1 class="wordmark"><svg class="logo" viewBox="0 0 20 20" aria-hidden="true" focusable="false">[^]*?<\/svg><span class="wm">Copilot Usage<\/span> <span class="pill">Local<\/span><\/h1>/);
+    expect(html).toMatch(/<h1 class="wordmark"><svg class="logo" viewBox="0 0 20 20" aria-hidden="true" focusable="false">[^]*?<\/svg><span class="wm">AgentMeter<\/span> <span class="pill">Local<\/span><\/h1>/);
     expect(html.match(/<h1[ >]/g)).toHaveLength(1);
     expect(html).not.toMatch(/codeburn/i);
   });

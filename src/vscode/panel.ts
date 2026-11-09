@@ -51,7 +51,7 @@ export class DetailsPanel implements vscode.Disposable {
     }
     this.panel = vscode.window.createWebviewPanel(
       "copilotUsageMonitor.details",
-      "Copilot Usage (Local)",
+      "AgentMeter (Local)",
       vscode.ViewColumn.Active,
       { enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: [], retainContextWhenHidden: false },
     );

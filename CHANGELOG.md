@@ -2,11 +2,15 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.11.0 - 2026-11-08
+
+The extension is now **AgentMeter (Local)**, since it reads Claude Code and Codex as well as Copilot.
 
 ### Changed
 
+- **Renamed to AgentMeter (Local).** The display name, side bar and panel titles, the panel wordmark, the status bar item, the Output channel ("AgentMeter"), the walkthrough and the Command Palette category ("AgentMeter: …") all use the new name. The extension id is now `local.agentmeter` (was `local.copilot-usage-monitor`), so a `.vsix` install sits beside the old one: uninstall `local.copilot-usage-monitor`. Setting keys (`copilotUsageMonitor.*`), command ids and view ids are unchanged, so settings, keybindings and the side bar position carry over.
 - **Long-context insight covers every model GitHub lists.** The price-threshold table now matches GitHub's "Models and pricing" page as of 2026-11-08: GPT-5.6 Luna (over 200K prompt tokens), and GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Astra, GPT-6 Luna, GPT-6.1 Sol and GPT-6.1 Terra (over 272K), next to Claude Haiku 5.5, GPT-6 Sol and Grok 4.x. Cost figures are unchanged: they still come from the AI credits Copilot logs.
+
 ## 0.10.0 - 2026-11-08
 
 A Source dropdown in the panel, estimated cost for Claude Code and Codex from API list prices, and a fix for the panel shifting sideways between sections.

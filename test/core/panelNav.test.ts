@@ -117,7 +117,7 @@ describe("command allowlist", () => {
       expect(ext).toContain(`registerCommand("${c}"`);
       expect(contributed).toContain(c);
     }
-    expect(pkg.contributes.commands).toContainEqual(expect.objectContaining({ command: "copilotUsageMonitor.showSection", title: "Show Section…", category: "Copilot Usage" }));
+    expect(pkg.contributes.commands).toContainEqual(expect.objectContaining({ command: "copilotUsageMonitor.showSection", title: "Show Section…", category: "AgentMeter" }));
     const hidden = (pkg.contributes.menus?.commandPalette ?? []).filter((x: { when?: string }) => x.when === "false").map((x: { command: string }) => x.command);
     expect(hidden).not.toContain("copilotUsageMonitor.showSection");
   });
@@ -174,7 +174,7 @@ describe("nav and page structure", () => {
       expect(html).toContain(`<h2 id="section-title" class="sec">${escapeHtml(def.label)}</h2>`);
       expect(html.match(/<h[4-6][ >]/g)).toBeNull();
       expect(html.match(/aria-current="page"/g)).toHaveLength(1);
-      expect(html).toContain(`<title>${escapeHtml(def.label)} · Copilot Usage (Local)</title>`);
+      expect(html).toContain(`<title>${escapeHtml(def.label)} · AgentMeter (Local)</title>`);
       // the skip link is the first focusable element
       const body = html.slice(html.indexOf("<body>"));
       expect(body.indexOf('<a class="skip" href="#main">Skip to ')).toBe(body.indexOf("<a "));

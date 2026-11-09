@@ -342,7 +342,7 @@ export function activate(context: vscode.ExtensionContext): void {
   /** A section id switches the panel to it; no argument opens a picker; anything else is ignored (D30). */
   const showSection = async (arg?: unknown) => {
     if (arg === undefined) {
-      const pick = await vscode.window.showQuickPick(sectionPickItems(panel.section), { placeHolder: "Section of the Copilot usage panel" });
+      const pick = await vscode.window.showQuickPick(sectionPickItems(panel.section), { placeHolder: "Section of the AgentMeter panel" });
       if (pick) panel.show(pick.id);
       return;
     }
@@ -487,7 +487,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   /** Opens VS Code's Settings editor at this extension's settings (the machine-scoped ones are edited there). */
-  const openVsCodeSettings = () => vscode.commands.executeCommand("workbench.action.openSettings", "@ext:local.copilot-usage-monitor");
+  const openVsCodeSettings = () => vscode.commands.executeCommand("workbench.action.openSettings", "@ext:local.agentmeter");
 
   const start = () => {
     stop();

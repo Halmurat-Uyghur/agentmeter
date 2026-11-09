@@ -157,7 +157,7 @@ describe("escapeMarkdown", () => {
 
 describe("statusText", () => {
   it("loading", () => {
-    expect(statusText(undefined)).toBe("$(sync~spin) Copilot usage: loading");
+    expect(statusText(undefined)).toBe("$(sync~spin) AgentMeter: loading");
   });
   it("ok", () => {
     expect(statusText(snap())).toBe("$(pulse) Local today: 1.5M tok");
@@ -547,7 +547,7 @@ describe("v0.4: the status bar reads the unfiltered current month (D31, D33)", (
   });
 
   it("statusAccessibilityLabel: the status figure in words, in every state", () => {
-    expect(statusAccessibilityLabel(undefined)).toBe("Copilot usage: loading");
+    expect(statusAccessibilityLabel(undefined)).toBe("AgentMeter: loading");
     expect(statusAccessibilityLabel(snap({ health: health({ state: "no-dir" }) }))).toBe("No usage logs found. Opens details.");
     expect(statusAccessibilityLabel(snap({ health: health({ partial: true }) }))).toBe(
       "Copilot usage, local today: 1.5 million (may be incomplete) tokens. Opens details.",
