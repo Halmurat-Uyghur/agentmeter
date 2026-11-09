@@ -29,9 +29,9 @@ import {
 
 /** A small card laid out like Month to date (design #10): the title row, the figure,
  * then a muted line of context. */
-function kpi(cls: string, ic: IconName, name: string, sub: string, value: string, note?: string): string {
+function kpi(cls: string, ic: IconName, name: string, sub: string, value: string, note?: string, state = ""): string {
   const id = `${cls}-title`;
-  return `<section class="card kpi ${cls}" aria-labelledby="${id}"${titleAttr(note)}><h3 id="${id}" class="ch">${icon(ic)}<span>${escapeHtml(name)}</span></h3><div class="big">${val(value)}</div><div class="sub">${sym(sub)}</div></section>`;
+  return `<section class="card kpi ${cls}${state ? ` st-${state}` : ""}" aria-labelledby="${id}"${titleAttr(note)}><h3 id="${id}" class="ch">${icon(ic)}<span>${escapeHtml(name)}</span></h3><div class="big">${val(value)}</div><div class="sub">${sym(sub)}</div></section>`;
 }
 
 function kpis(s: Snapshot, view: ViewOptions): string {
@@ -47,13 +47,20 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const { last7Short, prior7Short } = weekCoverage(s);
   const wVal = w ? withStar(headline(w, view), partial || last7Short) : DASH;
   const change = weekChange(headlineValue(w, view), headlineValue(s.prior7, view), !prior7Short);
-  const wSub = change ? change.charAt(0).toUpperCase() + change.slice(1) : "Nothing logged";
-  const wNote = [
+  let wSub = change ? change.charAt(0).toUpperCase() + change.slice(1) : "Nothing logged";
+  const wNotes = [
     "Today and the 6 days before it, against the 7 days before that. Not filtered.",
     last7Short ? WEEK_SHORT_NOTE : prior7Short ? PRIOR_SHORT_NOTE : undefined,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  ];
+  // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.
+  let wState = "";
+  if (view.weekTarget) {
+    const state = rangeState(w ? usd(w.nanoAiu) : undefined, view.weekTarget);
+    wState = state;
+    wSub += ` · Weekly target ${formatRange(view.weekTarget)}${mixedSources(w?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`;
+    wNotes.unshift(RANGE_LABEL[state]);
+  }
+  const wNote = wNotes.filter(Boolean).join(" ");
 
   const monthName = viewedName(s);
   const mt = s.month?.totals;
@@ -94,7 +101,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
       : "";
   return `<div class="row2">
 ${monthCard(s, view, { cls: monthCls, sub: monthSub, note: monthNotes.filter(Boolean).join(" ") || undefined })}
-${kpi("k3", "week", "Last 7 days", wSub, wVal, wNote)}
+${kpi("k3", "week", "Last 7 days", wSub, wVal, wNote, wState)}
 ${kpi("k2", "session", "Current session", curSub, curVal, cur?.totals ? partialNote(headlineMetric(cur.totals, view)) : undefined)}
 </div>${empty}${totalsNote}`;
 }

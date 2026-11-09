@@ -489,6 +489,10 @@ export interface ViewOptions {
   unit: "tokens" | "cost";
   /** self-set monthly target, held in USD; either bound may be absent */
   range?: { min?: number; max?: number };
+  /** self-set target for today (`dailyTargetMax`), held in USD; a ceiling only (v0.9) */
+  dayTarget?: { min?: number; max?: number };
+  /** self-set target for the last 7 days (`weeklyTargetMax`), held in USD; a ceiling only (v0.9) */
+  weekTarget?: { min?: number; max?: number };
   /** display currency for estimated cost; absent = USD */
   currency?: Currency;
   /** a non-USD currency was chosen but no rate is known yet; figures stay in USD */
@@ -501,6 +505,35 @@ export interface ViewOptions {
  * behaviour before 0.6); "month": this month in either unit; "session": the current session. */
 export type StatusBarContent = "today" | "month" | "session";
 export const STATUS_BAR_CONTENTS: readonly StatusBarContent[] = ["today", "month", "session"];
+
+/** The settings the panel's Settings section shows (v0.9), read by the extension from the
+ * user's VS Code settings; never from the logs. Amounts are as entered, in `currency`. The
+ * palette and the nav state travel separately (they already did). */
+export interface Prefs {
+  /** the chosen currency code, even while its rate is pending */
+  currency: string;
+  statusBar: StatusBarContent;
+  targets: { dayMax?: number; weekMax?: number; monthMin?: number; monthMax?: number };
+  targetAlert: boolean;
+  historyMonths: number;
+  projectNames: boolean;
+  sessionTotals: boolean;
+  sources: { claudeCode: boolean; codex: boolean };
+  /** setting keys (without the section) whose last save VS Code refused in this window */
+  unsaved: string[];
+}
+
+export const DEFAULT_PREFS: Prefs = {
+  currency: "USD",
+  statusBar: "today",
+  targets: {},
+  targetAlert: false,
+  historyMonths: 12,
+  projectNames: true,
+  sessionTotals: true,
+  sources: { claudeCode: true, codex: true },
+  unsaved: [],
+};
 
 export type RangeState = "none" | "under" | "in" | "over";
 

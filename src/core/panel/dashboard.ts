@@ -3,7 +3,7 @@
 // inline SVG with a text alternative; no script, no URL. Unknown is "—", never 0.
 // Today, the heatmap and the bars read the unfiltered per-day activity; Month to
 // date and the ring follow the viewed month and its filter.
-import { type Change, changeAmount, costLabel, estWord, formatCount, formatUsd, money, partialNote, weekCoverage } from "../format";
+import { type Change, changeAmount, costLabel, estWord, formatCount, formatRange, formatUsd, mixedSources, money, partialNote, RANGE_LABEL, rangeState, usd, weekCoverage } from "../format";
 import { heatLevel, localDaysBefore } from "../store";
 import type { DayStats, Metric, Snapshot, ViewOptions } from "../types";
 import { icon } from "./icons";
@@ -157,6 +157,15 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
     if (todayStats) parts.push(plural(todayStats.sessions, "session"));
     if (today.sessionTotals > 0) parts.push(`includes ${plural(today.sessionTotals, "session total")}`);
   } else parts.push("no calls yet");
+  // The daily target (v0.9): today's estimated USD against dailyTargetMax, like Month to date.
+  let heroCls = "";
+  const heroNotes: (string | undefined)[] = [today ? partialNote(headlineMetric(today, view)) : undefined];
+  if (view.dayTarget) {
+    const state = rangeState(today ? usd(today.nanoAiu) : undefined, view.dayTarget);
+    heroCls = ` st-${state}`;
+    parts.push(`Daily target ${formatRange(view.dayTarget)}${mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`);
+    heroNotes.unshift(RANGE_LABEL[state]);
+  }
 
   // Yesterday: unknown before the history window; "Nothing logged yesterday" when it has no
   // record; "—" (not reported) when its records carry no figure in the unit (D1).
@@ -197,10 +206,10 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
     ? `${stat("Yesterday", `<span class="muted">Nothing logged yesterday</span>`, undefined, "span2")}${stat("7-day avg", val(avgText), avgNote)}`
     : `${stat("Yesterday", val(yText), yNote)}${stat("7-day avg", val(avgText), avgNote)}${stat("vs yesterday", ch ? `<span class="${ch.dir}">${sym(ch.text)}</span>` : val(DASH), chNote)}`;
   const filtered = s.filter ? `<small>not filtered</small>` : "";
-  return `<section class="card hero" aria-labelledby="today-title">
+  return `<section class="card hero${heroCls}" aria-labelledby="today-title">
 <h3 id="today-title" class="ch">${icon("today")}<span>Today <span class="muted">(${escapeHtml(weekdayDate(s.dayStartMs))})</span></span>${filtered}</h3>
 <div class="hero-grid">
-<div class="hero-main"${titleAttr(today ? partialNote(headlineMetric(today, view)) : undefined)}>
+<div class="hero-main"${titleAttr(heroNotes.filter(Boolean).join(" ") || undefined)}>
 <div class="big">${val(fig)}</div>
 <div class="sub">${escapeHtml(parts.join(" · "))}</div>
 <dl class="stats">${stats}</dl>

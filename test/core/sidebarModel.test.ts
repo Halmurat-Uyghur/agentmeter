@@ -351,7 +351,7 @@ describe("sidebar model: links", () => {
     for (const s of states) {
       for (const view of [TOKENS, COST, { unit: "cost" as const, range: { min: 1, max: 2 } }]) {
         const model = buildSidebarModel(s, view, ["web"]);
-        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.coverage?.link, model.unitSwitch.link, model.currencySwitch.link];
+        const links = [...sidebarRows(model).map((x) => x.link), model.insights?.link, model.health?.link, model.coverage?.link, model.unitSwitch.link, model.currencySwitch.link, model.settingsLink.link];
         for (const l of links) {
           if (!l) continue;
           expect(SIDEBAR_COMMANDS).toContain(l.command);
@@ -697,3 +697,32 @@ describe("sources (D49)", () => {
 function escapeHtmlAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
+
+describe("sidebar model: daily and weekly targets, Settings link (v0.9)", () => {
+  it("Today and Last 7 days carry their target state like This month; tokens view names the state only", () => {
+    const over = buildSidebarModel(snap(), { unit: "cost", dayTarget: { max: 0.01 }, weekTarget: { max: 1 } });
+    expect(r(over, "today").marker).toEqual({ kind: "over", text: "over" });
+    expect(r(over, "today").title).toContain("Daily target up to $0.010: over target.");
+    expect(r(over, "today").spoken).toBe("Today: 0.040 US dollars estimated, over target");
+    expect(r(over, "week").marker).toEqual({ kind: "in", text: "in range" });
+    expect(r(over, "week").title).toContain("Weekly target up to $1.00: in target range.");
+    const tok = buildSidebarModel(snap(), { unit: "tokens", dayTarget: { max: 0.01 } });
+    expect(r(tok, "today").marker).toEqual({ kind: "over", text: "over" });
+    expect(r(tok, "today").title).toContain("Estimated USD today is over target.");
+    expect(r(tok, "today").title).not.toMatch(/\$\d/);
+    expect(r(tok, "week").marker).toBeUndefined();
+    expect(r(buildSidebarModel(snap(), TOKENS), "today").marker).toBeUndefined();
+    // nothing logged today counts as $0: in range under a ceiling
+    expect(r(buildSidebarModel(snap({ today: undefined }), { unit: "cost", dayTarget: { max: 1 } }), "today").marker).toEqual({ kind: "in", text: "in range" });
+    for (const t of strings(over)) expect(t).not.toMatch(COPY_RE);
+    for (const t of strings(tok)) expect(t).not.toMatch(STRICT_RE);
+  });
+
+  it("the footer links to the panel's Settings section in every state", () => {
+    for (const s of [undefined, snap(), snap({ health: health({ state: "no-dir" }) })]) {
+      const model = buildSidebarModel(s, TOKENS);
+      expect(model.settingsLink).toEqual({ text: "Settings", title: "Opens the panel's Settings section: unit, currency, colours, status bar and targets.", link: { command: "copilotUsageMonitor.showSection", args: ["settings"] } });
+      expect(renderSidebarHtml(model, "x")).toContain(`<a href="command:copilotUsageMonitor.showSection?%5B%22settings%22%5D" title="Opens the panel&#39;s Settings section: unit, currency, colours, status bar and targets.">Settings</a></div>`);
+    }
+  });
+});

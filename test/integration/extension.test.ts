@@ -30,6 +30,8 @@ interface TestState {
   panelTitle?: string;
   panelSection: string;
   panelPalette: string;
+  prefs: { currency: string; statusBar: string; targets: { dayMax?: number; weekMax?: number; monthMin?: number; monthMax?: number }; targetAlert: boolean; unsaved: string[] };
+  view: { unit: string; statusBar?: string; dayTarget?: { max?: number }; weekTarget?: { max?: number } };
   panelRenders: number;
   panelActive: boolean;
   panelHeld: boolean;
@@ -446,6 +448,37 @@ suite("Copilot Usage Monitor", () => {
       await config().update("palette", undefined, vscode.ConfigurationTarget.Global);
     }
     await waitFor((x) => x.panelPalette === "theme");
+  });
+
+  test("v0.9: the Settings section opens; setTarget and setStatusBar write the user settings and the view follows; junk is ignored", async () => {
+    try {
+      await vscode.commands.executeCommand("copilotUsageMonitor.showSettings");
+      const s = await waitFor((x) => x.panelOpen && x.panelSection === "settings");
+      assert.strictEqual(s.prefs.currency, "USD");
+      assert.deepStrictEqual(s.prefs.targets, {});
+      assert.deepStrictEqual(s.prefs.unsaved, []);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTarget", "day", "max", "2.5");
+      await waitFor((x) => x.prefs.targets.dayMax === 2.5 && x.view.dayTarget?.max === 2.5);
+      assert.strictEqual(config().inspect("dailyTargetMax")?.globalValue, 2.5);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTarget", "week", "max", "abc");
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTarget", "day", "min", "1");
+      await sleep(200);
+      assert.strictEqual(config().inspect("weeklyTargetMax")?.globalValue, undefined);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTarget", "day", "max", "");
+      await waitFor((x) => x.prefs.targets.dayMax === undefined && x.view.dayTarget === undefined);
+      assert.strictEqual(config().inspect("dailyTargetMax")?.globalValue, undefined);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setStatusBar", "month");
+      await waitFor((x) => x.prefs.statusBar === "month" && x.view.statusBar === "month");
+      assert.strictEqual(config().inspect("statusBar")?.globalValue, "month");
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTargetAlert", "on");
+      await waitFor((x) => x.prefs.targetAlert === true);
+      assert.strictEqual(config().inspect("targetAlert")?.globalValue, true);
+      await vscode.commands.executeCommand("copilotUsageMonitor.setTargetAlert", "off");
+      await waitFor((x) => x.prefs.targetAlert === false);
+    } finally {
+      for (const k of ["dailyTargetMax", "weeklyTargetMax", "statusBar", "targetAlert"]) await config().update(k, undefined, vscode.ConfigurationTarget.Global);
+    }
+    await waitFor((x) => x.prefs.statusBar === "today" && x.view.statusBar === undefined);
   });
 
   test("v0.6: the getting-started walkthrough is contributed and opens", async () => {

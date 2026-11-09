@@ -16,9 +16,10 @@ import { renderOverview } from "./panel/overview";
 import { renderProjects } from "./panel/projects";
 import { DEFAULT_SECTION, isSectionId, sectionDef, type SectionId } from "./panel/sections";
 import { renderSessions } from "./panel/sessions";
+import { renderSettings } from "./panel/settings";
 import { viewedName } from "./panel/shared";
 import { renderTools } from "./panel/tools";
-import type { Snapshot, ViewOptions } from "./types";
+import { DEFAULT_PREFS, type Prefs, type Snapshot, type ViewOptions } from "./types";
 
 export { GROWTH_FLAG } from "./insights";
 export { PANEL_COMMANDS, sectionHref } from "./panel/links";
@@ -38,10 +39,13 @@ const RENDER: Record<SectionId, (s: Snapshot, view: ViewOptions) => string> = {
   tools: renderTools,
   insights: renderInsights,
   health: renderHealth,
+  // Settings also reads the palette, the nav state and the prefs: wired in renderPanelHtml.
+  settings: () => "",
 };
 
 /** The whole panel document for a snapshot (or the loading state), showing one section, in the
- * chosen colour palette ("theme": the colour theme's own chart colours). */
+ * chosen colour palette ("theme": the colour theme's own chart colours). `prefs` are the
+ * settings the Settings section lists (v0.9). */
 export function renderPanelHtml(
   s: Snapshot | undefined,
   cspSource: string,
@@ -49,6 +53,7 @@ export function renderPanelHtml(
   section: SectionId = DEFAULT_SECTION,
   navCollapsed = false,
   palette: PaletteId = DEFAULT_PALETTE,
+  prefs: Prefs = DEFAULT_PREFS,
 ): string {
   const def = sectionDef(isSectionId(section) ? section : DEFAULT_SECTION);
   const css = paletteCss(palette);
@@ -59,10 +64,11 @@ ${shell(undefined, def, LOADING_NOTE, `<p class="muted">Loading…</p>`, navColl
     return page(body, cspSource, def.label, css);
   }
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);
+  const content = def.id === "settings" ? renderSettings(s, view, { navCollapsed, palette, prefs }) : RENDER[def.id](s, view);
   const body = `${skipLink(def)}
 ${topBar(s, view)}
 ${stateNote(s.health)}
 ${toolbar(s, view)}
-${shell(s, def, description, RENDER[def.id](s, view), navCollapsed)}`;
+${shell(s, def, description, content, navCollapsed)}`;
   return page(body, cspSource, def.label, css);
 }

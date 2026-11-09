@@ -3,7 +3,7 @@ import { DEFAULT_VIEW } from "../core/format";
 import { DEFAULT_PALETTE, type PaletteId } from "../core/palettes";
 import { DEFAULT_SECTION, PANEL_COMMANDS, renderPanelHtml, type SectionId } from "../core/panelHtml";
 import { FOCUSED_REDRAW_MS, RedrawThrottle } from "../core/redrawThrottle";
-import type { Snapshot, ViewOptions } from "../core/types";
+import { DEFAULT_PREFS, type Prefs, type Snapshot, type ViewOptions } from "../core/types";
 
 /** The details webview: scripts off, no local resources, command links limited
  * to PANEL_COMMANDS (month, unit, filter, section, session calls, the nav toggle and the colour
@@ -26,6 +26,8 @@ export class DetailsPanel implements vscode.Disposable {
   private current: SectionId = DEFAULT_SECTION;
   private collapsed = false;
   private palette: PaletteId = DEFAULT_PALETTE;
+  private prefs: Prefs = DEFAULT_PREFS;
+  private prefsKey = JSON.stringify(DEFAULT_PREFS);
   private readonly throttle: RedrawThrottle;
   /** webview.html assignments, for the integration tests */
   renders = 0;
@@ -93,6 +95,19 @@ export class DetailsPanel implements vscode.Disposable {
     this.render(true);
   }
 
+  get currentPrefs(): Prefs {
+    return this.prefs;
+  }
+
+  /** The settings the Settings section lists (v0.9); a change is drawn at once. */
+  setPrefs(p: Prefs): void {
+    const key = JSON.stringify(p);
+    if (key === this.prefsKey) return;
+    this.prefs = p;
+    this.prefsKey = key;
+    this.render(true);
+  }
+
   get isOpen(): boolean {
     return this.panel !== undefined;
   }
@@ -120,7 +135,7 @@ export class DetailsPanel implements vscode.Disposable {
   /** What the user chose: a change here is drawn at once, never held back. */
   private key(): string {
     const s = this.last;
-    return JSON.stringify([this.current, this.collapsed, this.palette, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state, s?.month?.detail?.sessionId ?? null]);
+    return JSON.stringify([this.current, this.collapsed, this.palette, this.prefsKey, this.view, s === undefined, s?.month?.monthStartMs, s?.month?.isCurrent, s?.filter ?? null, s?.health.state, s?.month?.detail?.sessionId ?? null]);
   }
 
   /** `now`: a user action (show, a section switch) that must not wait for the throttle. */
@@ -134,7 +149,7 @@ export class DetailsPanel implements vscode.Disposable {
    * so an unchanged document is not assigned again. */
   private draw(): boolean {
     if (!this.panel) return false;
-    const html = renderPanelHtml(this.last, this.panel.webview.cspSource, this.view, this.current, this.collapsed, this.palette);
+    const html = renderPanelHtml(this.last, this.panel.webview.cspSource, this.view, this.current, this.collapsed, this.palette, this.prefs);
     if (html === this.html) return false;
     this.html = html;
     this.renders++;

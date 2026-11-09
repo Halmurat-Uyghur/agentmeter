@@ -360,23 +360,38 @@ describe("gates", () => {
     expect(pkg.contributes.configuration.properties["copilotUsageMonitor.targetAlert"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
-  it("settings writes: panelNavCollapsed, display, currency and palette from extension.ts, targetAlert (to false) only from the alert", () => {
-    const writes = new Map<string, string[]>();
+  it("settings writes: one helper in extension.ts over the closed SettingKey list, retried once and never rolled back (v0.9, D1–D3); targetAlert (to false) also from the alert", () => {
+    const EXT = join("src", "extension.ts");
+    const ALERT = join("src", "vscode", "targetAlert.ts");
     for (const f of files(join(ROOT, "src"), /\.ts$/)) {
       const src = readFileSync(f, "utf8");
-      const keys = [...src.matchAll(/\.update\(\s*"([^"]+)"/g)].map((x) => x[1]!);
-      // any other config update shape (a variable key) is refused outright
-      expect(src.match(/getConfiguration\([^)]*\)\s*\.update\(\s*[^"\s]/g), f).toBeNull();
-      if (keys.length) writes.set(f.slice(ROOT.length + 1), keys);
+      const rel = f.slice(ROOT.length + 1);
+      // a config update with a variable key right on getConfiguration() is refused outright
+      expect(src.match(/getConfiguration\([^)]*\)\s*\.update\(\s*[^"\s]/g), rel).toBeNull();
+      // every `.update(` that is not a view's (panel, status bar, side bar) is a settings write
+      const updates = [...src.matchAll(/(\w+|\))\.update\(\s*([^,)]+)/g)].filter((x) => !/^(panel|status|sidebar|this)$/.test(x[1]!)).map((x) => x[2]!.trim());
+      // the helper's one call (its key is typed SettingKey), and the alert's literal "Don't show again" write
+      if (rel === EXT) expect(updates).toEqual(["key"]);
+      else if (rel === ALERT) expect(updates).toEqual(['"targetAlert"']);
+      else expect(updates, rel).toEqual([]);
     }
-    expect(Object.fromEntries(writes)).toEqual({
-      [join("src", "extension.ts")]: ["panelNavCollapsed", "display", "currency", "palette"],
-      [join("src", "vscode", "targetAlert.ts")]: ["targetAlert"],
-    });
-    expect(readFileSync(join(ROOT, "src", "vscode", "targetAlert.ts"), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
+    const ext = readFileSync(join(ROOT, EXT), "utf8");
+    const keys = /type SettingKey = ([^;]+);/.exec(ext)![1]!.split("|").map((k) => k.trim().replace(/^"|"$/g, ""));
+    expect(keys).toEqual(["display", "currency", "palette", "panelNavCollapsed", "statusBar", "targetAlert", "dailyTargetMax", "weeklyTargetMax", "monthlyTargetMin", "monthlyTargetMax"]);
+    expect(ext).toContain("const updateSetting = async (key: SettingKey, value: unknown, target: vscode.ConfigurationTarget, where: string): Promise<boolean> =>");
+    expect(ext).toContain("await c.update(key, value, target);");
+    expect(ext).toContain("const SAVE_RETRY_MS = 1500;");
+    // every write goes through the helper with a literal key or the validated `key` of setTarget
+    const calls = [...ext.matchAll(/\bupdateSetting\(\s*([^,]+),/g)].map((x) => x[1]!.trim());
+    expect(calls.sort()).toEqual(['"currency"', '"display"', '"palette"', '"panelNavCollapsed"', '"statusBar"', '"targetAlert"', "key"].sort());
+    expect(ext).toContain("const key = d.setting as SettingKey;");
+    // the Settings section's keys are the manifest's
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+    for (const k of keys) expect(pkg.contributes.configuration.properties[`copilotUsageMonitor.${k}`], k).toBeDefined();
+    expect(readFileSync(join(ROOT, ALERT), "utf8")).toContain('.update("targetAlert", false, vscode.ConfigurationTarget.Global)');
   });
 
-  it("the panel allows exactly seven commands, wired as the webview's allowlist (D30; showSession v0.6; toggleNav; selectPalette v0.8)", () => {
+  it("the panel allows exactly twelve commands, wired as the webview's allowlist (D30; showSession v0.6; toggleNav; selectPalette v0.8; Settings v0.9)", () => {
     expect([...PANEL_COMMANDS]).toEqual([
       "copilotUsageMonitor.selectMonth",
       "copilotUsageMonitor.setUnit",
@@ -385,6 +400,11 @@ describe("gates", () => {
       "copilotUsageMonitor.showSession",
       "copilotUsageMonitor.toggleNav",
       "copilotUsageMonitor.selectPalette",
+      "copilotUsageMonitor.selectCurrency",
+      "copilotUsageMonitor.setStatusBar",
+      "copilotUsageMonitor.setTarget",
+      "copilotUsageMonitor.setTargetAlert",
+      "copilotUsageMonitor.openVsCodeSettings",
     ]);
     const panel = readFileSync(join(ROOT, "src", "vscode", "panel.ts"), "utf8");
     expect(panel).toContain("enableScripts: false, enableForms: false, enableCommandUris: PANEL_COMMANDS, localResourceRoots: []");
@@ -461,10 +481,13 @@ describe("gates", () => {
     expect(handler, "selectPalette handler").not.toBeNull();
     expect(handler![1]).toContain("else if (isPaletteId(arg)) id = arg;");
     expect(handler![1]).toContain("else return;");
-    expect(handler![1]).toContain('.update("palette", id, vscode.ConfigurationTarget.Global)');
+    // drawn first, then saved through the helper; no rollback on a refused save (v0.9, D1)
+    expect(handler![1]).toContain("panel.setPalette(id);");
+    expect(handler![1]).toContain('await updateSetting("palette", id, vscode.ConfigurationTarget.Global, "palette.write");');
+    expect(handler![1]).not.toContain("readPalette()");
     const readme = readFileSync(join(ROOT, "README.md"), "utf8");
     expect(readme).toContain("`copilotUsageMonitor.palette`");
-    expect(readme).toContain("the panel allows exactly seven commands");
+    expect(readme).toContain("the panel allows exactly twelve commands");
   });
 
   it("manifest (v0.8, D48): Claude Code and Codex settings are machine-scoped, sources on, folders empty", () => {

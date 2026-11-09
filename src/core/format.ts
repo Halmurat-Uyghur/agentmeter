@@ -533,7 +533,7 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     // The status bar shows this month's tokens (2.5): say the same figure here.
     parts.push(`**This month**: ${thisMonth ? tok(addMetrics(thisMonth.input, thisMonth.output)) : DASH}`);
   }
-  if (view.unit === "cost" || view.range) {
+  if (view.unit === "cost" || view.range || view.dayTarget || view.weekTarget) {
     const spent = thisMonth ? formatUsd(thisMonth.nanoAiu) : DASH;
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
     const mixed = mixedSources(thisMonth?.sources);
@@ -541,6 +541,9 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       const state = currentRangeState(s, view);
       lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
     }
+    // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${RANGE_LABEL[rangeState(s.today ? usd(s.today.nanoAiu) : undefined, view.dayTarget)]}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${RANGE_LABEL[rangeState(s.last7 ? usd(s.last7.nanoAiu) : undefined, view.weekTarget)]}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 
