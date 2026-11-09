@@ -17,7 +17,7 @@ import { renderProjects } from "./panel/projects";
 import { DEFAULT_SECTION, isSectionId, sectionDef, type SectionId } from "./panel/sections";
 import { renderSessions } from "./panel/sessions";
 import { renderSettings } from "./panel/settings";
-import { viewedName } from "./panel/shared";
+import { panelSnapshot, viewedName } from "./panel/shared";
 import { renderTools } from "./panel/tools";
 import { DEFAULT_PREFS, type Prefs, type Snapshot, type ViewOptions } from "./types";
 
@@ -63,6 +63,7 @@ ${topBar(undefined, view)}
 ${shell(undefined, def, LOADING_NOTE, `<p class="muted">Loading…</p>`, navCollapsed)}`;
     return page(body, cspSource, def.label, css);
   }
+  s = panelSnapshot(s);
   const description = def.describe(viewedName(s), s.month?.isCurrent !== false);
   const content = def.id === "settings" ? renderSettings(s, view, { navCollapsed, palette, prefs }) : RENDER[def.id](s, view);
   const body = `${skipLink(def)}

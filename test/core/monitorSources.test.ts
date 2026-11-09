@@ -167,6 +167,16 @@ describe("multi-source monitor", () => {
     expect(f.today?.records).toBe(9);
     expect(f.thisMonth?.records).toBe(9);
     expect(f.thisMonthProjects?.length).toBe(3);
+    // v0.11.1: the panel's source scope holds Codex's own Today, Last 7 days, activity and session.
+    expect(s.sourceScope).toBeUndefined();
+    expect(f.sourceScope?.source).toBe("codex");
+    expect(f.sourceScope?.today?.records).toBe(4);
+    expect(f.sourceScope?.today?.bySource).toEqual({ codex: expect.anything() });
+    expect(f.sourceScope?.last7?.records).toBe(4);
+    expect(f.sourceScope?.prior7).toBeUndefined();
+    expect(f.sourceScope?.activity.days.reduce((n, d) => n + d.calls, 0)).toBe(4);
+    expect(s.activity?.days.reduce((n, d) => n + d.calls, 0)).toBe(9);
+    expect(f.sourceScope?.current).toMatchObject({ folderId: xs(1), source: "codex" });
 
     monitor!.setFilter({ source: "x" as never });
     await monitor!.refresh();
@@ -208,6 +218,16 @@ describe("multi-source monitor", () => {
     make();
     await monitor!.refresh({ full: true });
     expect(last().current).toMatchObject({ folderId: A, live: true, source: "copilot" });
+    // v0.11.1: with the Claude Code filter the panel's current session is the Claude one,
+    // while the unfiltered current (status bar, side bar) stays the live Copilot session.
+    monitor!.setFilter({ source: "claude-code" });
+    await monitor!.refresh();
+    expect(last().current).toMatchObject({ folderId: A, source: "copilot" });
+    expect(last().sourceScope?.current).toMatchObject({ folderId: cs(1), live: true, source: "claude-code" });
+    monitor!.setFilter({ source: "codex" });
+    await monitor!.refresh();
+    expect(last().sourceScope?.current).toBeUndefined();
+    monitor!.setFilter({});
     monitor!.dispose();
     // Without a live Copilot session the mtime-live Claude session is current.
     await rm(join(copilotRoot, "session-state", A, `inuse.${LIVE_PID}.lock`));

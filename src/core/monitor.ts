@@ -14,7 +14,7 @@ import { computeInsights, promptConventions } from "./insights";
 import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceFile, type SourceReader } from "./source";
 import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
 import type { ReadErrorCode } from "./tailer";
-import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type UsageRecord } from "./types";
+import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type UsageRecord } from "./types";
 
 export { RECENT_MS };
 
@@ -836,6 +836,24 @@ export class UsageMonitor {
       });
     }
     const filter = unfiltered ? undefined : { ...this.filter };
+    // v0.11.1: the panel's Today, Last 7 days, daily activity and current session follow the
+    // source filter (only). Built only while one is set; the status bar and side bar keep the above.
+    let sourceScope: SourceScope | undefined;
+    if (source !== undefined) {
+      const sTotals = (from: number, to = Number.POSITIVE_INFINITY) => this.store.totals((r) => r.source === source && r.timestampMs >= from && r.timestampMs < to);
+      const sToday = sTotals(dayStartMs);
+      const sLast7 = sTotals(last7Start);
+      const sPrior7 = sTotals(prior7Start, last7Start);
+      const sCurrent = this.current(latest, dayStartMs, folders, sourceOf, source).current;
+      sourceScope = {
+        source,
+        ...(sToday !== undefined && { today: sToday }),
+        ...(sLast7 !== undefined && { last7: sLast7 }),
+        ...(sPrior7 !== undefined && { prior7: sPrior7 }),
+        activity: dailyActivity(this.store, starts[0]!, dayStartMs, (r) => r.source === source),
+        ...(sCurrent !== undefined && { current: sCurrent }),
+      };
+    }
     this.lastBuildMs = nowMs;
     this.priorFollowsClock = month.isCurrent && month.prior !== undefined;
 
@@ -856,6 +874,7 @@ export class UsageMonitor {
       activity,
       todayProjects,
       last7Projects,
+      ...(sourceScope && { sourceScope }),
     };
   }
 
@@ -955,11 +974,14 @@ export class UsageMonitor {
     dayStartMs: number,
     folders: Map<string, { source: Source; live: boolean; mtimeMs: number }>,
     sourceOf: Map<string, Source>,
+    only?: Source,
   ): Pick<Snapshot, "current"> {
-    let folderId = this.pinned;
+    // With `only` (the panel's source scope, v0.11.1), every choice is limited to that source.
+    const ofSource = (id: string) => only === undefined || (folders.get(id)?.source ?? sourceOf.get(id)) === only;
+    let folderId = this.pinned !== undefined && ofSource(this.pinned) ? this.pinned : undefined;
     const pinned = folderId !== undefined;
     const pick = (copilot: boolean): string | undefined => {
-      const live = [...folders].filter(([, c]) => c.live && (c.source === "copilot") === copilot);
+      const live = [...folders].filter(([, c]) => c.live && (c.source === "copilot") === copilot && (only === undefined || c.source === only));
       const key = (id: string) => latest.get(id) ?? -Infinity;
       live.sort(([a, ca], [b, cb]) => key(b) - key(a) || cb.mtimeMs - ca.mtimeMs);
       return live[0]?.[0];
@@ -968,7 +990,7 @@ export class UsageMonitor {
     if (folderId === undefined) {
       let bestMs = -Infinity;
       for (const [id, ms] of latest) {
-        if (ms >= dayStartMs && ms > bestMs) {
+        if (ms >= dayStartMs && ms > bestMs && ofSource(id)) {
           bestMs = ms;
           folderId = id;
         }

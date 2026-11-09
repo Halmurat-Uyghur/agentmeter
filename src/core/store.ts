@@ -713,7 +713,7 @@ export function sessionSummaries(
  * pass, never filtered (A2). Only days with a record are listed. Like Today, the last
  * day has no upper bound; records before `fromMs` are skipped.
  */
-export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: number): Activity {
+export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: number, keep?: (r: UsageRecord) => boolean): Activity {
   const first = new Date(fromMs);
   const starts: number[] = [];
   for (let d = 0; ; d++) {
@@ -726,6 +726,7 @@ export function dailyActivity(store: UsageStore, fromMs: number, todayStartMs: n
   store.each((r) => {
     const ts = r.timestampMs;
     if (ts < starts[0]!) return;
+    if (keep !== undefined && !keep(r)) return;
     // the last day start at or before ts (binary search; the window may hold 730 days)
     let lo = 0;
     let hi = n - 1;

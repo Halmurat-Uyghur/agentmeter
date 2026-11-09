@@ -2,7 +2,7 @@
 // goes through escapeHtml; "—" means not reported (never 0), "*" incomplete.
 import { type Change, costLabel, estWord, formatAiu, formatCount, formatDuration, formatUsd, partialNote, spoken, usd } from "../format";
 import { addMetrics } from "../store";
-import type { Counts, Health, Metric, Snapshot, ViewOptions } from "../types";
+import { type Counts, type Health, type Metric, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { icon, type IconName } from "./icons";
 
 export const DASH = "—";
@@ -11,6 +11,36 @@ export const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+/**
+ * The snapshot the details panel draws (v0.11.1): with a source filter, Today, Last 7 days,
+ * daily activity and the current session are that source's (`sourceScope`). The status bar
+ * and the side bar keep reading the unfiltered snapshot.
+ */
+export function panelSnapshot(s: Snapshot): Snapshot {
+  const sc = s.sourceScope;
+  if (!sc) return s;
+  const { today: _t, last7: _w, prior7: _p, current: _c, ...rest } = s;
+  return {
+    ...rest,
+    activity: sc.activity,
+    ...(sc.today !== undefined && { today: sc.today }),
+    ...(sc.last7 !== undefined && { last7: sc.last7 }),
+    ...(sc.prior7 !== undefined && { prior7: sc.prior7 }),
+    ...(sc.current !== undefined && { current: sc.current }),
+  };
+}
+
+/** "Claude Code only" while the source scope applies; "not filtered" under another filter; else undefined. */
+export function scopeTag(s: Snapshot): string | undefined {
+  if (s.sourceScope) return `${SOURCE_LABEL[s.sourceScope.source]} only`;
+  return s.filter ? "not filtered" : undefined;
+}
+
+/** The sentence ending a Today, Last 7 days or daily-activity note. */
+export function scopeSentence(s: Snapshot): string {
+  return s.sourceScope ? `${SOURCE_LABEL[s.sourceScope.source]} only.` : "Not filtered.";
+}
 
 /** Rows shown before a table folds the rest into "Show N more" (D27). */
 export const TABLE_LIMIT = 10;
