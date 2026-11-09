@@ -114,9 +114,10 @@ function callsMissingOf(r: UsageRecord): number {
   return r.kind === "sessionTotal" && r.calls === undefined ? 1 : 0;
 }
 
-/** Only Copilot logs cost: other sources' records neither report nor miss USD (D46). */
-function pricedSource(r: UsageRecord): boolean {
-  return r.source === "copilot";
+/** Every source has a cost (v0.10): Copilot's is logged, Claude Code's and Codex's are estimated
+ * from list prices (src/core/pricing.ts); a record whose model has no price misses it. */
+function pricedSource(_r: UsageRecord): boolean {
+  return true;
 }
 
 /** Bumps the per-source record count in `m` (a prototype-free map). */

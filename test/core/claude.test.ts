@@ -91,6 +91,9 @@ describe("parseClaudeLine", () => {
       timestampMs: Date.parse(CLAUDE_TS),
       model: "claude-opus-4-1",
       tokens: { input: 1203, cacheRead: 1000, cacheWrite: 200, output: 50, reasoning: 20 },
+      // v0.10 estimate at Opus 4.1 list prices: 3 uncached × $15 + 1,000 reads × $1.50 +
+      // 200 one-hour writes × $30 + 50 output × $75 per MTok = $0.011295
+      nanoAiu: 1_129_500_000,
       finishReason: "stop",
     });
     expect(p.label).toBe("myrepo");

@@ -1,7 +1,7 @@
 {
   "name": "copilot-usage-monitor",
   "displayName": "Copilot Usage Monitor (Local)",
-  "description": "Shows your own Copilot, Claude Code and Codex CLI usage, in tokens (and Copilot's estimated USD), as observed in their local session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.",
+  "description": "Shows your own Copilot, Claude Code and Codex CLI usage, in tokens and estimated USD (Claude Code and Codex at API list prices), as observed in their local session logs on this computer. Side bar summary, a sectioned details panel, month history, trend, per-project and per-tool views, session totals from older Copilot and a personal target range. No credentials read, nothing stored, and no network unless you pick a display currency other than USD (for example CAD, at the daily exchange rate). Not affiliated with, endorsed by or supported by GitHub, Microsoft, Anthropic or OpenAI.",
   "keywords": [
     "copilot",
     "claude",
@@ -14,7 +14,7 @@
   ],
   "publisher": "local",
   "icon": "media/icon.png",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "license": "MIT",
   "engines": {

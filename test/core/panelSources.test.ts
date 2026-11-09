@@ -342,8 +342,8 @@ describe("multi-source panel wording (F3a)", () => {
     expect(old).toContain("Copilot did not log who started the calls in November");
   });
 
-  it("sessions table bar note says Copilot calls only when mixed", () => {
-    expect(renderPanelHtml(snap(mixedTotals()), "csp", TOKENS, "sessions")).toContain("Bar = share of the month's estimated cost (Copilot calls only).");
+  it("sessions table bar note covers every source's cost (v0.10)", () => {
+    expect(renderPanelHtml(snap(mixedTotals()), "csp", TOKENS, "sessions")).toContain("Bar = share of the month's estimated cost. Started");
     const cp = snap(copilotTotals());
     cp.month!.sessions = [cp.month!.sessions[1]!];
     expect(renderPanelHtml(cp, "csp", TOKENS, "sessions")).toContain("Bar = share of the month's estimated cost. Started");
@@ -353,5 +353,56 @@ describe("multi-source panel wording (F3a)", () => {
     const s = snap(mixedTotals(), { health: multi({ state: "format-changed", unrecognized: 1, sources: { copilot: sh(), "claude-code": sh({ state: "format-changed" }) } }) });
     s.month!.prompts = { prompts: 0, agentCalls: 0, notLinked: 0, unknown: 3, nanoAiu: none(), tokens: none() };
     for (const sec of ["overview", "sessions", "health"] as const) expect(words(renderPanelHtml(s, "csp", { unit: "cost", range: { max: 60 } }, sec)), sec).not.toMatch(COPY_RE);
+  });
+});
+
+describe("Source dropdown in the toolbar (v0.10)", () => {
+  const three = () => health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh({ state: "no-dir" }) } });
+  const menu = (html: string) => html.slice(html.indexOf('<details class="dd srcpick">'), html.indexOf("</details>", html.indexOf('<details class="dd srcpick">')) + 10);
+
+  it("is on every section, lists All sources then each enabled source as a setFilter link", () => {
+    for (const section of ["overview", "projects", "tools", "insights", "settings"] as const) {
+      const html = renderPanelHtml(snap(mixedTotals(), { health: three() }), "csp", TOKENS, section);
+      const dd = menu(html);
+      expect(dd, section).toContain("<b>All</b>");
+      const labels = [...dd.matchAll(/<li><a [^>]*><span class="ddcheck"[^>]*>[^<]*<\/span>([^<]*)/g)].map((x) => x[1]!.trim());
+      expect(labels).toEqual(["All sources", "Copilot", "Claude Code", "Codex"]);
+      expect(dd).toContain(escapeHtml(filterHref("source", "")));
+      expect(dd).toContain(escapeHtml(filterHref("source", "codex")));
+      expect(dd).toContain("folder not found");
+      expect(dd).toContain("Turn sources on or off…");
+    }
+  });
+  it("marks the active source and names it on the button", () => {
+    const html = renderPanelHtml(snap(mixedTotals(), { health: three(), filter: { source: "claude-code" } }), "csp", TOKENS, "overview");
+    const dd = menu(html);
+    expect(dd).toContain("<b>Claude Code</b>");
+    expect(dd).toMatch(/aria-current="true"><span class="ddcheck" aria-hidden="true">✓<\/span>Claude Code/);
+  });
+  it("leaves out a source that is turned off, and is hidden with one source or no per-source health", () => {
+    const off = health({ sources: { copilot: sh(), "claude-code": sh(), codex: sh({ state: "off" }) } });
+    expect(menu(renderPanelHtml(snap(mixedTotals(), { health: off }), "csp", TOKENS, "overview"))).not.toContain("Codex");
+    expect(renderPanelHtml(snap(copilotTotals(), { health: health({ sources: { copilot: sh() } }) }), "csp", TOKENS, "overview")).not.toContain("srcpick");
+    expect(renderPanelHtml(snap(copilotTotals()), "csp", TOKENS, "overview")).not.toContain("srcpick");
+  });
+});
+
+describe("estimated cost for Claude Code and Codex (v0.10)", () => {
+  it("the By source card shows a priced Claude Code row's USD instead of —", () => {
+    const t = mixedTotals();
+    t.bySource!["claude-code"] = { ...CC, nanoAiu: m(1.5e11, 3), callNanoAiu: m(1.5e11, 3) };
+    const html = renderSourcesCard(snap(t), COST);
+    const cc = html.slice(html.indexOf(">Claude Code<"));
+    expect(cc.slice(0, cc.indexOf("</tr>"))).toContain("$1.50");
+  });
+  it("targets compare Copilot's cost only, even when the month total includes estimates", () => {
+    const t = mixedTotals();
+    // Copilot $0.04 (4e9 nano-AIU) + Claude Code $50 estimated; target up to $10 → still in range
+    t.nanoAiu = m(4e9 + 5e12, 5);
+    t.bySource!["claude-code"] = { ...CC, nanoAiu: m(5e12, 3), callNanoAiu: m(5e12, 3) };
+    const view: ViewOptions = { unit: "cost", range: { max: 10 } };
+    const html = renderPanelHtml(snap(t, { thisMonth: t }), "csp", view, "overview");
+    expect(html).toContain("(Copilot only): In range");
+    expect(html).not.toContain("(Copilot only): Over");
   });
 });

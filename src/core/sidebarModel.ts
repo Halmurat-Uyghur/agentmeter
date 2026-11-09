@@ -5,6 +5,7 @@
 // "*" means incomplete, and figures that include session totals say so in their
 // title tooltip. Every string is plain text; renderSidebarHtml escapes it.
 import {
+  targetUsd,
   CHAT_NOT_COVERED,
   CHAT_NOT_COVERED_SHORT,
   costLabel,
@@ -36,7 +37,7 @@ import {
 } from "./format";
 import { CALLS_MISSING_NOTE, callsCell, callsPhrase, DASH, headlineValue, MONTHS, partialReasons, plural, tokens, withStar } from "./panel/shared";
 import type { SectionId } from "./panel/sections";
-import { type Counts, type GroupSummary, type Health, type Metric, type RangeState, type Snapshot, SOURCE_LABEL, type ViewOptions } from "./types";
+import { type Counts, type GroupSummary, type Health, type Metric, type RangeState, type Snapshot, SOURCE_LABEL, type Totals, type ViewOptions } from "./types";
 
 export type SidebarState = "loading" | "no-dir" | "permission" | "ready";
 
@@ -344,8 +345,8 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         ? [`Target ${formatRange(view.range)}${mixedSources(month?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[status.state]}.`]
         : [`Estimated ${currencyCode()} this month is ${RANGE_LABEL[status.state]}.`];
   // The daily and weekly targets (v0.9) mark Today and Last 7 days the way the month target marks This month.
-  const periodTarget = (c: Counts | undefined, range: ViewOptions["range"], what: string, period: string) => {
-    const st = rangeState(c ? usd(c.nanoAiu) : undefined, range);
+  const periodTarget = (c: Totals | undefined, range: ViewOptions["range"], what: string, period: string) => {
+    const st = rangeState(targetUsd(c), range);
     if (st === "none") return { marker: undefined, lines: [] as string[] };
     const marker = { kind: st, text: st === "over" ? "over" : st === "in" ? "in range" : "under" };
     const lines = view.unit === "cost" ? [`${what} ${formatRange(range)}${mixedSources(c?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[st]}.`] : [`Estimated ${currencyCode()} ${period} is ${RANGE_LABEL[st]}.`];

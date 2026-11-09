@@ -4,13 +4,15 @@
 
 import { CURRENCIES } from "./currency";
 import { addMetrics, localDaysBefore } from "./store";
+import { PRICES_AS_OF } from "./pricing";
 import { type Currency, type Counts, type Health, type LastPrompt, type Metric, type RangeState, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type Totals, type ViewOptions } from "./types";
 
 export const LOCAL_BANNER =
   "Locally observed from Copilot, Claude Code and Codex session logs on this computer. Not an account statement from any of them, not your remaining allowance, and not usage from other devices or features that don't write these logs.";
 
 /** Added to the cost notes wherever a non-Copilot record is in scope (D46). */
-export const COST_SOURCES_NOTE = "USD (est.) covers Copilot only: Claude Code and Codex log no cost; their figures are tokens.";
+/** Cost note when a Claude Code or Codex record is in scope (v0.10; was Copilot-only cost, D46). */
+export const COST_SOURCES_NOTE = `USD (est.) for Claude Code and Codex is estimated from their tokens at the public API list price of each model (as of ${PRICES_AS_OF}); a subscription plan is charged differently, and a model with no list price shows —. Targets compare Copilot only.`;
 
 /** Insights footer line when a non-Copilot record is in scope (D49). */
 export const INSIGHTS_SOURCES_NOTE = "Insights use Copilot's logged AI credits; Claude Code and Codex calls are not examined.";
@@ -147,6 +149,15 @@ export function usd(m: Metric): number | undefined {
   return m.reported === 0 ? undefined : m.sum / 1e11;
 }
 
+/** The spend a target compares (v0.10): Copilot's logged cost only. Claude Code and Codex cost is
+ * an estimate from list prices, shown with the figures but never counted against a target. */
+export function targetUsd(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): number | undefined {
+  if (!t) return undefined;
+  if (!t.bySource) return mixedSources(t.sources) ? undefined : usd(t.nanoAiu);
+  const c = t.bySource.copilot;
+  return c ? usd(c.nanoAiu) : undefined;
+}
+
 /** Display currency for every cost figure; undefined = USD. Set by the extension
  * (setDisplayCurrency) from the chosen currency and its daily rate. */
 let displayCurrency: Currency | undefined;
@@ -171,7 +182,7 @@ export function estWord(): string {
 }
 
 /** The cost note plus, when converting, the rate used (or why it is not converted yet).
- * `mixed`: a non-Copilot record is in scope, so the note says USD covers Copilot only (D46). */
+ * `mixed`: a non-Copilot record is in scope, so the note says how its USD is estimated (v0.10). */
 export function costNotes(view: ViewOptions, mixed = false): string[] {
   const out = [COST_NOTE];
   if (mixed) out.push(COST_SOURCES_NOTE);
@@ -274,7 +285,7 @@ export function thisMonthTotals(s: Snapshot): Totals | undefined {
 /** Range state of the current month in `s` (unfiltered; never a selected past month). */
 export function currentRangeState(s: Snapshot, view: ViewOptions): RangeState {
   const t = thisMonthTotals(s);
-  return rangeState(t ? usd(t.nanoAiu) : undefined, view.range);
+  return rangeState(targetUsd(t), view.range);
 }
 
 /** Codicon id for a range state; the status bar and the side bar share it (D31). */
@@ -542,8 +553,8 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
       lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
     }
     // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
-    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${RANGE_LABEL[rangeState(s.today ? usd(s.today.nanoAiu) : undefined, view.dayTarget)]}`);
-    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${RANGE_LABEL[rangeState(s.last7 ? usd(s.last7.nanoAiu) : undefined, view.weekTarget)]}`);
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.today), view.dayTarget)]}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.last7), view.weekTarget)]}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 

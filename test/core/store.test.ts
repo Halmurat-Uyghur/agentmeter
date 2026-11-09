@@ -633,19 +633,19 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect("tools" in s.records(all)[0]!).toBe(false);
   });
 
-  it("USD metrics count Copilot records only: a Claude Code record is never 'missing'", () => {
+  it("v0.10: a Claude Code record's estimated cost counts like Copilot's; an unpriced one is 'missing'", () => {
     const s = new UsageStore();
-    s.add(cc("m1"), "a.jsonl");
+    s.add(cc("m1", { nanoAiu: 40 }), "a.jsonl");
     s.add(cc("m2"), "a.jsonl");
     const t = s.totals(all)!;
-    expect(t.nanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
-    expect(t.callNanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
+    expect(t.nanoAiu).toStrictEqual({ sum: 40, reported: 1, missing: 1 });
+    expect(t.callNanoAiu).toStrictEqual({ sum: 40, reported: 1, missing: 1 });
     expect(t.input.reported).toBe(2);
   });
 
   it("a Copilot session total without AIU still bumps missing", () => {
     const s = new UsageStore();
-    s.add(cc("m1"), "a.jsonl");
+    s.add(cc("m1", { nanoAiu: 0 }), "a.jsonl");
     s.setSessionTotals("f", "t.jsonl", [total("f", "m")]);
     const t = s.totals(all)!;
     expect(t.nanoAiu.missing).toBe(1);
@@ -689,23 +689,23 @@ describe("v0.8 source dimension (D40, D42, D46, D52)", () => {
     expect(toolSummaries(s, 0, Number.POSITIVE_INFINITY)[0]!.builtIn).toBe(false);
   });
 
-  it("project, recent and session summaries carry the source; USD stays Copilot-only", () => {
+  it("project, recent and session summaries carry the source and add up every source's USD", () => {
     const s = new UsageStore();
     s.add(rec("u1", { nanoAiu: 5 }), "a");
-    s.add(cc("m1"), "b");
+    s.add(cc("m1", { nanoAiu: 0 }), "b");
     const [p] = projectSummaries(s, 0, Number.POSITIVE_INFINITY, () => "repo");
     expect(p!.sources).toEqual({ copilot: 1, "claude-code": 1 });
-    expect(p!.nanoAiu).toStrictEqual({ sum: 5, reported: 1, missing: 0 });
+    expect(p!.nanoAiu).toStrictEqual({ sum: 5, reported: 2, missing: 0 });
     const recent = recentProjects(s, 0, 0, () => "repo");
     expect(recent.today[0]!.sources).toEqual({ copilot: 1, "claude-code": 1 });
     expect(recent.last7[0]!.nanoAiu.missing).toBe(0);
     const sessions = sessionSummaries(s, 0, Number.POSITIVE_INFINITY);
     const c1 = sessions.find((x) => x.sessionId === "c1")!;
     expect(c1.source).toBe("claude-code");
-    expect(c1.nanoAiu).toStrictEqual({ sum: 0, reported: 0, missing: 0 });
+    expect(c1.nanoAiu).toStrictEqual({ sum: 0, reported: 1, missing: 0 });
     expect(sessions.find((x) => x.sessionId === "s1")!.source).toBe("copilot");
     const act = dailyActivity(s, T0, localDayStart(new Date(T0)));
-    expect(act.days[0]!.nanoAiu).toStrictEqual({ sum: 5, reported: 1, missing: 0 });
+    expect(act.days[0]!.nanoAiu).toStrictEqual({ sum: 5, reported: 2, missing: 0 });
   });
 
   it("promptOf: a non-Copilot record's prompt is its input, whatever the convention", () => {

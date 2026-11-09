@@ -1,9 +1,9 @@
 // Shared chrome on every section (D30): document, header, banner, state note,
 // the month / unit / filter / colours toolbar and the section nav. Scripts stay off; the
 // only links are allowlisted command URIs plus the skip link to #main.
-import { costLabel, costNotes, estWord, formatChangedSentence, homeSettings, LOADING_NOTE, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
+import { costLabel, costNotes, enabledSources, estWord, formatChangedSentence, homeSettings, LOADING_NOTE, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
-import { type Health, isSource, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
+import { type Health, isSource, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
 import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
@@ -117,8 +117,29 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
     : "";
   return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>
-  <div class="tools"><div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div></div>
+  <div class="tools">${sourcePicker(s)}<div class="unit">${unit("tokens", "Tokens")}${unit("cost", escapeHtml(costLabel()))}</div></div>
 </div></div>`;
+}
+
+/** The Source dropdown (v0.10): All sources plus each enabled source, a native <details> menu
+ * (scripts stay off). Each item is a setFilter link; the page redraw closes the menu. Shown when
+ * per-source health lists more than one enabled source, or while a source filter is on. Labels come only from
+ * SOURCE_LABEL. Like the source filter, it narrows the month view, trend and tables. */
+export function sourcePicker(s: Snapshot): string {
+  const active = isSource(s.filter?.source) ? s.filter!.source : undefined;
+  const on: readonly Source[] = enabledSources(s.health) ?? [];
+  if (on.length < 2 && active === undefined) return "";
+  const list = active !== undefined && !on.includes(active) ? [...on, active] : on;
+  const state = (x: Source) => s.health.sources?.[x]?.state;
+  const item = (label: string, href: string, current: boolean, note = "") =>
+    `<li><a href="${escapeHtml(href)}"${current ? ' aria-current="true"' : ""}><span class="ddcheck" aria-hidden="true">${current ? "✓" : ""}</span>${escapeHtml(label)}${note ? ` <span class="muted">${escapeHtml(note)}</span>` : ""}</a></li>`;
+  const items = [
+    item("All sources", filterHref("source", ""), active === undefined),
+    ...list.map((x) => item(SOURCE_LABEL[x], filterHref("source", x), x === active, state(x) === "no-dir" ? "· folder not found" : "")),
+  ].join("");
+  const shown = active === undefined ? "All" : SOURCE_LABEL[active];
+  const foot = `<li class="ddfoot"><a href="${escapeHtml(sectionHref("settings"))}">Turn sources on or off…</a></li>`;
+  return `<details class="dd srcpick"><summary class="btn" title="Show one source or all of them in the month view, trend and tables"><span class="muted">Source:</span> <b>${escapeHtml(shown)}</b><span aria-hidden="true"> ▾</span><span class="sr">. Choose a source</span></summary><ul class="ddmenu" aria-label="Sources">${items}${foot}</ul></details>`;
 }
 
 /** Text after a nav label (never colour only): the Insights count, a Data health mark. */

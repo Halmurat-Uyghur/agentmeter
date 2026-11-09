@@ -760,7 +760,7 @@ describe("sources (D46, D49)", () => {
     bySource: { copilot: sc({ input: m(1000, 1, 0) }), "claude-code": sc({ input: m(2_000_000, 2, 0), output: m(0, 2, 0) }) },
   });
   it("the note strings", () => {
-    expect(COST_SOURCES_NOTE).toBe("USD (est.) covers Copilot only: Claude Code and Codex log no cost; their figures are tokens.");
+    expect(COST_SOURCES_NOTE).toBe("USD (est.) for Claude Code and Codex is estimated from their tokens at the public API list price of each model (as of 2026-11-08); a subscription plan is charged differently, and a model with no list price shows —. Targets compare Copilot only.");
     expect(INSIGHTS_SOURCES_NOTE).toBe("Insights use Copilot's logged AI credits; Claude Code and Codex calls are not examined.");
   });
   it("costNotes adds the sources note only when a non-Copilot source is in scope", () => {

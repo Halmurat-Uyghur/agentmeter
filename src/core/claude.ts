@@ -25,6 +25,7 @@ import {
   type SourceReader,
   type SourceUnreadable,
 } from "./source";
+import { estimateNanoAiu } from "./pricing";
 import { ByteTailer, type LineHandler } from "./tailer";
 import type { FinishReason, Tokens, UsageRecord } from "./types";
 
@@ -306,6 +307,9 @@ export function parseClaudeLine(
   };
   const model = stringAt(buf, res, P_MODEL, MAX_MODEL_BYTES);
   if (safeKey(model, MODEL_ID)) record.model = model;
+  // Claude Code logs no cost: estimated from the tokens at the model's list price (v0.10).
+  const cost = estimateNanoAiu(record);
+  if (cost !== undefined) record.nanoAiu = cost;
   const finishReason = finishReasonOf(buf, only(res, P_STOP));
   if (finishReason !== undefined) record.finishReason = finishReason;
   const tools = toolsOf(buf, res);

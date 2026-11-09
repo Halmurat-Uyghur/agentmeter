@@ -29,6 +29,9 @@ export const PANEL_CSS = `
   --mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
 }
 * { box-sizing: border-box; }
+/* The scrollbar's space is kept on every section, so a short section (Insights, often Tools or
+   Projects) does not shift the toolbar and content sideways when the page redraws without one. */
+html { scrollbar-gutter: stable; }
 /* --hot-text sits on body, not :root, so it follows a palette's --hot override (a custom property
    resolves its var() references where it is declared) */
 body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif); font-size: 13px; line-height: 1.45; --hot-text: color-mix(in srgb, var(--hot) 75%, var(--fg)); }
@@ -170,6 +173,18 @@ a.btn:hover, a.seg:hover { border-color: var(--accent); color: var(--accent); }
 td.flag { color: var(--warn-text); font-weight: 650; }
 .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0 0; font-size: 12px; }
+/* Source dropdown (v0.10): a <details> menu, no script */
+.dd { position: relative; }
+.dd > summary { list-style: none; cursor: pointer; user-select: none; }
+.dd > summary::-webkit-details-marker { display: none; }
+.dd[open] > summary { border-color: var(--accent); }
+.ddmenu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 200px; margin: 0; padding: 4px; list-style: none; background: var(--vscode-menu-background, var(--card)); color: var(--vscode-menu-foreground, var(--fg)); border: 1px solid var(--vscode-menu-border, var(--line)); border-radius: 8px; box-shadow: 0 4px 14px rgba(0, 0, 0, .25); }
+.ddmenu a { display: flex; align-items: baseline; gap: 6px; padding: 5px 10px; border-radius: 5px; color: inherit; text-decoration: none; font-size: 12px; white-space: nowrap; }
+.ddmenu a:hover, .ddmenu a:focus-visible { background: var(--vscode-menu-selectionBackground, var(--soft)); color: var(--vscode-menu-selectionForeground, inherit); }
+.ddmenu a[aria-current] { font-weight: 650; }
+.ddcheck { display: inline-block; width: 12px; color: var(--hot); }
+.ddfoot { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+.ddfoot a { color: var(--muted); }
 .fchip { display: inline-block; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); text-decoration: none; }
 .fchip:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 a.rowlink { color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--muted); }

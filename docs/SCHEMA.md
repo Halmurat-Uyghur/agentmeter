@@ -4,7 +4,7 @@ What the extension reads from each source's logs. Three sections: [Copilot](#cop
 
 **One token convention (all sources, D47).** `tokens.input` is prompt tokens **including** cached tokens, so uncached input = `input − cacheRead − cacheWrite`; reasoning is inside output. Copilot logs it that way. Claude Code's `input_tokens` is the uncached part only, so its input is derived as `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`: plain arithmetic on allowlisted integers, like USD from AIU (the derived uncached input equals the logged `input_tokens` exactly). Codex's `input_tokens` already includes cache reads and is copied as logged; `cache_write_input_tokens` is kept as cache write and **not** added into input (see Codex "Unverified").
 
-**No cost outside Copilot (D46).** Claude Code and Codex log no cost; their records carry no AIU, and USD metrics are aggregated over Copilot records only.
+**Cost outside Copilot (D46, v0.10).** Claude Code and Codex log no cost. Since v0.10 each of their records carries an *estimated* AIU (1 USD = 1e11 nano-AIU) computed by the reader from the record's token counts and model at the public API list price (`src/core/pricing.ts`, prices as of 2026-11-08); a model without a list price leaves it unset, so the record counts as missing. Targets still compare Copilot's logged AIU only.
 
 # Copilot log schema
 
