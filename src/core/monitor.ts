@@ -2,6 +2,14 @@
 // Snapshot whenever what it would show changes. Missing data stays undefined,
 // incomplete data sets `health.partial`, and only counts, codes and timings are
 // logged: never a path, never a root.
+//
+// A snapshot is not built from scratch each time. Every figure is kept with what it was
+// computed from (`memo`): the store's version for the dates it reads, its date range, the
+// filter, the project labels. And where a figure adds up days, the days before today are
+// kept apart and only today's records are read again (`Build.split`). A new line in a log
+// then costs today's records, not every record stored. Nothing is written anywhere: the
+// kept results live in this object and go with it. `fullRebuild` builds every snapshot
+// from the whole store instead; test/core/snapshotReuse.test.ts holds the two equal.
 import { ClaudeSourceReader } from "./claude";
 import { CodexSourceReader } from "./codex";
 import { CopilotSourceReader } from "./copilot";
@@ -10,11 +18,11 @@ import { parseUsageLine } from "./extract";
 import type { Logger } from "./log";
 import { sep } from "node:path";
 import { cacheStats, lastPrompt, modelCacheStats, promptStats, sessionDetail, toolOverhead } from "./explain";
-import { computeInsights, promptConventions } from "./insights";
+import { computeInsights, extendScan, promptConventions, scanCalls, type CallScan } from "./insights";
 import { RECENT_MS, type FileReader, type FileReadResult, type SourceCandidate, type SourceDiscoverResult, type SourceFile, type SourceReader } from "./source";
-import { byMonth, dailyActivity, daysOfMonth, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectSummaries, recentProjects, sessionSummaries, toolSummaries, UsageStore } from "./store";
+import { byMonth, bySessionCost, dailyActivity, daysOfMonth, groupSummaries, localDayStart, localDaysBefore, localMonthStart, monthStarts, NO_PROJECT, projectGroups, projectSummaries, recentProjects, sessionSummaries, toolGroups, toolRows, toolSummaries, totalsOf, UsageStore, type RecordSource } from "./store";
 import type { ReadErrorCode } from "./tailer";
-import { isSource, SOURCES, type Filter, type GroupSummary, type Health, type HealthState, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type Totals, type UsageRecord } from "./types";
+import { isSource, SOURCES, type Activity, type DayTotals, type Filter, type GroupSummary, type Health, type HealthState, type MonthSummary, type MonthView, type SessionSummary, type Snapshot, type Source, type SourceHealth, type SourceScope, type ToolSummary, type Totals, type UsageRecord } from "./types";
 
 export { RECENT_MS };
 
@@ -42,6 +50,9 @@ export interface MonitorOptions {
   readTotals?: boolean;
   /** test hook: replaces the readers built from root/sources */
   readers?: SourceReader[];
+  /** test hook: every snapshot aggregates the whole store again and keeps nothing between
+   * snapshots, as every snapshot was built before results were kept. The reference those results are compared with. */
+  fullRebuild?: boolean;
 }
 
 export const MAX_HISTORY_MONTHS = 24;
@@ -91,6 +102,43 @@ interface FileState {
   hot: boolean;
   /** discovery saw the mtime or size change since the last read */
   changed: boolean;
+}
+
+/** How one snapshot build reads the records. */
+interface Build {
+  /** results are kept between snapshots (see `memo`) */
+  reuse: boolean;
+  /** with `reuse`: figures are put together from what the days before today came to (kept
+   * until one of their records changes) and today's records, read from the store's own list
+   * of them. Off while today's records are most of the store: then one pass is as cheap. */
+  split: boolean;
+  dayStartMs: number;
+  monthStartMs: number;
+  /** the records dated from today on (only with `split`; the whole store otherwise) */
+  day: RecordSource;
+  /** the records dated from the 1st of this month on, when the store keeps their list; else
+   * the whole store. Every pass over it names its own dates. */
+  month: RecordSource;
+}
+
+/** The filter of one snapshot build, as predicates and as the values they were made from. */
+interface Scope {
+  keep: (r: UsageRecord) => boolean;
+  projectOf: (r: UsageRecord) => string;
+  byProject: (r: UsageRecord) => boolean;
+  byTool: (r: UsageRecord) => boolean;
+  project: string | undefined;
+  tool: string | undefined;
+  source: Source | undefined;
+  /** changes whenever a folder's project label does (`projectOf` reads them) */
+  labels: number;
+}
+
+/** Whether two maps hold the same keys with the same values. */
+function sameEntries<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [k, v] of a) if (!b.has(k) || b.get(k) !== v) return false;
+  return true;
 }
 
 /** One enabled source: its reader and what its last discovery found. */
@@ -176,12 +224,27 @@ export class UsageMonitor {
   private queued: Promise<void> | undefined;
   private wantFull = false;
 
+  /** false: every snapshot aggregates the whole store again (MonitorOptions.fullRebuild) */
+  private readonly incremental: boolean;
+  /** results kept from the last snapshot, by name: what each was computed from, and the result (see `memo`) */
+  private readonly kept = new Map<string, { deps: readonly unknown[]; value: unknown }>();
+  /** the last prior-month comparison of the current month and the span of `toMs` it holds for (see `priorSoFar`) */
+  private priorKept: { deps: readonly unknown[]; afterMs: number; untilMs: number; value: { totals: Totals | undefined; projects: GroupSummary[]; tools: ToolSummary[] } } | undefined;
+  private lastScan: CallScan | undefined;
+  /** folderId → project label at the last snapshot, and a number that changes when they do */
+  private projectsSeen = new Map<string, string>();
+  private labelsVersion = 0;
+  /** grows whenever a file is added or forgotten, or a file's label or title changes: what the
+   * snapshot derives from `files` alone (sources, labels, titles) is kept until then */
+  private shape = 0;
+
   constructor(o: MonitorOptions) {
     this.rootSource = o.rootSource;
     this.now = o.now ?? (() => new Date());
     this.log = o.log;
     this.onSnapshot = o.onSnapshot;
     this.historyMonths = clampHistory(o.historyMonths ?? 1);
+    this.incremental = o.fullRebuild !== true;
     const readProjects = o.readProjects === true;
     const readTotals = o.readTotals === true;
     const readers: SourceReader[] = o.readers ?? [
@@ -272,7 +335,9 @@ export class UsageMonitor {
     try {
       const nowMs = this.now().getTime();
       const dayStartMs = localDayStart(new Date(nowMs));
-      // A full refresh (a command, a settings change) always rebuilds the snapshot.
+      // A full refresh (a command, a settings change) always rebuilds the snapshot, every
+      // figure from the records: nothing kept from earlier snapshots is used.
+      if (full) this.forget();
       let changed = full || this.dirty || dayStartMs !== this.lastDayStartMs;
       // The current month's prior-month comparison runs up to "now": rebuild it at least every minute.
       if (this.priorFollowsClock && Math.abs(nowMs - this.lastBuildMs) >= PRIOR_REFRESH_MS) changed = true;
@@ -481,6 +546,7 @@ export class UsageMonitor {
     for (const [path, f] of [...this.files]) {
       if (f.source !== reader.source || keep.has(path)) continue;
       this.files.delete(path);
+      this.shape++;
       gone.add(path);
     }
     this.store.resetFiles(gone);
@@ -501,6 +567,7 @@ export class UsageMonitor {
         if (!rs.refused.has(path)) this.log.error("discover", "PATH_REFUSED");
         continue;
       }
+      this.shape++;
       this.files.set(path, {
         source: reader.source,
         sessionId: c.sessionId,
@@ -535,6 +602,7 @@ export class UsageMonitor {
     if (r.error === "ENOENT") {
       // Its records go too, so a recreated log is not counted on top of them (v0.7).
       this.files.delete(path);
+      this.shape++;
       this.store.resetFile(path);
       return { added: 0, changed: true };
     }
@@ -567,18 +635,21 @@ export class UsageMonitor {
       f.hasTotals = false;
       delete f.label;
       delete f.title;
+      this.shape++;
       f.activity = f.usage = f.candidates = f.windowActivity = f.windowUsage = 0;
       f.primed = false;
     }
     const inWindow = f.primed;
     if (r.label !== undefined && r.label !== f.label) {
       f.label = r.label;
+      this.shape++;
       this.dirty = true;
     }
     // A title is reported only when it changes; null clears it.
     if (r.title !== undefined && (r.title ?? undefined) !== f.title) {
       if (r.title === null) delete f.title;
       else f.title = r.title;
+      this.shape++;
       this.dirty = true;
     }
     let added = 0;
@@ -605,12 +676,12 @@ export class UsageMonitor {
   }
 
   /** Health per enabled source (D49) and the global health over their sums. */
-  private health(isToday: (ms: number) => boolean, live: Map<string, boolean>): Health {
+  private health(isToday: (ms: number) => boolean, live: Map<string, boolean>, day: RecordSource): Health {
     const fromTotals = this.store.sessionTotalSessions();
     // Records dated today, per source and per (source, folder), for the no-data and silent-live rules.
     const todayBySource = new Set<Source>();
     const todayFolders = new Map<Source, Set<string>>();
-    this.store.each((r) => {
+    day.each((r) => {
       if (!isToday(r.timestampMs)) return;
       todayBySource.add(r.source);
       let s = todayFolders.get(r.source);
@@ -727,80 +798,155 @@ export class UsageMonitor {
     };
   }
 
-  private snapshot(nowMs: number, dayStartMs: number): Snapshot {
-    const isToday = (ms: number) => ms >= dayStartMs;
-    const today = this.store.totals((r) => isToday(r.timestampMs));
-    // Unfiltered, like Today: the last 7 local days (open-ended) and the 7 before them.
-    const last7Start = localDaysBefore(new Date(nowMs), 6);
-    const prior7Start = localDaysBefore(new Date(nowMs), 13);
-    const last7 = this.store.totals((r) => r.timestampMs >= last7Start);
-    const prior7 = this.store.totals((r) => r.timestampMs >= prior7Start && r.timestampMs < last7Start);
-    const latest = this.store.latest();
+  /**
+   * A result kept from one snapshot to the next: `compute` runs again only when one of `deps`
+   * differs from last time (a store version for the dates the computation reads, and whatever
+   * else it depends on: its date range, the filter, the project labels). Every computation
+   * here is a function of exactly those, so a kept result is the one a fresh run would give.
+   */
+  private memo<T>(b: Build, name: string, deps: readonly unknown[], compute: () => T): T {
+    if (!b.reuse) return compute();
+    const hit = this.kept.get(name);
+    if (hit !== undefined && hit.deps.length === deps.length && deps.every((d, i) => Object.is(d, hit.deps[i]))) return hit.value as T;
+    const value = compute();
+    this.kept.set(name, { deps, value });
+    return value;
+  }
 
-    // Every candidate of every source, by folder: liveness, newest write, source.
-    const folders = new Map<string, { source: Source; live: boolean; mtimeMs: number }>();
-    const live = new Map<string, boolean>();
-    for (const rs of this.readers) {
-      for (const c of rs.candidates.values()) {
-        const prev = folders.get(c.folderId);
-        folders.set(c.folderId, prev === undefined ? { source: c.source, live: c.live, mtimeMs: c.mtimeMs } : { source: prev.source, live: prev.live || c.live, mtimeMs: Math.max(prev.mtimeMs, c.mtimeMs) });
-        if (c.live) live.set(`${c.source}|${c.folderId}`, true);
+  /** Drops every kept result: the next snapshot computes each figure from the records. */
+  private forget(): void {
+    this.kept.clear();
+    this.priorKept = undefined;
+    this.lastScan = undefined;
+  }
+
+  private snapshot(nowMs: number, dayStartMs: number): Snapshot {
+    const nowDate = new Date(nowMs);
+    const isToday = (ms: number) => ms >= dayStartMs;
+    // Unfiltered, like Today: the last 7 local days (open-ended) and the 7 before them.
+    const last7Start = localDaysBefore(nowDate, 6);
+    const prior7Start = localDaysBefore(nowDate, 13);
+    const monthStart = localMonthStart(nowDate);
+    const reading = this.reading();
+    // While the first read is under way records of every date keep arriving: nothing is kept
+    // until it is done, and each progress snapshot reads the whole store as before.
+    const reuse = this.incremental && reading === undefined;
+    if (reuse) this.store.setCuts([prior7Start, last7Start, monthStart, dayStartMs]);
+    const split = reuse && this.store.keeps(dayStartMs);
+    const b: Build = {
+      reuse,
+      split,
+      dayStartMs,
+      monthStartMs: monthStart,
+      day: split ? this.store.from(dayStartMs) : this.store,
+      month: reuse && this.store.keeps(monthStart) ? this.store.from(monthStart) : this.store,
+    };
+    const v = (fromMs?: number, toMs?: number) => this.store.versionOf(fromMs, toMs);
+
+    const today = this.since(b, "today", dayStartMs, undefined, []);
+    const last7 = this.since(b, "last7", last7Start, undefined, []);
+    const prior7 = this.memo(b, "prior7", [v(prior7Start, last7Start), prior7Start, last7Start], () =>
+      this.store.totals((r) => r.timestampMs >= prior7Start && r.timestampMs < last7Start),
+    );
+    const latest = this.latest(b);
+
+    // Every candidate of every source, by folder: liveness, newest write, source. A discovery
+    // replaces a reader's candidates; until one does, these stand.
+    const { folders, live } = this.memo(
+      b,
+      "folders",
+      this.readers.map((rs) => rs.candidates),
+      () => {
+        const folders = new Map<string, { source: Source; live: boolean; mtimeMs: number }>();
+        const live = new Map<string, boolean>();
+        for (const rs of this.readers) {
+          for (const c of rs.candidates.values()) {
+            const prev = folders.get(c.folderId);
+            folders.set(c.folderId, prev === undefined ? { source: c.source, live: c.live, mtimeMs: c.mtimeMs } : { source: prev.source, live: prev.live || c.live, mtimeMs: Math.max(prev.mtimeMs, c.mtimeMs) });
+            if (c.live) live.set(`${c.source}|${c.folderId}`, true);
+          }
+        }
+        return { folders, live };
+      },
+    );
+    // What the files say of each folder: its source, its project label, its title (`shape`
+    // grows when any of that changes).
+    const named = this.memo(b, "named", [this.shape, folders], () => {
+      const sourceOf = new Map<string, Source>();
+      for (const f of this.files.values()) if (!sourceOf.has(f.folderId)) sourceOf.set(f.folderId, f.source);
+      for (const [id, c] of folders) if (!sourceOf.has(id)) sourceOf.set(id, c.source);
+      // Grouping and the project filter are keyed by the project folder name only (D44).
+      const projects = new Map<string, string>();
+      /** the labelled files with a title, in the files' order */
+      const titled: { folderId: string; label: string; title: string }[] = [];
+      // Display label of a session row: its folder's title, else its project label.
+      const folderTitles = new Map<string, string>();
+      for (const f of this.files.values()) {
+        if (f.title !== undefined) folderTitles.set(f.folderId, f.title);
+        if (f.label === undefined) continue;
+        if (!projects.has(f.folderId)) projects.set(f.folderId, f.label);
+        if (f.title !== undefined) titled.push({ folderId: f.folderId, label: f.label, title: f.title });
       }
-    }
-    const sourceOf = new Map<string, Source>();
-    for (const f of this.files.values()) if (!sourceOf.has(f.folderId)) sourceOf.set(f.folderId, f.source);
-    for (const [id, c] of folders) if (!sourceOf.has(id)) sourceOf.set(id, c.source);
+      return { sourceOf, projects, titled, folderTitles };
+    });
     // A record whose folder is neither a file's nor a candidate's (its session id is no file's)
     // shows its own source: one pass, only when there is such a folder.
+    let sourceOf = named.sourceOf;
     const orphans = new Set<string>();
     for (const id of latest.keys()) if (!sourceOf.has(id)) orphans.add(id);
     if (orphans.size > 0) {
-      this.store.each((r) => {
-        if (orphans.has(r.folderId) && !sourceOf.has(r.folderId)) sourceOf.set(r.folderId, r.source);
+      const found = this.memo(b, "orphans", [v(), [...orphans].sort().join("\0")], () => {
+        const out = new Map<string, Source>();
+        this.store.each((r) => {
+          if (orphans.has(r.folderId) && !out.has(r.folderId)) out.set(r.folderId, r.source);
+        });
+        return out;
       });
+      sourceOf = new Map(sourceOf);
+      for (const [id, s] of found) sourceOf.set(id, s);
     }
 
-    const health = this.health(isToday, live);
-    const reading = this.reading();
+    const health = this.health(isToday, live, b.day);
     if (reading !== undefined) health.reading = reading;
 
-    const monthStart = localMonthStart(new Date(nowMs));
-    const inMonth = [...latest].filter(([, ms]) => ms >= monthStart).map(([id]) => id);
-    // Older logs in the history window are read for totals but are not "this month's" sessions.
-    const recent = [...folders].filter(([, c]) => c.mtimeMs >= monthStart).map(([id]) => id);
-    const ids = new Set<string>([...recent, ...inMonth]);
-    const sessions = [...ids]
-      .map((folderId) => {
-        const lastMs = latest.get(folderId);
-        const isLiveNow = folders.get(folderId)?.live === true;
-        const source = sourceOf.get(folderId);
-        return {
-          folderId,
-          ...(lastMs !== undefined && { lastMs }),
-          live: isLiveNow,
-          ...(source !== undefined && { source }),
-        };
-      })
-      .sort(
-        (a, b) =>
-          (b.lastMs ?? -Infinity) - (a.lastMs ?? -Infinity) ||
-          a.folderId.localeCompare(b.folderId),
-      );
+    const sessions = this.memo(b, "sessions.list", [latest, folders, sourceOf, monthStart], () => {
+      const inMonth = [...latest].filter(([, ms]) => ms >= monthStart).map(([id]) => id);
+      // Older logs in the history window are read for totals but are not "this month's" sessions.
+      const recent = [...folders].filter(([, c]) => c.mtimeMs >= monthStart).map(([id]) => id);
+      const ids = new Set<string>([...recent, ...inMonth]);
+      return [...ids]
+        .map((folderId) => {
+          const lastMs = latest.get(folderId);
+          const isLiveNow = folders.get(folderId)?.live === true;
+          const source = sourceOf.get(folderId);
+          return {
+            folderId,
+            ...(lastMs !== undefined && { lastMs }),
+            live: isLiveNow,
+            ...(source !== undefined && { source }),
+          };
+        })
+        .sort(
+          (a, b) =>
+            (b.lastMs ?? -Infinity) - (a.lastMs ?? -Infinity) ||
+            a.folderId.localeCompare(b.folderId),
+        );
+    });
 
-    const nowDate = new Date(nowMs);
     const starts = monthStarts(nowDate, this.historyMonths);
-    // Grouping and the project filter are keyed by the project folder name only (D44).
     // A title (workspace.yaml for ID-named folders, Copilot's `owner/repo`) is display-only:
     // the title of the most recently active titled session in that folder.
-    const projects = new Map<string, string>();
+    const { projects, folderTitles } = named;
     const titles = new Map<string, { title: string; ms: number }>();
-    for (const f of this.files.values()) {
-      if (f.label === undefined) continue;
-      if (!projects.has(f.folderId)) projects.set(f.folderId, f.label);
-      if (f.title === undefined) continue;
-      const ms = latest.get(f.folderId) ?? Number.NEGATIVE_INFINITY;
-      const t = titles.get(f.label);
-      if (t === undefined || ms > t.ms) titles.set(f.label, { title: f.title, ms });
+    for (const x of named.titled) {
+      const ms = latest.get(x.folderId) ?? Number.NEGATIVE_INFINITY;
+      const t = titles.get(x.label);
+      if (t === undefined || ms > t.ms) titles.set(x.label, { title: x.title, ms });
+    }
+    // Which project each folder belongs to is part of what the kept results were computed from.
+    if (projects !== this.projectsSeen) {
+      if (!sameEntries(projects, this.projectsSeen)) this.labelsVersion++;
+      this.projectsSeen = projects;
     }
     const projectOf = (r: UsageRecord) => projects.get(r.folderId) ?? NO_PROJECT;
     const { project, tool, source } = this.filter;
@@ -809,8 +955,15 @@ export class UsageMonitor {
     const byProject = (r: UsageRecord) => (project === undefined || projectOf(r) === project) && bySource(r);
     const byTool = (r: UsageRecord) => (tool === undefined || (r.tools?.[tool] ?? 0) > 0) && bySource(r);
     const keep = (r: UsageRecord) => byProject(r) && byTool(r);
-    const history = byMonth(this.store, starts, keep);
-    const month = this.monthView(nowDate, starts, keep, projectOf, byProject, byTool);
+    const f: Scope = { keep, projectOf, byProject, byTool, project, tool, source, labels: this.labelsVersion };
+    const all = [project, tool, source, f.labels] as const;
+
+    const current = starts.at(-1)!;
+    // The current month under the filter: the newest history bucket, and the month view's own
+    // total while the current month is viewed (both total the same records).
+    const currentTotals = () => this.since(b, "month.current", current, keep, all);
+    const history = this.history(b, starts, f, currentTotals);
+    const month = this.monthView(b, nowDate, starts, f, currentTotals);
     // The month before the viewed one, when it is inside the window (A2): a past month
     // reuses its history bucket; the current month is compared up to the same point.
     const vi = starts.indexOf(month.monthStartMs);
@@ -822,19 +975,22 @@ export class UsageMonitor {
         const lastDay = new Date(p.getFullYear(), p.getMonth() + 1, 0).getDate();
         const same = new Date(p.getFullYear(), p.getMonth(), Math.min(nowDate.getDate(), lastDay), nowDate.getHours(), nowDate.getMinutes(), nowDate.getSeconds(), nowDate.getMilliseconds()).getTime();
         const toMs = nowDate.getDate() > lastDay ? month.monthStartMs : Math.min(same, month.monthStartMs);
-        const totals = this.store.totals((r) => r.timestampMs >= priorStart && r.timestampMs < toMs && keep(r));
-        month.prior = { monthStartMs: priorStart, toMs, ...(totals !== undefined && { totals }) };
+        const { totals, projects: priorProjects, tools } = this.priorSoFar(b, priorStart, toMs, month.monthStartMs, f);
+        month.prior = { monthStartMs: priorStart, toMs, ...(totals !== undefined && { totals }), projects: priorProjects, tools };
       } else {
         const totals = history[vi - 1]?.totals;
-        month.prior = { monthStartMs: priorStart, toMs: month.monthStartMs, ...(totals !== undefined && { totals }) };
+        const end = month.monthStartMs;
+        // v0.6 (2.1): the same period per project and per tool, under the tables' own filter
+        // rules (projects ignore the project filter, tools the tool filter; D26).
+        const tables = this.memo(b, "prior.tables", [v(priorStart, end), priorStart, end, ...all], () => ({
+          projects: projectSummaries(this.store, priorStart, end, projectOf, byTool),
+          tools: toolSummaries(this.store, priorStart, end, byProject),
+        }));
+        month.prior = { monthStartMs: priorStart, toMs: end, ...(totals !== undefined && { totals }), projects: tables.projects, tools: tables.tools };
       }
-      // v0.6 (2.1): the same period per project and per tool, under the tables' own filter
-      // rules (projects ignore the project filter, tools the tool filter; D26).
-      month.prior.projects = projectSummaries(this.store, priorStart, month.prior.toMs, projectOf, byTool);
-      month.prior.tools = toolSummaries(this.store, priorStart, month.prior.toMs, byProject);
     }
     // Unfiltered per-day figures over the window: heatmap, Yesterday, 30-day bars (A2).
-    const activity = dailyActivity(this.store, starts[0]!, dayStartMs);
+    const activity = this.activity(b, "activity", starts[0]!, undefined, undefined);
     const withTitle = (g: GroupSummary): GroupSummary => {
       const t = titles.get(g.name);
       return t === undefined ? g : { ...g, label: t.title };
@@ -843,50 +999,62 @@ export class UsageMonitor {
     // The current month with no filter (D31): the status bar and the side bar read these.
     // Without a filter they equal the newest history bucket and the current month's
     // project table (which ignores the project filter), so those passes are reused.
-    const current = starts.at(-1)!;
     const unfiltered = project === undefined && tool === undefined && source === undefined;
-    const thisMonth = unfiltered ? history.at(-1)?.totals : this.store.totals((r) => r.timestampMs >= current);
+    const thisMonth = unfiltered ? history.at(-1)?.totals : this.since(b, "thisMonth", current, undefined, []);
     const thisMonthProjects =
-      month.isCurrent && tool === undefined && source === undefined ? month.projects : projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf).map(withTitle);
-    // Unfiltered per-project figures for today and the last 7 days, one pass (A1 side bar).
-    const recentP = recentProjects(this.store, last7Start, dayStartMs, projectOf);
+      month.isCurrent && tool === undefined && source === undefined ? month.projects : this.projectsSince(b, "thisMonth.projects", current, projectOf, undefined, [f.labels]).map(withTitle);
+    // Unfiltered per-project figures for today and the last 7 days (A1 side bar): one pass,
+    // or today's records alone on top of the kept sums of the six days before.
+    const recentP = b.split
+      ? {
+          today: this.memo(b, "today.projects", [v(dayStartMs), last7Start, dayStartMs, f.labels], () => recentProjects(b.day, last7Start, dayStartMs, projectOf).today),
+          last7: this.projectsSince(b, "last7.projects", last7Start, projectOf, undefined, [f.labels], true),
+        }
+      : this.memo(b, "recent.projects", [v(last7Start), last7Start, dayStartMs, f.labels], () => recentProjects(this.store, last7Start, dayStartMs, projectOf));
     const todayProjects = recentP.today.map(withTitle);
     const last7Projects = recentP.last7.map(withTitle);
-    // Display label of a session row: its folder's title, else its project label.
-    const folderTitles = new Map<string, string>();
-    for (const f of this.files.values()) if (f.title !== undefined) folderTitles.set(f.folderId, f.title);
     const labelOf = (folderId: string | undefined) => (folderId === undefined ? undefined : (folderTitles.get(folderId) ?? projects.get(folderId)));
-    month.sessions = month.sessions.map((x) => {
+    // The rows, the ledger and the insights may be kept from an earlier snapshot: a label goes on a copy.
+    const rows = month.sessions;
+    month.sessions = rows.map((x) => {
       const label = labelOf(x.folderId);
       return label === undefined ? x : { ...x, label };
     });
     if (month.detail) {
       const label = labelOf(month.sessions.find((x) => x.sessionId === month.detail!.sessionId)?.folderId ?? month.detail.sessionId);
-      if (label !== undefined) month.detail.label = label;
+      if (label !== undefined) month.detail = { ...month.detail, label };
     }
-    for (const i of month.insights?.items ?? []) {
-      if (i.id !== "context-growth") continue;
-      i.top = i.top.map((t) => {
-        const label = labelOf(month.sessions.find((x) => x.sessionId === t.sessionId)?.folderId ?? t.sessionId);
-        return label === undefined ? t : { ...t, label };
-      });
+    if (month.insights?.items.some((i) => i.id === "context-growth")) {
+      month.insights = {
+        ...month.insights,
+        items: month.insights.items.map((i) => {
+          if (i.id !== "context-growth") return i;
+          const top = i.top.map((t) => {
+            const label = labelOf(month.sessions.find((x) => x.sessionId === t.sessionId)?.folderId ?? t.sessionId);
+            return label === undefined ? t : { ...t, label };
+          });
+          return { ...i, top };
+        }),
+      };
     }
     const filter = unfiltered ? undefined : { ...this.filter };
     // v0.11.1: the panel's Today, Last 7 days, daily activity and current session follow the
     // source filter (only). Built only while one is set; the status bar and side bar keep the above.
     let sourceScope: SourceScope | undefined;
     if (source !== undefined) {
-      const sTotals = (from: number, to = Number.POSITIVE_INFINITY) => this.store.totals((r) => r.source === source && r.timestampMs >= from && r.timestampMs < to);
-      const sToday = sTotals(dayStartMs);
-      const sLast7 = sTotals(last7Start);
-      const sPrior7 = sTotals(prior7Start, last7Start);
-      const sCurrent = this.current(latest, dayStartMs, folders, sourceOf, source).current;
+      const ofSource = (r: UsageRecord) => r.source === source;
+      const sToday = this.since(b, "scope.today", dayStartMs, ofSource, [source]);
+      const sLast7 = this.since(b, "scope.last7", last7Start, ofSource, [source]);
+      const sPrior7 = this.memo(b, "scope.prior7", [v(prior7Start, last7Start), prior7Start, last7Start, source], () =>
+        this.store.totals((r) => r.source === source && r.timestampMs >= prior7Start && r.timestampMs < last7Start),
+      );
+      const sCurrent = this.current(b, latest, folders, sourceOf, source).current;
       sourceScope = {
         source,
         ...(sToday !== undefined && { today: sToday }),
         ...(sLast7 !== undefined && { last7: sLast7 }),
         ...(sPrior7 !== undefined && { prior7: sPrior7 }),
-        activity: dailyActivity(this.store, starts[0]!, dayStartMs, (r) => r.source === source),
+        activity: this.activity(b, "scope.activity", starts[0]!, (r) => r.source === source, source),
         ...(sCurrent !== undefined && { current: sCurrent }),
       };
     }
@@ -897,7 +1065,7 @@ export class UsageMonitor {
       generatedAtMs: nowMs,
       dayStartMs,
       ...(today !== undefined && { today }),
-      ...this.current(latest, dayStartMs, folders, sourceOf),
+      ...this.current(b, latest, folders, sourceOf),
       sessions,
       health,
       month,
@@ -914,28 +1082,178 @@ export class UsageMonitor {
     };
   }
 
-  /** The viewed month: the selected one if it is a past month in the window, else this month. */
-  private monthView(
-    nowDate: Date,
-    starts: number[],
-    keep: (r: UsageRecord) => boolean,
+  /**
+   * Totals of the records dated from `fromMs` on that pass `keep` (every one when undefined;
+   * `deps` names what `keep` depends on). They are sums and counts, so when results are kept
+   * the days before today are added once and kept, and today's records are added on top.
+   */
+  private since(b: Build, name: string, fromMs: number, keep: ((r: UsageRecord) => boolean) | undefined, deps: readonly unknown[]): Totals | undefined {
+    const day = b.dayStartMs;
+    const test = (r: UsageRecord) => r.timestampMs >= fromMs && (keep === undefined || keep(r));
+    if (!b.split) return this.memo(b, name, [this.store.versionOf(fromMs), fromMs, ...deps], () => this.store.totals(test));
+    const ended = this.memo(b, `${name}.ended`, [this.store.versionOf(fromMs, day), fromMs, day, ...deps], () => (fromMs < day ? this.store.totals((r) => r.timestampMs < day && test(r)) : undefined));
+    return this.memo(b, name, [ended, this.store.versionOf(day), fromMs, day, ...deps], () => b.day.totals(test, ended));
+  }
+
+  /** Per-project totals of the records dated from `fromMs` on that pass `keep`, costliest first; kept like `since`. */
+  private projectsSince(
+    b: Build,
+    name: string,
+    fromMs: number,
     projectOf: (r: UsageRecord) => string,
-    byProject: (r: UsageRecord) => boolean,
-    byTool: (r: UsageRecord) => boolean,
-  ): MonthView {
+    keep: ((r: UsageRecord) => boolean) | undefined,
+    deps: readonly unknown[],
+    sessionTotals = false,
+  ): GroupSummary[] {
+    const day = b.dayStartMs;
+    const open = Number.POSITIVE_INFINITY;
+    if (!b.split) return this.memo(b, name, [this.store.versionOf(fromMs), fromMs, ...deps], () => projectSummaries(this.store, fromMs, open, projectOf, keep));
+    const ended = this.memo(b, `${name}.ended`, [this.store.versionOf(fromMs, day), fromMs, day, ...deps], () => projectGroups(this.store, fromMs, day, projectOf, keep, { sessionTotals }));
+    return this.memo(b, name, [ended, this.store.versionOf(day), fromMs, day, ...deps], () => groupSummaries(projectGroups(b.day, Math.max(fromMs, day), open, projectOf, keep, { seed: ended, sessionTotals })));
+  }
+
+  /** Per-tool totals of the records dated from `fromMs` on that pass `keep`, costliest first; kept like `since`. */
+  private toolsSince(b: Build, name: string, fromMs: number, keep: (r: UsageRecord) => boolean, deps: readonly unknown[]): ToolSummary[] {
+    const day = b.dayStartMs;
+    const open = Number.POSITIVE_INFINITY;
+    if (!b.split) return this.memo(b, name, [this.store.versionOf(fromMs), fromMs, ...deps], () => toolSummaries(this.store, fromMs, open, keep));
+    const ended = this.memo(b, `${name}.ended`, [this.store.versionOf(fromMs, day), fromMs, day, ...deps], () => toolGroups(this.store, fromMs, day, keep));
+    return this.memo(b, name, [ended, this.store.versionOf(day), fromMs, day, ...deps], () => toolRows(toolGroups(b.day, Math.max(fromMs, day), open, keep, ended)));
+  }
+
+  /**
+   * folderId → its newest record's time. One pass over every record gives it; when results
+   * are kept, the days before today are, and only today's records are read again. The two
+   * hold the same times, but their folders may be listed in another order than one pass
+   * lists them, so a caller that depends on that order asks the store itself (see `current`).
+   */
+  private latest(b: Build): Map<string, number> {
+    const day = b.dayStartMs;
+    return this.memo(b, "latest", [this.store.versionOf(), b.split], () => {
+      if (!b.split) return this.store.latest();
+      const before = this.memo(b, "latest.before", [this.store.versionOf(Number.NEGATIVE_INFINITY, day), day], () => this.store.latest((r) => r.timestampMs < day));
+      const out = new Map(before);
+      for (const [id, ms] of b.day.latest()) {
+        const prev = out.get(id);
+        if (prev === undefined || ms > prev) out.set(id, ms);
+      }
+      return out;
+    });
+  }
+
+  /** Every session id and folder id a record dated before `cutMs` (today's start or this month's) carries. */
+  private namedBefore(b: Build, cutMs: number): Set<string> {
+    return this.memo(b, cutMs === b.dayStartMs ? "named.day" : "named.month", [this.store.versionOf(Number.NEGATIVE_INFINITY, cutMs), cutMs], () => {
+      const out = new Set<string>();
+      this.store.each((r) => {
+        if (r.timestampMs >= cutMs) return;
+        out.add(r.sessionId);
+        out.add(r.folderId);
+      });
+      return out;
+    });
+  }
+
+  /**
+   * The prompt convention per model and each session's first call, over every call record.
+   * The calls before today are scanned once and kept; today's continue that scan, and when
+   * that cannot tell what one pass over them all would find (`extendScan`), one pass is made.
+   * A scan that finds what the last one found is the last one, so whatever was computed from
+   * it is still good.
+   */
+  private scan(b: Build): CallScan {
+    const day = b.dayStartMs;
+    const calls = (r: UsageRecord) => r.kind === "call";
+    return this.memo(b, "scan", [this.store.versionOf(), b.split], () => {
+      const every = () => scanCalls(this.store.records(calls));
+      const before = b.split ? this.memo(b, "scan.before", [this.store.versionOf(Number.NEGATIVE_INFINITY, day), day], () => scanCalls(this.store.records((r) => calls(r) && r.timestampMs < day))) : undefined;
+      const next = before === undefined ? every() : (extendScan(before, b.day.records(calls)) ?? every());
+      const last = this.lastScan;
+      if (last !== undefined && sameEntries(last.conventions, next.conventions) && last.firsts.size === next.firsts.size && [...next.firsts].every((k) => last.firsts.has(k))) return last;
+      return (this.lastScan = { conventions: next.conventions, firsts: next.firsts });
+    });
+  }
+
+  /** Totals per month of the window. A month that has ended is kept until one of its records
+   * changes; the current month's bucket is `currentTotals`. */
+  private history(b: Build, starts: number[], f: Scope, currentTotals: () => Totals | undefined): MonthSummary[] {
+    if (!b.reuse) return byMonth(this.store, starts, f.keep);
+    const current = starts.at(-1)!;
+    const ended = this.memo(b, "history.ended", [this.store.versionOf(Number.NEGATIVE_INFINITY, current), starts.join(), f.project, f.tool, f.source, f.labels], () => byMonth(this.store, starts, f.keep).slice(0, -1));
+    const totals = currentTotals();
+    return [...ended, totals === undefined ? { monthStartMs: current } : { monthStartMs: current, totals }];
+  }
+
+  /** Days 1..today of the current month. A day's totals come from that day's records alone,
+   * so the days before today are kept and only today's bucket is read again. */
+  private days(b: Build, monthStartMs: number, today: number, f: Scope): DayTotals[] {
+    const deps = [monthStartMs, today, f.project, f.tool, f.source, f.labels];
+    if (!b.split) return this.memo(b, "days", [this.store.versionOf(monthStartMs), ...deps], () => daysOfMonth(this.store, monthStartMs, today, true, f.keep));
+    const ended = this.memo(b, "days.ended", [this.store.versionOf(monthStartMs, b.dayStartMs), ...deps], () => (today > 1 ? daysOfMonth(this.store, monthStartMs, today - 1, false, f.keep) : []));
+    const last = this.memo(b, "days.today", [this.store.versionOf(b.dayStartMs), ...deps], () => daysOfMonth(b.day, monthStartMs, today, true, f.keep).at(-1)!);
+    return [...ended, last];
+  }
+
+  /** Per-day figures from `fromMs` through today (`keep`, named by `keepKey`, narrows them).
+   * Each day's figures come from that day's records alone: the days before today are kept. */
+  private activity(b: Build, name: string, fromMs: number, keep: ((r: UsageRecord) => boolean) | undefined, keepKey: string | undefined): Activity {
+    const day = b.dayStartMs;
+    if (!b.split) return this.memo(b, name, [this.store.versionOf(), fromMs, day, keepKey], () => dailyActivity(this.store, fromMs, day, keep));
+    const before = this.memo(b, `${name}.before`, [this.store.versionOf(Number.NEGATIVE_INFINITY, day), fromMs, day, keepKey], () =>
+      dailyActivity(this.store, fromMs, day, (r) => r.timestampMs < day && (keep === undefined || keep(r))),
+    );
+    const today = this.memo(b, `${name}.today`, [this.store.versionOf(day), fromMs, day, keepKey], () => dailyActivity(b.day, fromMs, day, keep));
+    return this.memo(b, name, [before, today], () => ({ fromMs: before.fromMs, days: [...before.days, ...today.days] }));
+  }
+
+  /**
+   * The month before the current one up to the same point (`toMs`), under the filter: its
+   * totals and its project and tool tables. `toMs` follows the clock, but the figures change
+   * only when it passes a record: the kept ones stand while no record of that month is dated
+   * between the `toMs` they were computed for and this one, and none of its records changed.
+   */
+  private priorSoFar(b: Build, priorStart: number, toMs: number, monthStartMs: number, f: Scope): { totals: Totals | undefined; projects: GroupSummary[]; tools: ToolSummary[] } {
+    const deps = [this.store.versionOf(priorStart, monthStartMs), priorStart, monthStartMs, f.project, f.tool, f.source, f.labels];
+    const hit = this.priorKept;
+    if (b.reuse && hit !== undefined && hit.deps.every((d, i) => Object.is(d, deps[i])) && toMs > hit.afterMs && toMs <= hit.untilMs) return hit.value;
+    // The newest record time before `toMs` and the oldest from it on, among that month's records.
+    let afterMs = Number.NEGATIVE_INFINITY;
+    let untilMs = Number.POSITIVE_INFINITY;
+    const totals = this.store.totals((r) => {
+      const ts = r.timestampMs;
+      if (ts < priorStart || ts >= monthStartMs) return false;
+      if (ts >= toMs) {
+        if (ts < untilMs) untilMs = ts;
+        return false;
+      }
+      if (ts > afterMs) afterMs = ts;
+      return f.keep(r);
+    });
+    // v0.6 (2.1): the same period per project and per tool, under the tables' own filter
+    // rules (projects ignore the project filter, tools the tool filter; D26).
+    const value = { totals, projects: projectSummaries(this.store, priorStart, toMs, f.projectOf, f.byTool), tools: toolSummaries(this.store, priorStart, toMs, f.byProject) };
+    if (b.reuse) this.priorKept = { deps, afterMs, untilMs, value };
+    return value;
+  }
+
+  /** The viewed month: the selected one if it is a past month in the window, else this month. */
+  private monthView(b: Build, nowDate: Date, starts: number[], f: Scope, currentTotals: () => Totals | undefined): MonthView {
+    const { keep, projectOf, byProject, byTool } = f;
+    const v = (fromMs: number, toMs?: number) => this.store.versionOf(fromMs, toMs);
+    const all = [f.project, f.tool, f.source, f.labels] as const;
     const current = starts.at(-1)!;
     const sel = this.selectedMonth;
     const past = sel !== undefined && sel !== current && starts.includes(sel) ? sel : undefined;
     if (past === undefined) {
       const inCurrent = (r: UsageRecord) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r);
-      const totals = this.store.totals(inCurrent);
+      const totals = b.reuse ? currentTotals() : this.store.totals(inCurrent);
       return {
         monthStartMs: current,
         isCurrent: true,
-        days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
-        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, copilotNano(totals)),
-        projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
-        tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
+        days: this.days(b, current, nowDate.getDate(), f),
+        ...this.sessionsAndInsights(b, b.month, current, Number.POSITIVE_INFINITY, f, copilotNano(totals)),
+        projects: this.projectsSince(b, "month.projects", current, projectOf, byTool, [f.tool, f.source, f.labels]),
+        tools: this.toolsSince(b, "month.tools", current, byProject, [f.project, f.source, f.labels]),
         ...(totals !== undefined && { totals }),
       };
     }
@@ -943,64 +1261,92 @@ export class UsageMonitor {
     const end = new Date(first.getFullYear(), first.getMonth() + 1, 1).getTime();
     const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
     const inPast = (r: UsageRecord) => r.timestampMs >= past && r.timestampMs < end && keep(r);
-    const totals = this.store.totals(inPast);
+    const totals = this.memo(b, "month.past", [v(past, end), past, end, ...all], () => this.store.totals(inPast));
     return {
       monthStartMs: past,
       isCurrent: false,
-      days: daysOfMonth(this.store, past, lastDay, false, keep),
-      ...this.sessionsAndInsights(past, end, keep, byProject, copilotNano(totals)),
-      projects: projectSummaries(this.store, past, end, projectOf, byTool),
-      tools: toolSummaries(this.store, past, end, byProject),
+      days: this.memo(b, "month.past.days", [v(past, end), past, end, ...all], () => daysOfMonth(this.store, past, lastDay, false, keep)),
+      ...this.sessionsAndInsights(b, this.store, past, end, f, copilotNano(totals)),
+      projects: this.memo(b, "month.past.projects", [v(past, end), past, end, f.tool, f.source, f.labels], () => projectSummaries(this.store, past, end, projectOf, byTool)),
+      tools: this.memo(b, "month.past.tools", [v(past, end), past, end, f.project, f.source, f.labels], () => toolSummaries(this.store, past, end, byProject)),
       ...(totals !== undefined && { totals }),
     };
   }
 
-  /** Session rows (at most SESSION_ROWS), the session counts and the insights for [fromMs, toMs). */
+  /** Session rows (at most SESSION_ROWS), the session counts and the insights for [fromMs, toMs),
+   * read from `src` (the whole store, or its records from `fromMs` on). */
   private sessionsAndInsights(
+    b: Build,
+    src: RecordSource,
     fromMs: number,
     toMs: number,
-    keep: (r: UsageRecord) => boolean,
-    byProject: (r: UsageRecord) => boolean,
+    f: Scope,
     monthNanoAiu: number,
   ): Pick<MonthView, "sessions" | "sessionCount" | "sessionsBySource" | "totalsSessions" | "insights" | "cache" | "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> {
-    const calls = this.store.records((r) => r.kind === "call");
-    // The cache-read share uses the same per-model prompt convention as Insights (N4).
-    const conventions = promptConventions(calls);
-    const all: SessionSummary[] = sessionSummaries(this.store, fromMs, toMs, Number.POSITIVE_INFINITY, keep, conventions);
-    // Sessions per source over every session of the month, before the SESSION_ROWS cut.
-    const sessionsBySource = Object.create(null) as Partial<Record<Source, number>>;
-    for (const x of all) if (x.source !== undefined) sessionsBySource[x.source] = (sessionsBySource[x.source] ?? 0) + 1;
-    const inMonth = (r: UsageRecord) => r.timestampMs >= fromMs && r.timestampMs < toMs;
-    // The tools table ignores the tool filter, so its "no tool data" note counts totals by project only.
-    const totalsSessions = new Set(this.store.records((r) => r.kind === "sessionTotal" && inMonth(r) && byProject(r)).map((r) => r.sessionId)).size;
-    const monthCalls = calls.filter((r) => inMonth(r) && keep(r));
-    const insights = computeInsights({ sessions: all, monthRecords: monthCalls, allRecords: calls, monthNanoAiu });
-    // v0.6: prompts follow the project filter only (a tool filter would cut a prompt's chain).
-    const projectCalls = calls.filter((r) => inMonth(r) && byProject(r));
-    const prompts = promptStats(projectCalls);
-    const explain: Pick<MonthView, "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> = {
-      ...(projectCalls.length > 0 && { prompts }),
-      ...(monthCalls.length > 0 && { cacheCost: cacheStats(monthCalls, conventions), modelCache: modelCacheStats(monthCalls, conventions), toolOverhead: toolOverhead(monthCalls, conventions) }),
-    };
+    const { keep, byProject } = f;
     const sel = this.selectedSession;
-    if (sel !== undefined) {
-      // The ledger lists every call of the session in the viewed month (project filter only, like prompts).
-      const recs = this.store.records((r) => r.sessionId === sel && inMonth(r) && byProject(r));
-      explain.detail = sessionDetail(sel, recs, conventions);
-    }
-    // The cache-reuse ring (A2) sums every session of the month, not only the rows kept.
-    const prompt = { sum: 0, reported: 0, missing: 0 };
-    const cacheRead = { sum: 0, reported: 0, missing: 0 };
-    for (const x of all) {
-      for (const [into, from] of [[prompt, x.input], [cacheRead, x.cacheRead]] as const) {
-        if (!from) continue;
-        into.sum += from.sum;
-        into.reported += from.reported;
-        into.missing += from.missing;
+    // The prompt convention and each session's first call come from every call read, whatever the month.
+    const scan = b.reuse ? this.scan(b) : undefined;
+    return this.memo(b, "month.sessions", [this.store.versionOf(fromMs, toMs), fromMs, toMs, f.project, f.tool, f.source, f.labels, sel, scan, monthNanoAiu], () => {
+      const calls = src.records((r) => r.kind === "call");
+      // The cache-read share uses the same per-model prompt convention as Insights (N4).
+      const conventions = scan?.conventions ?? promptConventions(calls);
+      const all: SessionSummary[] = b.split && fromMs === b.monthStartMs && toMs === Number.POSITIVE_INFINITY ? this.sessionRows(b, f, conventions) : sessionSummaries(src, fromMs, toMs, Number.POSITIVE_INFINITY, keep, conventions);
+      // Sessions per source over every session of the month, before the SESSION_ROWS cut.
+      const sessionsBySource = Object.create(null) as Partial<Record<Source, number>>;
+      for (const x of all) if (x.source !== undefined) sessionsBySource[x.source] = (sessionsBySource[x.source] ?? 0) + 1;
+      const inMonth = (r: UsageRecord) => r.timestampMs >= fromMs && r.timestampMs < toMs;
+      // The tools table ignores the tool filter, so its "no tool data" note counts totals by project only.
+      const totalsSessions = new Set(src.records((r) => r.kind === "sessionTotal" && inMonth(r) && byProject(r)).map((r) => r.sessionId)).size;
+      const monthCalls = calls.filter((r) => inMonth(r) && keep(r));
+      const insights = computeInsights({ sessions: all, monthRecords: monthCalls, monthNanoAiu, ...(scan !== undefined ? { scan } : { allRecords: calls }) });
+      // v0.6: prompts follow the project filter only (a tool filter would cut a prompt's chain).
+      const projectCalls = calls.filter((r) => inMonth(r) && byProject(r));
+      const prompts = promptStats(projectCalls);
+      const explain: Pick<MonthView, "prompts" | "cacheCost" | "modelCache" | "toolOverhead" | "detail"> = {
+        ...(projectCalls.length > 0 && { prompts }),
+        ...(monthCalls.length > 0 && { cacheCost: cacheStats(monthCalls, conventions), modelCache: modelCacheStats(monthCalls, conventions), toolOverhead: toolOverhead(monthCalls, conventions) }),
+      };
+      if (sel !== undefined) {
+        // The ledger lists every call of the session in the viewed month (project filter only, like prompts).
+        const recs = src.records((r) => r.sessionId === sel && inMonth(r) && byProject(r));
+        explain.detail = sessionDetail(sel, recs, conventions);
       }
-    }
-    const cache = prompt.reported > 0 || cacheRead.reported > 0 ? { cache: { prompt, cacheRead } } : {};
-    return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, sessionsBySource, totalsSessions, insights, ...cache, ...explain };
+      // The cache-reuse ring (A2) sums every session of the month, not only the rows kept.
+      const prompt = { sum: 0, reported: 0, missing: 0 };
+      const cacheRead = { sum: 0, reported: 0, missing: 0 };
+      for (const x of all) {
+        for (const [into, from] of [[prompt, x.input], [cacheRead, x.cacheRead]] as const) {
+          if (!from) continue;
+          into.sum += from.sum;
+          into.reported += from.reported;
+          into.missing += from.missing;
+        }
+      }
+      const cache = prompt.reported > 0 || cacheRead.reported > 0 ? { cache: { prompt, cacheRead } } : {};
+      return { sessions: all.slice(0, SESSION_ROWS), sessionCount: all.length, sessionsBySource, totalsSessions, insights, ...cache, ...explain };
+    });
+  }
+
+  /**
+   * Every session of the current month under the filter, costliest first. A session's row
+   * comes from its own records alone, so the rows of the sessions with no record today are
+   * kept (from the records before today), and only the sessions with one are worked out
+   * again, each from all its records of the month in the store's order.
+   */
+  private sessionRows(b: Build, f: Scope, conventions: CallScan["conventions"]): SessionSummary[] {
+    const fromMs = b.monthStartMs;
+    const day = b.dayStartMs;
+    const open = Number.POSITIVE_INFINITY;
+    const ended = this.memo(b, "sessions.ended", [this.store.versionOf(fromMs, day), fromMs, day, f.project, f.tool, f.source, f.labels, conventions], () =>
+      sessionSummaries(this.store, fromMs, day, open, f.keep, conventions),
+    );
+    const today = new Set<string>();
+    b.day.each((r) => today.add(r.sessionId));
+    if (today.size === 0) return ended;
+    const theirs = b.month.records((r) => today.has(r.sessionId));
+    const rows = sessionSummaries({ records: (filter) => theirs.filter(filter) }, fromMs, open, open, f.keep, conventions);
+    return [...ended.filter((x) => !today.has(x.sessionId)), ...rows].sort(bySessionCost);
   }
 
   /**
@@ -1008,12 +1354,13 @@ export class UsageMonitor {
    * mtime-live session the same way; else the folder with the newest record today (D43).
    */
   private current(
+    b: Build,
     latest: Map<string, number>,
-    dayStartMs: number,
     folders: Map<string, { source: Source; live: boolean; mtimeMs: number }>,
     sourceOf: Map<string, Source>,
     only?: Source,
   ): Pick<Snapshot, "current"> {
+    const dayStartMs = b.dayStartMs;
     // With `only` (the panel's source scope, v0.11.1), every choice is limited to that source.
     const ofSource = (id: string) => only === undefined || (folders.get(id)?.source ?? sourceOf.get(id)) === only;
     let folderId = this.pinned !== undefined && ofSource(this.pinned) ? this.pinned : undefined;
@@ -1026,29 +1373,57 @@ export class UsageMonitor {
     };
     if (folderId === undefined) folderId = pick(true) ?? pick(false);
     if (folderId === undefined) {
-      let bestMs = -Infinity;
-      for (const [id, ms] of latest) {
-        if (ms >= dayStartMs && ms > bestMs && ofSource(id)) {
-          bestMs = ms;
-          folderId = id;
+      // The first folder with the newest time wins, in the order the times are listed.
+      const newest = (times: Map<string, number>): { id: string | undefined; tied: boolean } => {
+        let bestMs = -Infinity;
+        let id: string | undefined;
+        let tied = false;
+        for (const [k, ms] of times) {
+          if (ms < dayStartMs || ms < bestMs || !ofSource(k)) continue;
+          if (ms > bestMs) {
+            bestMs = ms;
+            id = k;
+            tied = false;
+          } else tied = true;
         }
-      }
+        return { id, tied };
+      };
+      let found = newest(latest);
+      // Two folders share the newest time: one pass over the store lists them in its own
+      // order (`latest` may not), so that pass decides.
+      if (found.tied && b.split) found = newest(this.store.latest());
+      folderId = found.id;
     }
     if (folderId === undefined) return {};
     const id = folderId;
     // The folder's own records count too: a resumed or forked session's calls can name another
     // session id than the folder they are written in (review #5).
     const mine = (r: UsageRecord) => r.sessionId === id || r.folderId === id;
-    const totals = this.store.totals(mine);
+    // Kept between snapshots: the session's records are read in one pass, and its totals, last
+    // prompt and (below) source come from that list in the same order.
+    const kept = b.reuse
+      ? this.memo(b, `current.${only ?? ""}`, [this.store.versionOf(), id], () => {
+          // A session no record before today (or before this month) names has all its records
+          // in today's (or this month's) list, in the order one pass over the store meets them.
+          const src = !b.split ? this.store : !this.namedBefore(b, b.dayStartMs).has(id) ? b.day : !this.namedBefore(b, b.monthStartMs).has(id) ? b.month : this.store;
+          const recs = src.records(mine);
+          return { totals: totalsOf(recs), last: lastPrompt(recs.filter((r) => r.kind === "call")), source: recs[0]?.source };
+        })
+      : undefined;
+    const totals = kept !== undefined ? kept.totals : this.store.totals(mine);
     const live = folders.get(id)?.live === true;
-    const last = lastPrompt(this.store.records((r) => r.kind === "call" && mine(r)));
+    const last = kept !== undefined ? kept.last : lastPrompt(this.store.records((r) => r.kind === "call" && mine(r)));
     // The candidate's source, else its files', else (a folder only records name) the records' own (fix wave F2).
     let source: Source | undefined = folders.get(id)?.source;
     if (source === undefined) for (const f of this.files.values()) if (f.folderId === id) source = f.source;
     if (source === undefined) source = sourceOf.get(id);
-    if (source === undefined) this.store.each((r) => {
-      if (source === undefined && (r.folderId === id || r.sessionId === id)) source = r.source;
-    });
+    if (source === undefined) {
+      if (kept !== undefined) source = kept.source;
+      else
+        this.store.each((r) => {
+          if (source === undefined && (r.folderId === id || r.sessionId === id)) source = r.source;
+        });
+    }
     return {
       current: {
         folderId: id,

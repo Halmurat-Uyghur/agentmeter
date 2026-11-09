@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## Unreleased
 
-Fixes from a Codex review of 0.11.2 and a follow-up review of the whole project.
+Fixes from a Codex review of 0.11.2 and a follow-up review of the whole project, and a cheaper way to pick up new log lines.
+
+### Changed
+
+- **A new line in a session log costs far less to pick up.** Every line a session wrote while it ran (a model call, or only a tool result) made the extension add up every stored record again: about 105 ms of CPU each time on a history of 90,000 calls. The figures for days and months that have ended are now kept until one of their records changes, and only today's records are read again: about 21 ms for a line that adds a call and under 5 ms for one that does not, on the same history. The figures shown are the same. **Refresh** and a change of day still work everything out from the records. While most of the stored calls are today's (a first day of use), a new call costs what it did before.
 
 ### Fixed
 
