@@ -689,8 +689,8 @@ describe("sources (D49)", () => {
   });
   it("cost view: detail lines add the sources note only when mixed", () => {
     const mixed = buildSidebarModel(snap({ last7: last7(), health: health({ sources: { copilot: sh(), "claude-code": sh() } }) }), COST);
-    expect(r(mixed, "week").title).toContain("USD (est.) covers Copilot only");
-    expect(r(buildSidebarModel(snap(), COST), "week").title).not.toContain("covers Copilot only");
+    expect(r(mixed, "week").title).toContain("USD (est.) for Claude Code and Codex is estimated");
+    expect(r(buildSidebarModel(snap(), COST), "week").title).not.toContain("for Claude Code and Codex is estimated");
   });
 });
 

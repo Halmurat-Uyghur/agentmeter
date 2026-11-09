@@ -3,7 +3,7 @@
 // inline SVG with a text alternative; no script, no URL. Unknown is "—", never 0.
 // Today, the heatmap and the bars read the unfiltered per-day activity; Month to
 // date and the ring follow the viewed month and its filter.
-import { type Change, changeAmount, costLabel, estWord, formatCount, formatRange, formatUsd, mixedSources, money, partialNote, RANGE_LABEL, rangeState, usd, weekCoverage } from "../format";
+import { type Change, changeAmount, costLabel, estWord, formatCount, formatRange, formatUsd, mixedSources, money, partialNote, RANGE_LABEL, rangeState, targetUsd, usd, weekCoverage } from "../format";
 import { heatLevel, localDaysBefore } from "../store";
 import type { DayStats, Metric, Snapshot, ViewOptions } from "../types";
 import { icon } from "./icons";
@@ -161,7 +161,7 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
   let heroCls = "";
   const heroNotes: (string | undefined)[] = [today ? partialNote(headlineMetric(today, view)) : undefined];
   if (view.dayTarget) {
-    const state = rangeState(today ? usd(today.nanoAiu) : undefined, view.dayTarget);
+    const state = rangeState(targetUsd(today), view.dayTarget);
     heroCls = ` st-${state}`;
     parts.push(`Daily target ${formatRange(view.dayTarget)}${mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`);
     heroNotes.unshift(RANGE_LABEL[state]);

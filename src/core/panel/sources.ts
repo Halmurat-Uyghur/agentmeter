@@ -44,8 +44,8 @@ export function renderSourcesCard(s: Snapshot, view: ViewOptions): string {
     const href = filterHref("source", on ? "" : x);
     const aria = on ? `${label}, filtered. Clear the source filter` : `${label}. Show only this source`;
     const tok = c ? withStar(formatCount(tokens(c)), partial) : DASH;
-    // Claude Code and Codex log no cost: their USD is "—", never 0 (D46).
-    const cost = c && x === "copilot" ? withStar(formatUsd(c.nanoAiu), partial) : DASH;
+    // Copilot's USD is logged; Claude Code's and Codex's is estimated from list prices (v0.10).
+    const cost = c ? withStar(formatUsd(c.nanoAiu), partial) : DASH;
     const calls = c ? callsCell(c.calls, c.callsMissing) : DASH;
     const td = (text: string, sum = false) => `<td class="num${sum ? " sum" : ""}${text === DASH ? " muted" : ""}">${val(text)}</td>`;
     return {

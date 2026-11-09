@@ -228,6 +228,10 @@ describe("nav and page structure", () => {
     expect(pkg.contributes.configuration.properties["copilotUsageMonitor.panelNavCollapsed"]).toMatchObject({ type: "boolean", default: false, scope: "application" });
   });
 
+  it("the scrollbar gutter is reserved on every section, so a short section does not shift sideways (v0.10)", () => {
+    expect(PANEL_CSS).toMatch(/html \{ scrollbar-gutter: stable; \}/);
+  });
+
   it("toolbar, banner and state note are chrome: on every section", () => {
     const s = snap({ health: health({ state: "no-dir" }), filter: { tool: "bash" } });
     for (const section of SECTIONS) {
