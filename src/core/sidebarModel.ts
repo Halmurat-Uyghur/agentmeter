@@ -25,8 +25,11 @@ import {
   multiSource,
   PRIOR_SHORT_NOTE,
   rangeLabel,
+  rangeWord,
   readingLine,
   RANGE_LABEL,
+  folderListNote,
+  unreadableParts,
   SESSION_TOTAL_SHORT,
   spoken,
   statusParts,
@@ -201,8 +204,7 @@ function noDirNotice(h: Health): string[] {
 
 /** A target marker's short text; "*" when the spend is a lower bound (review finding #3). */
 function markerText(st: TargetStatus): string {
-  const t = st.state === "over" ? "over" : st.state === "in" ? "in range" : st.state === "unknown" ? "not compared" : "under";
-  return st.partial ? t + "*" : t;
+  return rangeWord(st).toLowerCase();
 }
 
 function row(o: Omit<SidebarRow, "spoken" | "title"> & { title: string[]; said?: string }, cost: boolean): SidebarRow {
@@ -248,7 +250,9 @@ function filterLink(name: string, active: boolean): SidebarLink {
 }
 
 function firstReason(h: Health): string {
-  if (h.unreadableFiles > 0) return `${plural(h.unreadableFiles, "log")} could not be read`;
+  const u = unreadableParts(h);
+  if (u.folders > 0) return folderListNote(u.folders);
+  if (u.logs > 0) return `${plural(u.logs, "log")} could not be read`;
   if (h.malformed > 0) return `${plural(h.malformed, "malformed line")} skipped`;
   if (h.overlong > 0) return `${plural(h.overlong, "over-long line")} skipped`;
   return `${plural(h.shutdownOversize, "session-end line")} skipped`;

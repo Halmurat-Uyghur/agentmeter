@@ -127,7 +127,10 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
     calls: flagged.reduce((a, s) => a + s.calls, 0),
     sessions: flagged.length,
     top: flagged.slice(0, 3).map((s) => ({ sessionId: s.sessionId, ...(s.label !== undefined && { label: s.label }), growth: s.growth! })),
-    inputGrew: flagged.some(contextGrew),
+    // Per-session, not "any": one growing session must not speak for the others.
+    inputGrew: flagged.every(contextGrew),
+    inputGrewSessions: flagged.filter(contextGrew).length,
+    inputUnmeasuredSessions: flagged.filter((s) => s.inputGrowth === undefined).length,
   };
 }
 

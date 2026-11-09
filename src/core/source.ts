@@ -67,7 +67,9 @@ export interface SourceReader {
   readonly root: string;
   readonly rootSource: "setting" | "env" | "default";
   rootDirMtime(): Promise<number | undefined>;
-  discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult>;
+  /** `opts.full`: a user's full refresh; a reader that skips costly parts between periodic
+   * complete walks (Codex's old date folders) does the complete walk now. Others ignore it. */
+  discover(windowStartMs: number, dayStartMs: number, nowMs: number, opts?: { full?: boolean }): Promise<SourceDiscoverResult>;
   pathAllowed(path: string): boolean;
   open(path: string, c: SourceCandidate): FileReader;
 }

@@ -11,10 +11,13 @@ type Fake = typeof import("../fakes/vscode");
 const SECTION = "copilotUsageMonitor";
 let home: string;
 
-async function load(settings: Record<string, unknown> = {}) {
+const scoped = (settings: Record<string, unknown>) => Object.fromEntries(Object.entries(settings).map(([k, v]) => [`${SECTION}.${k}`, v]));
+
+async function load(settings: Record<string, unknown> = {}, workspace: Record<string, unknown> = {}) {
   vi.resetModules();
   const fake: Fake = await import("../fakes/vscode");
-  Object.assign(fake.state.global, { [`${SECTION}.copilotHome`]: home, [`${SECTION}.claudeCode`]: false, [`${SECTION}.codex`]: false }, ...Object.entries(settings).map(([k, v]) => ({ [`${SECTION}.${k}`]: v })));
+  Object.assign(fake.state.global, { [`${SECTION}.copilotHome`]: home, [`${SECTION}.claudeCode`]: false, [`${SECTION}.codex`]: false }, scoped(settings));
+  Object.assign(fake.state.workspace, scoped(workspace));
   const ext = await import("../../src/extension");
   const ctx = { subscriptions: [] as { dispose(): unknown }[], extensionMode: fake.ExtensionMode.Test };
   ext.activate(ctx as never);
@@ -215,5 +218,102 @@ describe("settings writes: unsaved choices stay effective", () => {
     await expect(p).resolves.toBeUndefined();
     expect(errors()).toHaveLength(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("settings writes: an outside edit during the retry wait wins (review fix A)", () => {
+  it("the user's hand edit is kept; the refused choice is not retried over it", async () => {
+    const { fake, cmd, testState, saved, deactivate } = await load();
+    const timers = vi.getTimerCount();
+    fake.state.updateReject = true;
+    const p = cmd("setUnit")("cost");
+    await settle();
+    expect(testState().view.unit).toBe("cost");
+    // settings.json becomes writable and the user sets the unit by hand while the retry waits
+    fake.state.updateReject = false;
+    fake.state.global[`${SECTION}.display`] = "tokens";
+    fake.fireConfigChange(`${SECTION}.display`);
+    expect(testState().view.unit).toBe("tokens");
+    expect(vi.getTimerCount()).toBe(timers); // the retry's timer is cleared
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(fake.state.updates).toEqual([]);
+    expect(saved("display")).toBe("tokens");
+    expect(testState().view.unit).toBe("tokens");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+
+  it("the change event of our own save is not taken for an outside edit", async () => {
+    const { fake, cmd, testState, saved, deactivate } = await load();
+    fake.state.updateReject = true;
+    const p = cmd("setStatusBar")("month");
+    await settle();
+    fake.state.updateReject = false;
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(fake.state.updates).toEqual([["statusBar", "month", fake.ConfigurationTarget.Global]]);
+    expect(saved("statusBar")).toBe("month");
+    expect(testState().view.statusBar).toBe("month");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+});
+
+describe("settings writes: the target alert uses the effective setting (review fix B)", () => {
+  it("a refused \"on\" is what the alert is checked with", async () => {
+    const { fake, cmd, deactivate } = await load();
+    const { TargetAlert } = await import("../../src/vscode/targetAlert");
+    const check = vi.spyOn(TargetAlert.prototype, "check");
+    fake.state.updateReject = true;
+    const p = cmd("setTargetAlert")("on");
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(fake.state.global[`${SECTION}.targetAlert`]).toBeUndefined();
+    expect(check).toHaveBeenCalled();
+    expect(check.mock.calls.at(-1)![2]).toBe(true);
+    check.mockRestore();
+    deactivate();
+  });
+});
+
+describe("settings writes: a saved value is redrawn from the settings (review fix H)", () => {
+  it("saving the value already stored (no change event) replaces a refused one in the view", async () => {
+    const { fake, cmd, testState, saved, deactivate } = await load({ weeklyTargetMax: 30 });
+    fake.state.quietWhenUnchanged = true;
+    fake.state.updateReject = true;
+    const p = cmd("setTarget")("week", "max", "40");
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(testState().view.weekTarget).toEqual({ max: 40 });
+    fake.state.updateReject = false;
+    await cmd("setTarget")("week", "max", "30");
+    expect(saved("weeklyTargetMax")).toBe(30);
+    expect(testState().view.weekTarget).toEqual({ max: 30 });
+    expect(testState().prefs.targets.weekMax).toBe(30);
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+
+  it("clearing the workspace target shows the user target underneath", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ monthlyTargetMax: 100 }, { monthlyTargetMax: 50 });
+    expect(testState().view.range).toEqual({ max: 50 });
+    await cmd("setTarget")("month", "max", "");
+    expect(fake.state.workspace[`${SECTION}.monthlyTargetMax`]).toBeUndefined();
+    expect(testState().view.range).toEqual({ max: 100 });
+    expect(testState().prefs.targets.monthMax).toBe(100);
+    deactivate();
+  });
+
+  it("a refused clear does not hide the user target underneath", async () => {
+    const { fake, cmd, testState, deactivate } = await load({ monthlyTargetMax: 100 }, { monthlyTargetMax: 50 });
+    fake.state.updateReject = true;
+    const p = cmd("setTarget")("month", "max", "");
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(fake.state.workspace[`${SECTION}.monthlyTargetMax`]).toBe(50);
+    expect(testState().view.range).toEqual({ max: 100 });
+    expect(testState().prefs.unsaved).toEqual(["monthlyTargetMax"]);
+    deactivate();
   });
 });

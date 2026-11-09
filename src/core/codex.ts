@@ -420,7 +420,7 @@ export const CODEX_OLD_SCAN_MS = 5 * 60_000;
 
 /** What a discovery found in the date folders older than the window. */
 export interface CodexOldFolders {
-  /** rollout files there modified in the window */
+  /** rollout files there modified in the window, or whose lstat failed (re-stat'ed until the next walk) */
   paths: string[];
   /** unreadable year, month or day folders there */
   unreadable: SourceUnreadable[];
@@ -532,7 +532,10 @@ async function discoverCodexWalk(
           const sessionId = sessionIdOf(name);
           if (sessionId === undefined) continue;
           const p = path.join(dir, name);
-          if ((await consider(p, sessionId, errors)) === "added" && oldDay) old.paths.push(p);
+          // An old file is re-stat'ed by the quick walks when found in the window, and also when
+          // its lstat failed: its error is this walk's only, so it clears once a re-stat succeeds.
+          const found = await consider(p, sessionId, unreadable);
+          if (oldDay && found !== "skipped") old.paths.push(p);
         }
       }
     }
@@ -736,11 +739,15 @@ export class CodexSourceReader implements SourceReader {
   /**
    * Walks the date folders older than the window on the first discovery, when the window
    * changes, and every CODEX_OLD_SCAN_MS; in between it re-stats only the old files the last
-   * walk found in the window, so a long history is not stat'ed file by file every minute.
+   * walk found in the window, so a long history is not stat'ed file by file every minute. A full
+   * refresh (`opts.full`) walks them at once, so a just-resumed old session shows without delay.
    */
-  async discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
+  async discover(windowStartMs: number, dayStartMs: number, nowMs: number, opts?: { full?: boolean }): Promise<SourceDiscoverResult> {
     const due =
-      this.old === undefined || this.oldWindowStartMs !== windowStartMs || Math.abs(nowMs - this.oldScanAt) >= CODEX_OLD_SCAN_MS;
+      opts?.full === true ||
+      this.old === undefined ||
+      this.oldWindowStartMs !== windowStartMs ||
+      Math.abs(nowMs - this.oldScanAt) >= CODEX_OLD_SCAN_MS;
     const { result, old } = await discoverCodexWalk(this.root, windowStartMs, dayStartMs, nowMs, due ? undefined : this.old);
     if (!result.ok || old === undefined) {
       this.old = undefined;

@@ -157,6 +157,7 @@ a.btn:hover, a.seg:hover { border-color: var(--accent); color: var(--accent); }
 .trend .col .fill.st-under, .lg b.st-under { background: var(--c-gemini); }
 .trend .col .fill.st-in, .lg b.st-in { background: var(--good); }
 .trend .col .fill.st-over, .lg b.st-over { background: var(--warn); }
+.trend .col .fill.st-unknown, .lg b.st-unknown { background: color-mix(in srgb, var(--muted) 45%, transparent); }
 .lg b { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
 .lg b:first-child { margin-left: 0; }
 .trend.daily .plot { gap: 2px; height: 130px; }

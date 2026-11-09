@@ -214,7 +214,7 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
 <div class="hero-grid">
 <div class="hero-main"${titleAttr(heroNotes.filter(Boolean).join(" ") || undefined)}>
 <div class="big">${val(fig)}</div>
-<div class="sub">${escapeHtml(parts.join(" · "))}</div>
+<div class="sub">${sym(parts.join(" · "))}</div>
 <dl class="stats">${stats}</dl>
 </div>
 ${heatmap(s, view)}
@@ -411,7 +411,7 @@ export function monthCard(s: Snapshot, view: ViewOptions, extra: { cls: string; 
   const small = `${isCurrent ? name : "whole month"}${s.filter ? " · filtered" : ""}`;
   return `<section class="card mtd${extra.cls}" aria-labelledby="mtd-title"${titleAttr(extra.note)}>
 <h3 id="mtd-title" class="ch">${icon("month")}<span>${escapeHtml(title)}</span><small>${escapeHtml(small)}</small></h3>
-<div class="mtd-body"><div class="mtd-main"><div class="big">${val(fig)}</div><div class="cmp">${compare}</div><div class="sub">${escapeHtml(extra.sub)}</div>${extra.foot ?? ""}</div>${sparkline(s, view)}</div>
+<div class="mtd-body"><div class="mtd-main"><div class="big">${val(fig)}</div><div class="cmp">${compare}</div><div class="sub">${sym(extra.sub)}</div>${extra.foot ?? ""}</div>${sparkline(s, view)}</div>
 </section>`;
 }
 

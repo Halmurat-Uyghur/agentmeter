@@ -190,3 +190,96 @@ describe("root discovery failures (finding #5)", () => {
     expect(logLines).not.toContain("error discover OTHER");
   });
 });
+
+/** A real Claude Code reader whose discovery returns `mode.next` (undefined = the real walk), and
+ * whose rootDirMtime() fails while `mode.dirFails` is set. Records each discover's options. */
+function scriptedClaude(
+  mode: { next?: "no-dir" | "permission" | "OTHER"; dirFails?: boolean },
+  calls: { n: number; opts: unknown[] },
+): SourceReader {
+  const real = new ClaudeSourceReader({ root: claudeRoot, rootSource: "default", readProjects: false });
+  return {
+    source: real.source,
+    root: real.root,
+    rootSource: real.rootSource,
+    rootDirMtime: () => (mode.dirFails ? Promise.resolve(undefined) : real.rootDirMtime()),
+    pathAllowed: (p) => real.pathAllowed(p),
+    open: (p, c) => real.open(p, c),
+    discover: async (w, d, n, o) => {
+      calls.n++;
+      calls.opts.push(o);
+      return mode.next !== undefined ? { ok: false, error: mode.next } : real.discover(w, d, n);
+    },
+  };
+}
+
+describe("discovery failure after a root error (review C, U, D)", () => {
+  for (const before of ["no-dir", "permission"] as const) {
+    it(`${before} then OTHER: the row says the folder could not be listed, and idle ticks stay cheap`, async () => {
+      const mode: { next?: "no-dir" | "permission" | "OTHER"; dirFails?: boolean } = { next: before };
+      const calls = { n: 0, opts: [] as unknown[] };
+      make({ readers: [scriptedClaude(mode, calls)] });
+      await monitor!.refresh({ full: true });
+      expect(last().health.sources?.["claude-code"]?.state).toBe(before);
+
+      mode.next = "OTHER";
+      await monitor!.refresh({ full: true });
+      const h = last().health.sources?.["claude-code"];
+      expect(h?.discoveryFailed).toBe(true);
+      expect(h?.state).not.toBe("no-dir");
+      expect(h?.state).not.toBe("permission");
+      const box = sourcesHealthBox(last());
+      expect(box).toContain("could not be listed");
+      expect(box).not.toContain("Folder not found");
+      expect(box).not.toContain("Unreadable (");
+      expect(last().health.partial).toBe(true);
+      // The row tests the failure before the folder state, whatever state a health carries.
+      const stale = { ...last(), health: { ...last().health, sources: { "claude-code": { ...h!, state: before } } } };
+      expect(sourcesHealthBox(stale)).toContain("could not be listed");
+
+      // Idle ticks within the 10 s cadence neither rediscover nor rebuild the snapshot.
+      const built = snaps.length;
+      const n = calls.n;
+      for (let i = 0; i < 9; i++) {
+        clock += 1000;
+        await monitor!.refresh();
+      }
+      expect(calls.n).toBe(n);
+      expect(snaps.length).toBe(built);
+    });
+  }
+
+  it("a failed discovery is retried at the 10 s cadence even when the directory check also fails", async () => {
+    await claudeTree(claudeRoot, [{ sessionId: cs(1), lines: [cRec(cs(1), 1)], mtime: HOT }]);
+    const mode: { next?: "no-dir" | "permission" | "OTHER"; dirFails?: boolean } = { next: "OTHER", dirFails: true };
+    const calls = { n: 0, opts: [] as unknown[] };
+    make({ readers: [scriptedClaude(mode, calls)] });
+    await monitor!.refresh({ full: true });
+    expect(last().health.sources?.["claude-code"]?.discoveryFailed).toBe(true);
+
+    mode.next = undefined;
+    // Not every tick...
+    const n = calls.n;
+    clock += 5000;
+    await monitor!.refresh();
+    expect(calls.n).toBe(n);
+    // ...but well before the 60 s cold cycle.
+    clock += 6000;
+    await monitor!.refresh();
+    expect(calls.n).toBe(n + 1);
+    expect(last().health.sources?.["claude-code"]?.discoveryFailed).toBeUndefined();
+    expect(last().today?.records).toBe(1);
+  });
+
+  it("a full refresh passes the full hint to discover; a tick does not", async () => {
+    const mode: { next?: "no-dir" | "permission" | "OTHER"; dirFails?: boolean } = {};
+    const calls = { n: 0, opts: [] as unknown[] };
+    make({ readers: [scriptedClaude(mode, calls)] });
+    await monitor!.refresh({ full: true });
+    expect(calls.opts.at(-1)).toEqual({ full: true });
+    clock += 61_000;
+    await monitor!.refresh();
+    expect(calls.n).toBe(2);
+    expect(calls.opts.at(-1)).toEqual({ full: false });
+  });
+});

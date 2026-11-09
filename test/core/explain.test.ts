@@ -158,6 +158,24 @@ describe("sessionDetail (1.1)", () => {
     expect(d.prompts.unknown).toBe(DETAIL_ROWS + 5);
   });
 
+  it("a call that logged one side only leaves the ledger total incomplete, as the Sessions row (review O)", async () => {
+    const { formatCount } = await import("../../src/core/format");
+    const { sessionSummaries, UsageStore } = await import("../../src/core/store");
+    const half = call({ initiator: "user" });
+    delete half.tokens.output;
+    const recs = [half, call({ initiator: "agent" }), call({ initiator: "user" })];
+    const d = sessionDetail("s1", recs, NONE);
+    expect(d.tokens).toEqual({ sum: 10_000 + 10_200 * 2, reported: 3, missing: 1 });
+    expect(formatCount(d.tokens)).toMatch(/\*$/);
+    const store = new UsageStore();
+    for (const r of recs) store.add(r, "a.jsonl");
+    const row = sessionSummaries(store, 0, Infinity)[0]!;
+    expect(formatCount(d.tokens)).toBe(formatCount(row.tokens));
+    // The prompt with the one-sided call is left out of the average, not counted short.
+    expect(d.prompts.tokens).toEqual({ sum: 10_200, reported: 1, missing: 1 });
+    expect(lastPrompt([half, call({ initiator: "agent", sequence: 99, timestampMs: 9e9 })])!.tokens).toBeUndefined();
+  });
+
   it("a session counted from a session total has no rows and says so", () => {
     const d = sessionDetail("s1", [{ ...call(), kind: "sessionTotal" }], NONE);
     expect(d).toMatchObject({ calls: 0, rows: [], sessionTotal: true });

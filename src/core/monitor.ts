@@ -274,7 +274,7 @@ export class UsageMonitor {
       this.dirty = false;
       for (const rs of this.readers) {
         if (await this.shouldDiscover(rs, full, nowMs, dayStartMs)) {
-          if (await this.rediscover(rs, nowMs, dayStartMs)) changed = true;
+          if (await this.rediscover(rs, nowMs, dayStartMs, full)) changed = true;
         }
       }
       // The first read of the window goes newest file first (D50); the rest keep their order.
@@ -332,11 +332,14 @@ export class UsageMonitor {
    * Copilot: every REDISCOVER_MS, or when its directory mtime changes (checked every tick; it is
    * one stat). Claude Code and Codex: every COLD_REDISCOVER_MS, or sooner when their directory
    * mtimes, checked every REDISCOVER_MS, change (D50). Always on a full refresh, a new day, before
-   * the first discovery and while the last one failed.
+   * the first discovery and while the root is missing or locked. A discovery that failed otherwise
+   * (EIO, EMFILE...) is retried every REDISCOVER_MS, whatever the directory check says (it may fail
+   * too), not on every tick.
    */
   private async shouldDiscover(rs: ReaderState, full: boolean, nowMs: number, dayStartMs: number): Promise<boolean> {
     if (full || !rs.discovered || rs.error !== undefined) return true;
     if (dayStartMs !== this.lastDayStartMs) return true;
+    if (rs.discoverFailed === true) return Math.abs(nowMs - rs.lastDiscoverAt) >= REDISCOVER_MS;
     const copilot = rs.reader.source === "copilot";
     if (Math.abs(nowMs - rs.lastDiscoverAt) >= (copilot ? REDISCOVER_MS : COLD_REDISCOVER_MS)) return true;
     if (!copilot) {
@@ -360,12 +363,13 @@ export class UsageMonitor {
   }
 
   /** Discovers one reader's files; true when the outcome differs from the last discovery's. */
-  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number): Promise<boolean> {
+  private async rediscover(rs: ReaderState, nowMs: number, dayStartMs: number, full: boolean): Promise<boolean> {
     // Claude Code and Codex: the 10 s check compares rootDirMtime() with its own value taken just
     // before the walk (a change during the walk still differs), so a walk's dirMtimeMs that covers
     // fewer directories than rootDirMtime() can never make every check look like a change (D50).
     const before = rs.reader.source === "copilot" ? undefined : await rs.reader.rootDirMtime();
-    const result = await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs);
+    // A full refresh asks the reader for its complete walk (Codex: the old date folders too).
+    const result = await rs.reader.discover(monthStarts(new Date(nowMs), this.historyMonths)[0]!, dayStartMs, nowMs, { full });
     this.discoverOnce(rs, result, nowMs, dayStartMs);
     if (result.ok && rs.reader.source !== "copilot") rs.lastDirMtimeMs = before;
     const fp = this.fingerprint(rs);
@@ -382,12 +386,15 @@ export class UsageMonitor {
     if (!result.ok) {
       rs.lastDirMtimeMs = undefined;
       if (result.error === "OTHER") {
-        // Keep the last known candidates and state (their figures stay), but mark the source
-        // partial until a discovery succeeds: sessions started since may be missing. Logged once
-        // per episode; the fingerprint changes only on entering it, so a failure that repeats
-        // every tick does not rebuild the snapshot.
+        // Keep the last known candidates (their figures stay), but mark the source partial until
+        // a discovery succeeds: sessions started since may be missing. A missing or locked root
+        // seen before is no longer known: its state goes (it had no candidates to keep), so the
+        // row says the folder could not be listed and ticks stop rediscovering on rs.error.
+        // Logged once per episode; the fingerprint changes only on entering it, so a failure
+        // that repeats does not rebuild the snapshot.
         if (rs.discoverFailed !== true) this.log.error("discover", "OTHER");
         rs.discoverFailed = true;
+        rs.error = undefined;
         return;
       }
       delete rs.discoverFailed;

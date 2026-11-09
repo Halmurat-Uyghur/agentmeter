@@ -149,20 +149,12 @@ export function usd(m: Metric): number | undefined {
   return m.reported === 0 ? undefined : m.sum / 1e11;
 }
 
-/** The spend a target compares (v0.10): Copilot's logged cost only. Claude Code and Codex cost is
- * an estimate from list prices, shown with the figures but never counted against a target. */
-export function targetUsd(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): number | undefined {
-  if (!t) return undefined;
-  if (!t.bySource) return mixedSources(t.sources) ? undefined : usd(t.nanoAiu);
-  const c = t.bySource.copilot;
-  return c ? usd(c.nanoAiu) : undefined;
-}
-
 /**
  * What a target compares (review finding #3): `usd` spent so far and whether it is
  * `partial` (some records in scope logged no cost, so it is a lower bound), or "unknown"
  * when records are in scope but none of them logged a cost. No record in scope is $0.
- * Copilot's logged cost only, like targetUsd.
+ * Copilot's logged cost only (v0.10): Claude Code and Codex cost is an estimate from list
+ * prices, shown with the figures but never counted against a target.
  */
 export type TargetSpend = { usd: number; partial: boolean } | "unknown";
 
@@ -188,7 +180,9 @@ export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOp
   const spend = targetSpend(t);
   const state = rangeState(spend, range);
   // Spend already above the max is over whatever is missing; below it, it is a lower bound.
-  return { state, partial: typeof spend === "object" && spend.partial && (state === "under" || state === "in") };
+  // "In" a min-only range stays in whatever is missing, so only a max makes "in" uncertain.
+  const open = state === "under" || (state === "in" && range?.max !== undefined);
+  return { state, partial: typeof spend === "object" && spend.partial && open };
 }
 
 /** RANGE_LABEL with "*" when the spend is a lower bound ("in target range*"). */
@@ -202,7 +196,7 @@ export function rangeWord(st: TargetStatus): string {
   return st.partial ? w + "*" : w;
 }
 
-const RANGE_WORD: Record<RangeState, string> = { none: "", under: "Under", in: "In range", over: "Over", unknown: "Not compared" };
+export const RANGE_WORD: Record<RangeState, string> = { none: "", under: "Under", in: "In range", over: "Over", unknown: "Not compared" };
 
 /** Display currency for every cost figure; undefined = USD. Set by the extension
  * (setDisplayCurrency) from the chosen currency and its daily rate. */
@@ -309,7 +303,8 @@ export const RANGE_LABEL: Record<RangeState, string> = {
   under: "under target",
   in: "in target range",
   over: "over target",
-  unknown: "cost not reported, target not compared",
+  // No "cost", "spend" or "credits": the tokens view's stricter copy gate applies here too.
+  unknown: "amount not logged, target not compared",
 };
 
 const RANGE_ICON_ID: Record<RangeState, string> = {
@@ -345,6 +340,19 @@ export function currentTargetStatus(s: Snapshot, view: ViewOptions): TargetStatu
 /** Codicon id for a range state; the status bar and the side bar share it (D31). */
 export function rangeIconId(state: RangeState): string {
   return RANGE_ICON_ID[state];
+}
+
+/** What `h.unreadableFiles` stands for: source folders whose last listing failed
+ * (SourceHealth.discoveryFailed; the monitor counts each as one unreadable file) and log
+ * files that could not be read (review finding N). */
+export function unreadableParts(h: Health): { logs: number; folders: number } {
+  const folders = Object.values(h.sources ?? {}).filter((x) => x?.discoveryFailed === true).length;
+  return { folders, logs: Math.max(0, h.unreadableFiles - folders) };
+}
+
+/** "a log folder could not be listed; new sessions may be missing" (2 or more: "2 log folders"). */
+export function folderListNote(folders: number): string {
+  return `${folders === 1 ? "a log folder" : `${folders} log folders`} could not be listed; new sessions may be missing`;
 }
 
 export function partialNote(m: Metric): string | undefined {
@@ -463,7 +471,12 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [multiSource(s.health) ? `Local usage, ${place}: ${spoken(p.figure)}` : `Copilot usage, local ${place}: ${spoken(p.figure)}`];
   // The target is monthly: name the month when the figure is today or the session (review fix 5).
-  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${spoken(rangeLabel(p))} ${spoken(formatRange(view.range))}`);
+  if (p.state !== "none") {
+    const month = period === "this month" ? "" : "this month ";
+    const range = spoken(formatRange(view.range));
+    // "amount not logged, target up to 60.00 US dollars not compared": the range belongs to the target.
+    parts.push(p.state === "unknown" ? `${month}amount not logged, target ${range} not compared` : `${month}${spoken(rangeLabel(p))} ${range}`);
+  }
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
 }
@@ -507,8 +520,13 @@ function healthLines(h: Health): string[] {
   }
   if (h.partial) {
     const reasons = ["Figures marked \\* may be incomplete:"];
-    if (h.unreadableFiles > 0)
-      reasons.push(`- ${h.unreadableFiles} log file(s) could not be read.`);
+    const u = unreadableParts(h);
+    if (u.folders > 0) {
+      const n = folderListNote(u.folders);
+      reasons.push(`- ${n.charAt(0).toUpperCase()}${n.slice(1)}.`);
+    }
+    if (u.logs > 0)
+      reasons.push(`- ${u.logs} log file(s) could not be read.`);
     if (h.malformed > 0)
       reasons.push(`- ${h.malformed} malformed line(s) were skipped.`);
     if (h.overlong > 0)

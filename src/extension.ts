@@ -103,6 +103,21 @@ function scopeOf(key: SettingKey): vscode.ConfigurationTarget {
   return at?.workspaceFolderValue !== undefined ? T.WorkspaceFolder : at?.workspaceValue !== undefined ? T.Workspace : T.Global;
 }
 
+/** The value saved at one scope (undefined if none). */
+function atScope(key: string, target: vscode.ConfigurationTarget): unknown {
+  const at = vscode.workspace.getConfiguration(SECTION).inspect(key);
+  const T = vscode.ConfigurationTarget;
+  return target === T.WorkspaceFolder ? at?.workspaceFolderValue : target === T.Workspace ? at?.workspaceValue : at?.globalValue;
+}
+
+/** The effective value with one scope's entry left out: what a clear at that scope leaves (review fix H). */
+function withoutScope(key: string, target: vscode.ConfigurationTarget): unknown {
+  const at = vscode.workspace.getConfiguration(SECTION).inspect(key);
+  const T = vscode.ConfigurationTarget;
+  const pick = (t: vscode.ConfigurationTarget, v: unknown) => (t === target ? undefined : v);
+  return pick(T.WorkspaceFolder, at?.workspaceFolderValue) ?? pick(T.Workspace, at?.workspaceValue) ?? pick(T.Global, at?.globalValue) ?? at?.defaultValue;
+}
+
 /** The settings the panel's Settings section lists (v0.9), as entered; `unsaved` are the keys whose last save was refused. */
 function readPrefs(unsaved: Iterable<string>, get: Read = persisted): Prefs {
   const sb = get("statusBar");
@@ -170,7 +185,8 @@ export function activate(context: vscode.ExtensionContext): void {
   panel.setPalette(readPalette());
   const sidebar = new SummaryView();
   /** opt-in, once a month per window, in memory only (v0.6) */
-  const alert = new TargetAlert(() => panel.show(), log);
+  // "Don't show again" goes through updateSetting like every other write (review fix B)
+  const alert = new TargetAlert(() => panel.show(), log, () => writeTargetAlert(false, "alert.mute"));
   /** basenames of the open workspace folders, for the side bar's "This workspace" group */
   let folders = readFolders();
   context.subscriptions.push(channel, status, panel, sidebar);
@@ -185,12 +201,19 @@ export function activate(context: vscode.ExtensionContext): void {
   let rateTimer: ReturnType<typeof setTimeout> | undefined;
   /** bumped per refreshRate call; a fetch that settles after a newer call (or after dispose) is dropped (v0.7) */
   let rateGen = 0;
+  /** the currency the latest refreshRate call is for */
+  let rateCode: string | undefined;
   let disposed = false;
   /** The user's choices not (yet) saved: written but not settled, or refused. Every read of a
    * setting the extension writes goes through this layer, so re-reading the saved settings for
    * an unrelated change never reverses a refused pick (D1, review fix 2). */
-  const overrides = new Map<string, unknown>();
-  const get: Read = (k) => (overrides.has(k) ? overrides.get(k) : persisted(k));
+  const overrides = new Map<string, { value: unknown; target: vscode.ConfigurationTarget }>();
+  const get: Read = (k) => {
+    const o = overrides.get(k);
+    if (!o) return persisted(k);
+    // a clear (undefined) at one scope falls through to the other scopes, as it will once saved (review fix H)
+    return o.value !== undefined ? o.value : withoutScope(k, o.target);
+  };
   /** latest write per setting key; an older write (and its retry) stands down (review fix 2, like rateGen) */
   const saveGen = new Map<SettingKey, number>();
   /** keys with a write that has not settled yet */
@@ -210,7 +233,8 @@ export function activate(context: vscode.ExtensionContext): void {
     else {
       view = readView(rate, get);
       render();
-      if (key === "currency") void refreshRate();
+      // the change event may already have started this currency's fetch; one request per change
+      if (key === "currency" && readCurrency(get) !== rateCode) void refreshRate();
     }
     pushPrefs();
   };
@@ -224,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const gen = (saveGen.get(key) ?? 0) + 1;
     saveGen.set(key, gen);
     retryWait.get(key)?.();
-    overrides.set(key, value);
+    overrides.set(key, { value, target });
     saving.add(key);
     const latest = () => !disposed && saveGen.get(key) === gen;
     const c = vscode.workspace.getConfiguration(SECTION);
@@ -234,7 +258,10 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!latest()) return true;
         saving.delete(key);
         overrides.delete(key);
-        if (unsaved.delete(key)) pushPrefs();
+        unsaved.delete(key);
+        // Redraw from the saved settings: VS Code fires no change event when the value written
+        // equals the stored one, and an event during the write was read through the override (review fix H).
+        applyEffective(key);
         return true;
       } catch (e) {
         log.error(where, saveErrorCode(e));
@@ -286,14 +313,14 @@ export function activate(context: vscode.ExtensionContext): void {
     status.update(s, view);
     panel.update(s, view);
     sidebar.update(s, view, folders);
-    alert.check(s, view);
+    alert.check(s, view, get("targetAlert") === true);
   };
 
   const render = () => {
     status.update(snapshot, view);
     panel.update(snapshot, view);
     sidebar.update(snapshot, view, folders);
-    alert.check(snapshot, view);
+    alert.check(snapshot, view, get("targetAlert") === true);
   };
 
   /** "current", "YYYY-MM" or "pick"; anything else is ignored. */
@@ -473,13 +500,16 @@ export function activate(context: vscode.ExtensionContext): void {
 
   /** "on" | "off" (or a boolean) sets the opt-in target alert; no argument toggles it; anything
    * else is ignored (v0.9). User settings only, like "Don't show again". */
+  function writeTargetAlert(on: boolean, where: string): Promise<boolean> {
+    return updateSetting("targetAlert", on, vscode.ConfigurationTarget.Global, where);
+  }
   const setTargetAlert = async (arg?: unknown) => {
     let on: boolean;
     if (arg === undefined) on = !readPrefs(unsaved, get).targetAlert;
     else if (arg === "on" || arg === true) on = true;
     else if (arg === "off" || arg === false) on = false;
     else return;
-    await updateSetting("targetAlert", on, vscode.ConfigurationTarget.Global, "alert.write");
+    await writeTargetAlert(on, "alert.write");
   };
 
   /** Fetches the chosen currency's rate now and every 6 hours; USD clears it and makes no request. */
@@ -488,6 +518,7 @@ export function activate(context: vscode.ExtensionContext): void {
     rateTimer = undefined;
     const gen = ++rateGen;
     const code = readCurrency(get);
+    rateCode = code;
     if (code === DEFAULT_CURRENCY) {
       rate = undefined;
       return;
@@ -633,11 +664,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       // An outside edit of a setting whose save was refused replaces the unsaved choice (review fix 2).
-      for (const k of [...overrides.keys()]) {
-        if (!saving.has(k) && e.affectsConfiguration(`${SECTION}.${k}`)) {
-          overrides.delete(k);
-          unsaved.delete(k);
+      // While a write is in flight or waiting to retry, the event of our own save leaves the written
+      // value at its scope; anything else there is an outside edit: it wins, and the retry stands down (review fix A).
+      for (const [k, o] of [...overrides]) {
+        if (!e.affectsConfiguration(`${SECTION}.${k}`)) continue;
+        if (saving.has(k)) {
+          if (atScope(k, o.target) === o.value) continue;
+          const key = k as SettingKey;
+          saveGen.set(key, (saveGen.get(key) ?? 0) + 1);
+          retryWait.get(key)?.();
+          saving.delete(k);
         }
+        overrides.delete(k);
+        unsaved.delete(k);
       }
       if (["display", "monthlyTargetMin", "monthlyTargetMax", "dailyTargetMax", "weeklyTargetMax", "currency", "statusBar", "targetAlert"].some((k) => e.affectsConfiguration(`${SECTION}.${k}`))) {
         view = readView(rate, get);

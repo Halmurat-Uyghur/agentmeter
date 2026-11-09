@@ -607,7 +607,7 @@ export class ClaudeSourceReader implements SourceReader {
     }
   }
 
-  discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
+  discover(windowStartMs: number, dayStartMs: number, nowMs: number, _opts?: { full?: boolean }): Promise<SourceDiscoverResult> {
     return discoverClaude(this.root, windowStartMs, dayStartMs, nowMs);
   }
 

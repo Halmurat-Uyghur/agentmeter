@@ -152,8 +152,11 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     const hi = range.max ?? scale;
     band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}${only}`)}"></span>`;
   }
+  // "?" (not compared) is listed only when a month in the window has records but no logged amount.
+  const anyUnknown = range !== undefined && hist.some((h) => targetStatus(h.totals, range).state === "unknown");
+  const unknownLg = anyUnknown ? ` <b class="st-unknown"></b>${STATE_MARK.unknown} Not compared` : "";
   const legend = range
-    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`
+    ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over${unknownLg} <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`
     : `<span class="lg">${view.unit === "cost" ? "Set copilotUsageMonitor.monthlyTargetMin / Max to see a target band." : `Switch to ${costLabel()} to compare against a target.`}</span>`;
   const filtered = s.filter ? " · filtered" : "";
   return `<section class="card" aria-labelledby="trend-title"><h3 id="trend-title" class="ch">${icon("trend")}<span>Monthly trend</span><small>${plural(hist.length, "month")} · ${escapeHtml(unitWord(view))}${filtered} · click a month to open it</small></h3><div class="trend"><div class="plot">${band}<ol class="tcols" role="list" aria-label="Months, oldest first">${cols.join("")}</ol></div></div><div class="scale">${legend}</div></section>`;

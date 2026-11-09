@@ -107,4 +107,38 @@ describe("Codex sessions resumed from an old date folder (review #1)", () => {
       await fs.promises.chmod(dir, 0o755);
     }
   });
+  it("a full refresh (discover's full hint) walks the old folders at once (review D)", async () => {
+    const [p] = await codexTree(root, [{ date: "2026/09/15", sessionId: id(2), lines: [codexMeta()], mtime: new Date(windowStart - 1000) }]);
+    const r = new CodexSourceReader({ root, rootSource: "default", readProjects: true, readTotals: true });
+    const first = await r.discover(windowStart, dayStart, now);
+    expect(first.ok && first.candidates).toEqual([]);
+    // The old session is resumed; a tick's discovery does not see it before CODEX_OLD_SCAN_MS...
+    await utimes(p!, new Date(now), new Date(now));
+    const tick = await r.discover(windowStart, dayStart, now + 1000, { full: false });
+    expect(tick.ok && tick.candidates).toEqual([]);
+    // ...a full refresh does.
+    const full = await r.discover(windowStart, dayStart, now + 2000, { full: true });
+    expect(full.ok && full.candidates.map((c) => c.sessionId)).toEqual([id(2)]);
+  });
+
+  it("an old file whose lstat failed in the full walk is re-stat'ed by the quick walks (review L)", async () => {
+    const [p] = await codexTree(root, [{ date: "2026/10/20", sessionId: id(1), lines: [codexMeta()], mtime: new Date(now - 1000) }]);
+    const fail = { on: true };
+    const real = fs.promises.lstat.bind(fs.promises);
+    vi.spyOn(fs.promises, "lstat").mockImplementation(((q: fs.PathLike, o?: unknown) => {
+      if (fail.on && String(q) === p) return Promise.reject(Object.assign(new Error("EIO"), { code: "EIO" }));
+      return (real as (q: fs.PathLike, o?: unknown) => Promise<fs.Stats>)(q, o);
+    }) as typeof fs.promises.lstat);
+    const r = new CodexSourceReader({ root, rootSource: "default", readProjects: true, readTotals: true });
+    const first = await r.discover(windowStart, dayStart, now);
+    expect(first.ok && first.unreadable).toEqual([{ folderId: id(1), path: p, code: "EIO" }]);
+    // Still failing: still reported by the quick walk.
+    const again = await r.discover(windowStart, dayStart, now + 1000);
+    expect(again.ok && again.unreadable).toEqual([{ folderId: id(1), path: p, code: "EIO" }]);
+    // Recovered: the next quick walk finds it and no longer reports it, well before CODEX_OLD_SCAN_MS.
+    fail.on = false;
+    const quick = await r.discover(windowStart, dayStart, now + 2000);
+    expect(quick.ok && quick.unreadable).toEqual([]);
+    expect(quick.ok && quick.candidates.map((c) => c.sessionId)).toEqual([id(1)]);
+  });
 });

@@ -219,6 +219,10 @@ export class UsageStore {
    * per line, and thousands of records of one session would otherwise each keep a copy (D50).
    * Bounded: cleared when full, which only costs sharing, never correctness. */
   private readonly pool = new Map<string, string>();
+  /** A call entry whose owning file was reset while another file held it → that original file.
+   * When the original re-delivers the key (a tailer reset re-reads the whole file), ownership and
+   * attribution return to it. Weak and only for promoted entries, so an entry stays flat (D50). */
+  private readonly promotedFrom = new WeakMap<Entry, string>();
 
   private intern(s: string): string {
     const known = this.pool.get(s);
@@ -270,6 +274,7 @@ export class UsageStore {
       return true;
     }
     if (existing) {
+      if (r.kind === "call" && this.promotedFrom.get(existing) === file) return this.restoreOwner(existing, r, file);
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
         if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
@@ -285,6 +290,33 @@ export class UsageStore {
       bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
     }
     return true;
+  }
+
+  /** `file`, the original owner of `e`'s call whose holding was promoted to a later copy,
+   * delivers the key again (a re-read after truncation or rewrite): it owns the call again and
+   * the record is its line `r`, attributed to its folder and session, as a first read of it
+   * would leave it; its repeats merge from here and the promoted copy goes back to being a
+   * later holder (so the copy's merged repeats never add to the original's; D42). */
+  private restoreOwner(e: Entry, r: UsageRecord, file: string): boolean {
+    this.promotedFrom.delete(e);
+    const old = e.record;
+    const changed = JSON.stringify(r) !== JSON.stringify(old);
+    this.share(r);
+    const { sessionId, folderId } = r;
+    if (!holds(e, folderId)) bump(this.callsPerFolder, idOf(old.source, folderId), 1);
+    if (sessionId !== old.sessionId) {
+      bump(this.callsPerSession, idOf(old.source, old.sessionId), -1);
+      bump(this.callsPerSession, idOf(old.source, sessionId), 1);
+    }
+    // Later holders are stored relative to the record's sessionId: restate them, the demoted owner first.
+    const rel = (f: string, s: string): Holder => (s === sessionId ? f : { folderId: f, sessionId: s });
+    const more = new Map<string, Holder>([[e.file, rel(e.folderId, old.sessionId)]]);
+    if (e.more) for (const [f, h] of e.more) more.set(f, rel(folderOf(h), typeof h === "string" ? old.sessionId : h.sessionId));
+    e.more = more;
+    e.file = file;
+    e.folderId = folderId;
+    e.record = r;
+    return changed;
   }
 
   /**
@@ -328,6 +360,8 @@ export class UsageStore {
         const { folderId, empty, promoted } = dropFile(entry, file);
         if (folderId === undefined) continue;
         let r = entry.record;
+        // Remember the original owner (not a later promoted one), so its re-read restores it.
+        if (promoted !== undefined && r.kind === "call" && !this.promotedFrom.has(entry)) this.promotedFrom.set(entry, file);
         // The surviving copy now owns the call: attribute it to that copy's folder (and session,
         // when the copy named another one), so projects and the current session follow it.
         // A session total stays put: totalKeys finds it by the folder it was set for.
@@ -514,7 +548,7 @@ export const NO_PROJECT = "(no project)";
 /** Counts input + output of `r` into `m` as the headline does (addMetrics of input and
  * output): a record that reported one side adds it and counts as reported, and a record
  * missing either side counts as missing too, so its row keeps the "*" the headline shows. */
-function countTokens(m: Metric, r: UsageRecord): void {
+export function countTokens(m: Metric, r: UsageRecord): void {
   const { input, output } = r.tokens;
   if (input === undefined && output === undefined) {
     m.missing += 1;

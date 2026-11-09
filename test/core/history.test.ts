@@ -316,9 +316,12 @@ describe("panel: navigation, trend, target, sessions", () => {
     expect(html).toContain(">3f2a91c0<");
     expect(html).toContain(`6.2× ▲`);
     expect(GROWTH_FLAG).toBe(3);
-    // Review #7: no input growth logged, so cost growth is not put down to the context.
-    expect(html).toContain("later calls became more expensive");
+    // Review #7: no input growth logged, so cost growth is not put down to the context, nor
+    // to a costlier model: it was not measured, so the cause is unclear.
+    expect(html).toContain("later calls became more expensive; input tokens were not logged for these calls, so the cause is unclear");
     expect(html).not.toContain("the context grew");
+    expect(html).not.toContain("did not grow as much");
+    expect(html).not.toContain("its first ones: later calls became more expensive");
     expect(html).not.toContain("<img");
     expect(html).toContain(escapeHtml(evil.slice(0, 8)));
   });

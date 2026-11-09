@@ -3,7 +3,9 @@
 // marked "*") and full cost; records with tokens but no logged cost are "unknown".
 import { describe, expect, it } from "vitest";
 import { rangeLabel, rangeState, rangeWord, statusAccessibilityLabel, statusParts, statusText, targetSpend, targetStatus, tooltipMarkdown } from "../../src/core/format";
-import { trend } from "../../src/core/panel/overview";
+import { renderOverview, trend } from "../../src/core/panel/overview";
+import { partialReasons } from "../../src/core/panel/shared";
+import { PANEL_CSS } from "../../src/core/panelCss";
 import { buildSidebarModel, sidebarRows } from "../../src/core/sidebarModel";
 import { TargetAlertState } from "../../src/core/targetAlert";
 import type { Counts, Health, Metric, Snapshot, Totals, ViewOptions } from "../../src/core/types";
@@ -54,7 +56,7 @@ describe("targetSpend: four distinct cases", () => {
     expect(overP).toEqual({ state: "over", partial: false });
     expect(rangeLabel(overP)).toBe("over target");
     const unk = targetStatus(t(UNKNOWN), { max: 60 });
-    expect(rangeLabel(unk)).toBe("cost not reported, target not compared");
+    expect(rangeLabel(unk)).toBe("amount not logged, target not compared");
     expect(rangeWord(unk)).toBe("Not compared");
   });
 });
@@ -65,7 +67,9 @@ describe("every surface: unknown is not 'in range'", () => {
     expect(statusParts(s, COST).state).toBe("unknown");
     expect(statusText(s, COST)).toBe("$(question) Local Nov: — / up to $60.00");
     const said = statusAccessibilityLabel(s, COST);
-    expect(said).toContain("cost not reported, target not compared");
+    // The range belongs to the target, not to the amount (review finding J).
+    expect(said).toContain("amount not logged, target up to 60.00 US dollars not compared");
+    expect(said).not.toContain("not compared up to");
     expect(said).not.toContain("in target range");
   });
 
@@ -84,7 +88,7 @@ describe("every surface: unknown is not 'in range'", () => {
   it("tooltip: monthly, daily and weekly targets say not compared", () => {
     const md = tooltipMarkdown(snap(UNKNOWN, { today: t(UNKNOWN), last7: t(UNKNOWN) }), { ...COST, dayTarget: { max: 5 }, weekTarget: { max: 20 } });
     expect(md).not.toContain("in target range");
-    expect(md.match(/cost not reported\\, target not compared/g)).toHaveLength(3);
+    expect(md.match(/amount not logged\\, target not compared/g)).toHaveLength(3);
   });
 
   it("side bar: the markers and titles say not compared", () => {
@@ -109,7 +113,7 @@ describe("every surface: unknown is not 'in range'", () => {
   it("overview trend: an unknown month is not drawn as in range", () => {
     const html = trend(snap(UNKNOWN, { history: [{ monthStartMs: new Date(2026, 10, 1).getTime(), totals: t(UNKNOWN) }] as Snapshot["history"] }), COST);
     expect(html).not.toContain("in target range");
-    expect(html).toContain("cost not reported, target not compared");
+    expect(html).toContain("amount not logged, target not compared");
     expect(html).toContain("Nov 26 ?");
     expect(html).not.toContain("fill st-in");
   });
@@ -125,5 +129,61 @@ describe("every surface: unknown is not 'in range'", () => {
       expect(rangeLabel(st)).not.toMatch(COPY_RE);
       expect(rangeWord(st)).not.toMatch(COPY_RE);
     }
+  });
+});
+
+describe("review findings I, K, P and N", () => {
+  const nov = new Date(2026, 10, 1).getTime();
+  const oct = new Date(2026, 9, 1).getTime();
+  // Tokens from two sources without a per-source split: a figure, but the Copilot part is unknown.
+  const mixed: Totals = { ...t(m(5 * USD)), sources: { copilot: 1, "claude-code": 1 } };
+
+  it("I: an unknown month draws a muted fill and the legend gains '? Not compared' only then", () => {
+    const html = trend(snap(m(5 * USD), { history: [{ monthStartMs: oct, totals: t(m(5 * USD)) }, { monthStartMs: nov, totals: mixed }] as Snapshot["history"] }), COST);
+    expect(html).toContain('class="fill st-unknown"');
+    expect(html).toContain('<b class="st-unknown"></b>? Not compared');
+    expect(PANEL_CSS).toMatch(/\.trend \.col \.fill\.st-unknown, \.lg b\.st-unknown \{ background: [^}]+\}/);
+    const known = trend(snap(m(5 * USD), { history: [{ monthStartMs: nov, totals: t(m(5 * USD)) }] as Snapshot["history"] }), COST);
+    expect(known).not.toContain("Not compared");
+    expect(known).not.toContain("st-unknown");
+  });
+
+  it("K: 'in' a min-only range is not starred (more amount cannot leave it); with a max it is", () => {
+    const partial = t(m(25 * USD, 2, 1));
+    expect(targetStatus(partial, { min: 20 })).toEqual({ state: "in", partial: false });
+    expect(rangeLabel(targetStatus(partial, { min: 20 }))).toBe("in target range");
+    expect(targetStatus(partial, { min: 20, max: 60 })).toEqual({ state: "in", partial: true });
+    expect(targetStatus(partial, { min: 30 })).toEqual({ state: "under", partial: true });
+  });
+
+  it("P: the '*' in the hero, Month to date and Last 7 days subtitles is spoken", () => {
+    const p = t(m(USD, 2, 1));
+    const view: ViewOptions = { unit: "cost", range: { max: 60 }, dayTarget: { max: 5 }, weekTarget: { max: 20 } };
+    const month = { monthStartMs: nov, isCurrent: true, days: [{ dayStartMs: day, totals: p }], sessions: [], projects: [], tools: [], totals: p } as unknown as Snapshot["month"];
+    const html = renderOverview(snap(m(USD, 2, 1), { today: p, last7: p, month }), view);
+    const subs = [...html.matchAll(/<div class="sub">([\s\S]*?)<\/div>/g)].map((x) => x[1]!);
+    const hero = subs.find((x) => x.includes("Daily target"))!;
+    const mtd = subs.find((x) => x.includes("Target up to"))!;
+    const week = subs.find((x) => x.includes("Weekly target"))!;
+    for (const sub of [hero, mtd, week]) {
+      expect(sub).toContain('<span aria-hidden="true">');
+      expect(sub).toMatch(/<span class="sr">[^<]*In range \(may be incomplete\)/);
+    }
+  });
+
+  it("N: a folder that could not be listed is named as such, not as an unreadable log", () => {
+    const failed: Health = {
+      ...health,
+      partial: true,
+      unreadableFiles: 1,
+      sources: { copilot: { state: "ok", rootSource: "default", files: 1, sessions: 1, unreadableFiles: 1, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } },
+    };
+    expect(partialReasons(failed)).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing.");
+    const md = tooltipMarkdown(snap(m(USD), { health: failed, today: t(m(USD)) }), COST);
+    expect(md).toContain("- A log folder could not be listed; new sessions may be missing.");
+    expect(md).not.toContain("log file(s) could not be read");
+    // an unreadable log beside it is still counted, without the folder
+    expect(partialReasons({ ...failed, unreadableFiles: 2 })).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing; 1 log could not be read.");
+    expect(tooltipMarkdown(snap(m(USD), { health: { ...failed, unreadableFiles: 2 }, today: t(m(USD)) }), COST)).toContain("- 1 log file(s) could not be read.");
   });
 });

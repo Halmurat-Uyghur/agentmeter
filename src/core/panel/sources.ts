@@ -60,10 +60,11 @@ export function renderSourcesCard(s: Snapshot, view: ViewOptions): string {
 /** "Off (copilotUsageMonitor.claudeCode)", "Folder not found (…Home)", "12 files, 4 sessions read". */
 function sourceStatus(x: Source, h: SourceHealth): string {
   if (h.state === "off") return x === "copilot" ? "Off" : `Off (${SOURCE_TOGGLE_SETTING[x]})`;
+  const read = `${plural(h.files, "file")}, ${plural(h.sessions, "session")} read`;
+  // The latest discovery's failure wins over a folder state an earlier one left.
+  if (h.discoveryFailed === true) return `${read} · the folder could not be listed; new sessions may be missing`;
   if (h.state === "no-dir") return `Folder not found (${SOURCE_HOME_SETTING[x]})`;
   if (h.state === "permission") return `Unreadable (${SOURCE_HOME_SETTING[x]})`;
-  const read = `${plural(h.files, "file")}, ${plural(h.sessions, "session")} read`;
-  if (h.discoveryFailed === true) return `${read} · the folder could not be listed; new sessions may be missing`;
   return h.state === "format-changed" ? `${read} · the log format may have changed` : read;
 }
 
@@ -93,7 +94,7 @@ export function sourcesHealthBox(s: Snapshot): string {
   const rows = SOURCES.filter((x) => x !== "copilot" || per[x] !== undefined).map((x) => {
     const h = per[x] ?? OFF;
     const head = `<h4 class="srch"><span class="srcchip src-${x}">${escapeHtml(SOURCE_LABEL[x])}</span> <span>${escapeHtml(sourceStatus(x, h))}</span></h4>`;
-    if (h.state === "off" || h.state === "no-dir") return head;
+    if (h.state === "off" || (h.state === "no-dir" && h.discoveryFailed !== true)) return head;
     const facts = [
       fact("Unreadable logs", h.unreadableFiles, true),
       fact("Lines in an unknown format", h.unrecognized, true),

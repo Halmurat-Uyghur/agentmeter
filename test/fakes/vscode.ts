@@ -20,6 +20,8 @@ export const state = {
   updates: [] as [string, unknown, number][],
   /** when true, update() rejects like an unwritable settings file; a string rejects with that message (v0.9) */
   updateReject: false as boolean | string,
+  /** when true, update() fires no change event if the target scope already holds that value, as VS Code does (review fix H) */
+  quietWhenUnchanged: false,
   commands: new Map<string, (...a: any[]) => any>(),
   configListeners: [] as Listener[],
   /** Output channel lines */
@@ -87,8 +89,10 @@ export const workspace = {
       if (state.updateReject) throw new Error(typeof state.updateReject === "string" ? state.updateReject : "not writable");
       const key = `${section}.${k}`;
       state.updates.push([k, v, Number(target ?? ConfigurationTarget.Workspace)]);
-      scopeOf(target ?? ConfigurationTarget.Workspace)[key] = v;
-      fireConfigChange(key);
+      const scope = scopeOf(target ?? ConfigurationTarget.Workspace);
+      const unchanged = scope[key] === v;
+      scope[key] = v;
+      if (!(state.quietWhenUnchanged && unchanged)) fireConfigChange(key);
     },
   }),
   onDidChangeWorkspaceFolders: () => disp(),

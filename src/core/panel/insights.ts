@@ -21,6 +21,23 @@ function evidence(i: Insight, view: ViewOptions): string {
   return `${plural(i.calls, "call")} · ${plural(i.sessions, "session")} · ${figure}`;
 }
 
+const COMPACT = "For a new task, a fresh session usually costs less. For one that must continue, /compact shrinks what each call resends.";
+const LIST = "List a session's calls to see which.";
+
+/** I2 advice, per session: put the growth down to the context only for the sessions whose
+ * input grew too (a costlier model also raises cost), and say so when input was not logged. */
+export function growthAction(n: number, grew: number, unmeasured: number): string {
+  const flat = n - grew - unmeasured;
+  if (grew === n) return `${n === 1 ? "Its" : "Their"} input grew too, so the context grew. ${COMPACT}`;
+  if (grew > 0) {
+    const rest = flat === 0 ? "In the others input tokens were not logged, so the cause there is unclear." : `In the others${unmeasured > 0 ? " where input was logged" : ""} it did not grow as much, so a costlier model or longer replies are the likelier cause.`;
+    return `In ${grew} of ${n} sessions the input grew too, so the context grew there. ${COMPACT.replace("For a new task", "For a new task in those")} ${rest} ${LIST}`;
+  }
+  if (flat === 0) return `Input tokens were not logged for ${n === 1 ? "its" : "their"} calls, so the cause is unclear. ${LIST}`;
+  const where = unmeasured > 0 ? `Where input was logged (${flat} of ${n} sessions), it did not grow as much` : `${n === 1 ? "Its" : "Their"} input did not grow as much`;
+  return `${where}, so a costlier model or longer replies are the likelier cause. ${LIST}`;
+}
+
 function card(i: Insight, view: ViewOptions): string {
   const usd = money(i.nanoAiu / 1e11);
   let title: string;
@@ -31,10 +48,7 @@ function card(i: Insight, view: ViewOptions): string {
     const names = i.top.map((t) => (t.label !== undefined ? `${t.label} (${shortId(t.sessionId)})` : shortId(t.sessionId)));
     const n = i.sessions;
     body = `${plural(n, "session")} got more expensive as ${n === 1 ? "it" : "they"} went on: ${n === 1 ? "its" : "their"} later calls cost ${list(i.top.map((t) => `${t.growth.toFixed(1)}×`))} the first ones${n > i.top.length ? " (largest shown)" : ""}. The cost above each session's starting level came to about ${usd} (est.). ${i.top.length === 1 ? "Session" : "Sessions"}: ${list(names)}.`;
-    // Put it down to the context only when the prompts grew too (a costlier model also raises cost).
-    action = i.inputGrew
-      ? "Their input grew too, so the context grew. For a new task, a fresh session usually costs less. For one that must continue, /compact shrinks what each call resends."
-      : "Their input did not grow as much, so a costlier model or longer replies are the likelier cause. List a session's calls to see which.";
+    action = growthAction(i.sessions, i.inputGrewSessions ?? (i.inputGrew ? i.sessions : 0), i.inputUnmeasuredSessions ?? 0);
   } else if (i.id === "long-context") {
     const k = kTokens(i.thresholdTokens);
     title = `Long prompts on ${i.model}`;
