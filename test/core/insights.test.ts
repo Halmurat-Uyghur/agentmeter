@@ -63,7 +63,14 @@ describe("I1 long-context", () => {
   it("the dated table holds only the explicit entries", () => {
     expect(LONG_CONTEXT_THRESHOLDS.map((e) => [e.id, e.thresholdTokens, e.prefix === true])).toEqual([
       ["claude-haiku-5.5", 100_000, false],
+      ["gpt-5.6-luna", 200_000, false],
+      ["gpt-5.6-sol", 272_000, false],
+      ["gpt-5.6-terra", 272_000, false],
+      ["gpt-6-astra", 272_000, false],
+      ["gpt-6-luna", 272_000, false],
       ["gpt-6-sol", 272_000, false],
+      ["gpt-6.1-sol", 272_000, false],
+      ["gpt-6.1-terra", 272_000, false],
       ["grok-4", 200_000, true],
     ]);
   });
@@ -78,7 +85,11 @@ describe("I1 long-context", () => {
     ["grok-40", undefined],
     ["claude-haiku-5", undefined],
     ["gpt-6-sol-mini", undefined],
-    ["gpt-6-luna", undefined],
+    ["gpt-5.6-luna", 200_000],
+    ["GPT-6.1-Terra", 272_000],
+    ["gpt-6-luna", 272_000],
+    ["gpt-6-terra", undefined],
+    ["gpt-6.1", undefined],
   ])("threshold of %s is %s (unknown or near-miss ids never fire)", (model, want) => {
     expect(longContextThreshold(model)).toBe(want);
   });

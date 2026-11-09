@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- **Long-context insight covers every model GitHub lists.** The price-threshold table now matches GitHub's "Models and pricing" page as of 2026-11-08: GPT-5.6 Luna (over 200K prompt tokens), and GPT-5.6 Sol, GPT-5.6 Terra, GPT-6 Astra, GPT-6 Luna, GPT-6.1 Sol and GPT-6.1 Terra (over 272K), next to Claude Haiku 5.5, GPT-6 Sol and Grok 4.x. Cost figures are unchanged: they still come from the AI credits Copilot logs.
+
 ## 0.9.0 - 2026-11-08
 
 A Settings section in the details panel, daily and weekly targets, premade colour palettes, and a fix for settings saves that VS Code refuses: the panel now keeps what you chose and says why the save failed. The design is in `docs/superpowers/specs/2026-11-08-settings-section-design.md` (D1–D12).
