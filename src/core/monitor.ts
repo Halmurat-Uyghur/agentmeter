@@ -611,7 +611,7 @@ export class UsageMonitor {
       s.add(r.folderId);
     });
     const sources = Object.create(null) as Partial<Record<Source, SourceHealth>>;
-    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, capped: 0 };
+    const g = { malformed: 0, unrecognized: 0, overlong: 0, overlongOther: 0, shutdownOversize: 0, shutdownOversizeNeeded: 0, unreadableFiles: 0, sessionsWithoutUsage: 0, sessionsFromTotals: 0, capped: 0, notListed: 0 };
     const states: SourceHealth["state"][] = [];
     for (const rs of this.readers) {
       const src = rs.reader.source;
@@ -622,9 +622,10 @@ export class UsageMonitor {
         // Candidates of the last discovery, including ones whose files were all refused or
         // dropped on ENOENT since (until the next discovery).
         sessions: rs.candidates.size,
-        // An unreadable directory (a listing that failed) counts as one file here; so does a
-        // root whose last discovery failed (not ENOENT or a permission error).
-        unreadableFiles: rs.unreadable.size + rs.refused.size + (rs.discoverFailed === true ? 1 : 0),
+        // An unreadable directory (a listing that failed) counts as one file here. A root whose
+        // last discovery failed (not ENOENT or a permission error) is no log: it shows as
+        // discoveryFailed and keeps the read partial on its own (Codex review of PR #22).
+        unreadableFiles: rs.unreadable.size + rs.refused.size,
         unrecognized: 0,
         malformed: 0,
         overlong: 0,
@@ -682,6 +683,7 @@ export class UsageMonitor {
       g.overlongOther += h.overlongOther;
       g.unreadableFiles += h.unreadableFiles;
       g.capped += rs.capped ?? 0;
+      if (rs.discoverFailed === true) g.notListed++;
       sources[src] = h;
     }
     const missing = (s: SourceHealth["state"]) => s === "no-dir" || s === "permission";
@@ -704,7 +706,8 @@ export class UsageMonitor {
       // A log with per-call records hides its session total anyway, so an unread
       // shutdown line there loses nothing (review 3); Data health still counts it.
       // A capped discovery left files unread (D42, D50): the figures miss them, so they are partial.
-      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded + g.capped > 0,
+      // So does a folder whose last listing failed: sessions started since may be missing.
+      partial: g.unreadableFiles + g.malformed + g.overlong + g.shutdownOversizeNeeded + g.capped + g.notListed > 0,
       unrecognized: g.unrecognized,
       malformed: g.malformed,
       overlong: g.overlong,

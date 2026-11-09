@@ -172,19 +172,20 @@ describe("review findings I, K, P and N", () => {
   });
 
   it("N: a folder that could not be listed is named as such, not as an unreadable log", () => {
+    // A failed listing is not counted in unreadableFiles (Codex review of PR #22).
     const failed: Health = {
       ...health,
       partial: true,
-      unreadableFiles: 1,
-      sources: { copilot: { state: "ok", rootSource: "default", files: 1, sessions: 1, unreadableFiles: 1, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } },
+      unreadableFiles: 0,
+      sources: { copilot: { state: "ok", rootSource: "default", files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } },
     };
     expect(partialReasons(failed)).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing.");
     const md = tooltipMarkdown(snap(m(USD), { health: failed, today: t(m(USD)) }), COST);
     expect(md).toContain("- A log folder could not be listed; new sessions may be missing.");
     expect(md).not.toContain("log file(s) could not be read");
-    // an unreadable log beside it is still counted, without the folder
-    expect(partialReasons({ ...failed, unreadableFiles: 2 })).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing; 1 log could not be read.");
-    expect(tooltipMarkdown(snap(m(USD), { health: { ...failed, unreadableFiles: 2 }, today: t(m(USD)) }), COST)).toContain("- 1 log file(s) could not be read.");
+    // an unreadable log beside it is counted on its own
+    expect(partialReasons({ ...failed, unreadableFiles: 1 })).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing; 1 log could not be read.");
+    expect(tooltipMarkdown(snap(m(USD), { health: { ...failed, unreadableFiles: 1 }, today: t(m(USD)) }), COST)).toContain("- 1 log file(s) could not be read.");
   });
 });
 
@@ -192,7 +193,7 @@ describe("a Copilot read failure makes the target comparison a lower bound too",
   const nov = new Date(2026, 10, 1).getTime();
   const src = (extra: Partial<SourceHealth> = {}): SourceHealth => ({ state: "ok", rootSource: "default", files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, ...extra });
   const copilotUnreadable: Health = { ...health, partial: true, unreadableFiles: 1, sources: { copilot: src({ unreadableFiles: 1 }), "claude-code": src() } };
-  const copilotNotListed: Health = { ...health, partial: true, unreadableFiles: 1, sources: { copilot: src({ unreadableFiles: 1, discoveryFailed: true }) } };
+  const copilotNotListed: Health = { ...health, partial: true, unreadableFiles: 0, sources: { copilot: src({ discoveryFailed: true }) } };
   const claudeUnreadable: Health = { ...health, partial: true, unreadableFiles: 1, sources: { copilot: src(), "claude-code": src({ unreadableFiles: 1 }) } };
   const full = m(10 * USD, 3); // every record logged a cost
   const view: ViewOptions = { unit: "cost", range: { max: 60 }, dayTarget: { max: 50 }, weekTarget: { max: 55 } };
@@ -263,5 +264,88 @@ describe("a Copilot read failure makes the target comparison a lower bound too",
     }
     expect(trend(s, view)).toContain("in target range*");
     expect(trend({ ...s, health: claudeUnreadable }, view)).not.toContain("in target range*");
+  });
+});
+
+describe("Codex review of PR #22: a Copilot folder that could not be read is not a complete $0", () => {
+  const nov = new Date(2026, 10, 1).getTime();
+  const src = (extra: Partial<SourceHealth> = {}): SourceHealth => ({ state: "ok", rootSource: "default", files: 1, sessions: 1, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, ...extra });
+  // Startup with Copilot's folder locked: nothing read, zero counters; Claude Code reads fine.
+  const locked: Health = { ...health, sources: { copilot: src({ state: "permission", files: 0, sessions: 0 }), "claude-code": src() } };
+  const changed: Health = { ...health, state: "format-changed", unrecognized: 3, sources: { copilot: src({ state: "format-changed", unrecognized: 3 }), "claude-code": src() } };
+  const missing: Health = { ...health, sources: { copilot: src({ state: "no-dir", files: 0, sessions: 0 }), "claude-code": src() } };
+  const claudeLocked: Health = { ...health, sources: { copilot: src(), "claude-code": src({ state: "permission", files: 0, sessions: 0 }) } };
+  const claudeOnly: Totals = { ...t(m(5 * USD)), sources: { "claude-code": 1 }, bySource: { "claude-code": t(m(5 * USD)) } };
+  const view: ViewOptions = { unit: "cost", range: { max: 60 }, dayTarget: { max: 50 }, weekTarget: { max: 55 } };
+
+  it("targetStatus: a locked Copilot folder with no Copilot amount is not compared, never 'In range'", () => {
+    for (const totals of [undefined, claudeOnly]) {
+      const st = targetStatus(totals, { max: 60 }, locked);
+      expect(st).toEqual({ state: "unknown", partial: false, unread: true });
+      expect(rangeLabel(st)).toBe("Copilot logs not read, target not compared");
+      expect(rangeWord(st)).toBe("Not compared");
+      expect(rangeLabel(st)).not.toMatch(COPY_RE);
+      expect(rangeLabel(st)).not.toMatch(/\bcost\b/i);
+    }
+    // Lines in a format this version does not recognize are the same: nothing was read as usage.
+    expect(targetStatus(undefined, { max: 60 }, changed)).toMatchObject({ state: "unknown", unread: true });
+    // Older snapshots without a per-source split: the global state is Copilot's.
+    expect(targetStatus(undefined, { max: 60 }, { ...health, state: "permission" })).toMatchObject({ state: "unknown", unread: true });
+  });
+
+  it("targetStatus: a Copilot amount kept from an earlier good read is a lower bound, not unknown", () => {
+    const full = t(m(10 * USD, 3));
+    expect(targetStatus(full, { max: 60 }, locked)).toEqual({ state: "in", partial: true });
+    expect(targetStatus(t(m(70 * USD, 3)), { max: 60 }, locked)).toEqual({ state: "over", partial: false });
+    expect(targetStatus(full, { max: 60 }, changed)).toEqual({ state: "in", partial: true });
+    expect(copilotIncomplete(locked)).toBe(true);
+    expect(copilotIncomplete(changed)).toBe(true);
+  });
+
+  it("a missing Copilot folder (not installed) stays a complete $0; another source's lock does not matter", () => {
+    expect(targetStatus(claudeOnly, { max: 60 }, missing)).toEqual({ state: "in", partial: false });
+    expect(targetStatus(claudeOnly, { max: 60 }, claudeLocked)).toEqual({ state: "in", partial: false });
+    expect(targetStatus(t(m(10 * USD, 3)), { max: 60 }, claudeLocked)).toEqual({ state: "in", partial: false });
+  });
+
+  it("every surface: status bar text, accessibility label, tooltip, side bar, overview hero, Month to date, Last 7 days and trend", () => {
+    const month = { monthStartMs: nov, isCurrent: true, days: [{ dayStartMs: day, totals: claudeOnly }], sessions: [], projects: [], tools: [], totals: claudeOnly } as unknown as Snapshot["month"];
+    const history = [{ monthStartMs: nov, totals: claudeOnly }] as Snapshot["history"];
+    const s: Snapshot = { generatedAtMs: day, dayStartMs: day, sessions: [], health: locked, thisMonth: claudeOnly, today: claudeOnly, last7: claudeOnly, month, history };
+    expect(statusParts(s, view)).toMatchObject({ state: "unknown", partial: false, unread: true });
+    expect(statusText(s, view)).toMatch(/^\$\(question\) /);
+    const said = statusAccessibilityLabel(s, view);
+    expect(said).toContain("Copilot logs not read, target up to 60.00 US dollars not compared");
+    expect(said).not.toContain("in target range");
+    const md = tooltipMarkdown(s, view);
+    expect(md).not.toContain("in target range");
+    expect(md.match(/Copilot logs not read\\, target not compared/g)).toHaveLength(3);
+    const marked = sidebarRows(buildSidebarModel(s, view)).filter((r) => r.marker && r.marker.kind !== "filtered");
+    expect(marked.length).toBeGreaterThanOrEqual(3);
+    for (const r of marked) {
+      expect(r.marker).toEqual({ kind: "unknown", text: "not compared" });
+      expect(r.spoken).toContain("Copilot logs not read, target not compared");
+      expect(r.title).toContain("Copilot logs not read, target not compared");
+      expect(r.title).not.toContain("in target range");
+    }
+    const html = renderOverview(s, view);
+    const subs = [...html.matchAll(/<div class="sub">([\s\S]*?)<\/div>/g)].map((x) => x[1]!);
+    for (const what of ["Daily target", "Target up to", "Weekly target"]) {
+      const sub = subs.find((x) => x.includes(what))!;
+      expect(sub).toContain("Not compared");
+      expect(sub).not.toContain("In range");
+    }
+    expect(html).not.toContain("in target range");
+    const tr = trend(s, view);
+    expect(tr).toContain("Copilot logs not read, target not compared");
+    expect(tr).toContain("? Not compared");
+  });
+
+  it("restoring access with spend above the max says Over; before it, nothing claimed In range", () => {
+    const before: Snapshot = { generatedAtMs: day, dayStartMs: day, sessions: [], health: locked, thisMonth: claudeOnly };
+    expect(statusParts(before, COST).state).toBe("unknown");
+    const copilotOver: Totals = { ...t(m(75 * USD)), sources: { copilot: 1, "claude-code": 1 }, bySource: { copilot: t(m(70 * USD)), "claude-code": t(m(5 * USD)) } };
+    const after: Snapshot = { ...before, health: { ...health, sources: { copilot: src(), "claude-code": src() } }, thisMonth: copilotOver };
+    expect(statusParts(after, COST).state).toBe("over");
   });
 });

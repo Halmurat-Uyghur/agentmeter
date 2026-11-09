@@ -153,7 +153,7 @@ export function trend(s: Snapshot, view: ViewOptions): string {
     band = `<span class="band" style="bottom:${pct(lo)}%;height:${(Number(pct(hi)) - Number(pct(lo))).toFixed(1)}%" title="${escapeHtml(`Target ${formatRange(range)}${only}`)}"></span>`;
   }
   // "?" (not compared) is listed only when a month in the window has records but no logged amount.
-  const anyUnknown = range !== undefined && hist.some((h) => targetStatus(h.totals, range).state === "unknown");
+  const anyUnknown = range !== undefined && hist.some((h) => targetStatus(h.totals, range, s.health).state === "unknown");
   const unknownLg = anyUnknown ? ` <b class="st-unknown"></b>${STATE_MARK.unknown} Not compared` : "";
   const legend = range
     ? `<span class="lg"><b class="st-under"></b>${STATE_MARK.under} Under <b class="st-in"></b>${STATE_MARK.in} In range <b class="st-over"></b>${STATE_MARK.over} Over${unknownLg} <b class="bandsw"></b>Target ${escapeHtml(formatRange(range) + only)}</span>`

@@ -1,6 +1,6 @@
 // Review finding #5: a discovery that fails at the root for a reason other than a missing
 // folder or a permission error (EIO, EMFILE...) must not leave totals looking complete. The
-// last good figures stay, the source is marked partial (one unreadable root) and the state
+// last good figures stay, the source is marked partial (discoveryFailed) and the state
 // clears when a discovery succeeds again; a missing root stays "not found", not a failure.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
@@ -13,6 +13,9 @@ import { UsageMonitor } from "../../src/core/monitor";
 import { emptyReadResult, type SourceReader } from "../../src/core/source";
 import type { Snapshot } from "../../src/core/types";
 import { sourcesHealthBox } from "../../src/core/panel/sources";
+import { healthBox } from "../../src/core/panel/health";
+import { partialReasons } from "../../src/core/panel/shared";
+import { currentTargetStatus } from "../../src/core/format";
 import { jsonl, sessionTree, usageEvent } from "../fixtures/build";
 import { claudeAssistantLine, claudeTree } from "../fixtures/claude";
 
@@ -107,8 +110,9 @@ describe("root discovery failures (finding #5)", () => {
     const h = last().health;
     expect(last().today).toBeUndefined();
     expect(h.partial).toBe(true);
-    expect(h.unreadableFiles).toBe(1);
-    expect(h.sources?.copilot).toMatchObject({ discoveryFailed: true, unreadableFiles: 1 });
+    // A failed listing is no unreadable log (Codex review of PR #22): partial says it on its own.
+    expect(h.unreadableFiles).toBe(0);
+    expect(h.sources?.copilot).toMatchObject({ discoveryFailed: true, unreadableFiles: 0 });
     expect(h.sources?.copilot?.state).not.toBe("no-dir");
     expect(sourcesHealthBox(last())).toContain("could not be listed");
     expect(logLines.filter((l) => l === "error discover OTHER")).toHaveLength(1);
@@ -135,7 +139,7 @@ describe("root discovery failures (finding #5)", () => {
     await monitor!.refresh({ full: true });
     expect(last().today?.records).toBe(2);
     expect(last().health.partial).toBe(true);
-    expect(last().health.sources?.copilot).toMatchObject({ discoveryFailed: true, unreadableFiles: 1, sessions: 1 });
+    expect(last().health.sources?.copilot).toMatchObject({ discoveryFailed: true, unreadableFiles: 0, sessions: 1 });
     expect(last().health.state).toBe("ok");
 
     fail.on = false;
@@ -338,5 +342,27 @@ describe("discovery failure after a root error (review C, U, D)", () => {
     }
     expect(calls.n).toBe(n);
     expect(snaps.length).toBe(built);
+  });
+});
+
+describe("Codex review of PR #22: a failed root listing is not an unreadable log", () => {
+  it("Data health shows the folder as its own fact, 'Unreadable logs' stays 0, the read is partial and the target starred", async () => {
+    await sessionTree(copilotRoot, [{ id: A, lines: jsonl([pRec(1)]), mtime: new Date(HOT) }]);
+    const fail = { on: true };
+    failSessionState(fail);
+    make();
+    await monitor!.refresh({ full: true });
+    const s = last();
+    expect(s.health.partial).toBe(true);
+    expect(s.health.unreadableFiles).toBe(0);
+    expect(s.health.sources?.copilot).toMatchObject({ discoveryFailed: true, unreadableFiles: 0 });
+    const box = healthBox(s);
+    expect(box).toContain('<span>Unreadable logs</span><span class="num">0</span>');
+    expect(box).toContain('<span>Log folders that could not be listed</span><span class="num star">1</span>');
+    const src = sourcesHealthBox(s);
+    expect(src).toContain('<span>Unreadable logs</span><span class="num">0</span>');
+    expect(src).toContain('<span>Folder listings that failed</span><span class="num star">1</span>');
+    expect(partialReasons(s.health)).toBe("Totals may be incomplete: a log folder could not be listed; new sessions may be missing.");
+    expect(currentTargetStatus(s, { unit: "cost", range: { max: 60 } })).toEqual({ state: "in", partial: true });
   });
 });

@@ -2,9 +2,9 @@
 // date folder of the day it started. A folder older than the window must not hide a file whose
 // mtime is in the window.
 import * as fs from "node:fs";
-import { appendFile, mkdtemp, rm, utimes } from "node:fs/promises";
+import { appendFile, mkdtemp, rename, rm, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CODEX_OLD_SCAN_MS, CodexSourceReader, discoverCodex } from "../../src/core/codex";
 import { codexMeta, codexTree } from "../fixtures/codex";
@@ -140,5 +140,58 @@ describe("Codex sessions resumed from an old date folder (review #1)", () => {
     const quick = await r.discover(windowStart, dayStart, now + 2000);
     expect(quick.ok && quick.unreadable).toEqual([]);
     expect(quick.ok && quick.candidates.map((c) => c.sessionId)).toEqual([id(1)]);
+  });
+  // Review of PR #22 (P2): a quick walk re-stats cached paths without listing their folders, so
+  // a year, month or day folder swapped for a symlink to a folder outside sessions/ must not let
+  // it pick up a rollout from outside the root. A full walk never descends into a symlink.
+  it.skipIf(process.platform === "win32").each([
+    ["day", 3],
+    ["month", 2],
+    ["year", 1],
+  ])("a cached old path whose %s folder became a symlink out of the root is dropped by the quick walk", async (_level, up) => {
+    const outside = await mkdtemp(join(tmpdir(), "cum-codex-outside-"));
+    try {
+      const [p] = await codexTree(root, [{ date: "2026/10/20", sessionId: id(1), lines: [codexMeta()], mtime: new Date(now - 60_000) }]);
+      const r = new CodexSourceReader({ root, rootSource: "default", readProjects: true, readTotals: true });
+      const first = await r.discover(windowStart, dayStart, now);
+      expect(first.ok && first.candidates.map((c) => c.sessionId)).toEqual([id(1)]);
+
+      // Move the folder out of the root and leave a symlink to it in its place; the file resolves through it.
+      let folder = p!;
+      for (let i = 0; i < 4 - up; i++) folder = dirname(folder);
+      const moved = join(outside, "moved");
+      await rename(folder, moved);
+      await symlink(moved, folder, "dir");
+      await utimes(p!, new Date(now), new Date(now));
+      expect(fs.existsSync(p!)).toBe(true);
+
+      const quick = await r.discover(windowStart, dayStart, now + 1000);
+      expect(quick.ok && quick.candidates).toEqual([]);
+      expect(quick.ok && quick.unreadable).toEqual([]);
+      // Dropped from the cache, and a full walk does not find it either.
+      const later = await r.discover(windowStart, dayStart, now + 2000);
+      expect(later.ok && later.candidates).toEqual([]);
+      const full = await r.discover(windowStart, dayStart, now + 3000, { full: true });
+      expect(full.ok && full.candidates).toEqual([]);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("an in-window day folder swapped for a symlink out of the root is not walked", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "cum-codex-outside-"));
+    try {
+      const [p] = await codexTree(root, [{ date: "2026/11/08", sessionId: id(1), lines: [codexMeta()], mtime: new Date(now - 5000) }]);
+      const r = new CodexSourceReader({ root, rootSource: "default", readProjects: true, readTotals: true });
+      const first = await r.discover(windowStart, dayStart, now);
+      expect(first.ok && first.candidates.map((c) => c.sessionId)).toEqual([id(1)]);
+      const day = dirname(p!);
+      await rename(day, join(outside, "08"));
+      await symlink(join(outside, "08"), day, "dir");
+      const quick = await r.discover(windowStart, dayStart, now + 1000);
+      expect(quick.ok && quick.candidates).toEqual([]);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });

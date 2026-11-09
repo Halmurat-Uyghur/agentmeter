@@ -1,7 +1,7 @@
 // Sessions (D32): the current session's tiles, then the viewed month's
 // costliest sessions (the snapshot keeps up to 50; 10 show, the rest fold).
 import { costLabel, formatCount, formatUsd, multiSource, notLiveWord, SESSION_TOTAL_NOTE, usd } from "../format";
-import { contextGrew, GROWTH_FLAG } from "../insights";
+import { contextGrew, GROWTH_CAUSE_TEXT, GROWTH_FLAG } from "../insights";
 import { modelFamily } from "../store";
 import type { SessionSummary, Snapshot, ViewOptions } from "../types";
 import { promptsCard, sessionDetailCard } from "./explain";
@@ -28,12 +28,18 @@ function cacheCell(x: SessionSummary): string {
 }
 
 /** Why a flagged session's later calls cost more: its context when its input grew too; unclear
- * when the compared calls logged no input (unmeasured, not disproven); otherwise a costlier
- * model or longer replies. */
+ * when the compared calls logged no input (unmeasured, not disproven); otherwise only what its
+ * calls show (another model, longer replies, fewer cache reads), else unclear. */
 function growthCause(x: SessionSummary): string {
   if (contextGrew(x)) return `: later calls became more expensive as their input grew ${x.inputGrowth!.toFixed(1)}×, so the context grew; a fresh session may be cheaper`;
   if (x.inputGrowth === undefined) return ": later calls became more expensive; input tokens were not logged for these calls, so the cause is unclear";
-  return ": later calls became more expensive, but their input did not grow as much (a costlier model or longer replies)";
+  const causes = x.growthCauses ?? [];
+  const why = causes.length === 0 ? "the cause is unclear" : `their calls show ${listOf(causes.map((c) => GROWTH_CAUSE_TEXT[c]))}`;
+  return `: later calls became more expensive, but their input did not grow as much; ${why}`;
+}
+
+function listOf(xs: string[]): string {
+  return xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 }
 
 function sessionsTable(s: Snapshot, view: ViewOptions): string {

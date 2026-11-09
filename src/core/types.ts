@@ -169,8 +169,10 @@ export interface SourceHealth {
 export interface Health {
   state: HealthState;
   rootSource: "setting" | "env" | "default";
-  /** unreadableFiles + malformed + overlong > 0, or an oversize session.shutdown line in a log
-   * without per-call records (where that line was the only source of the session's figures) */
+  /** unreadableFiles + malformed + overlong > 0, files over the discovery cap, a source folder
+   * whose last listing failed (SourceHealth.discoveryFailed; not counted in unreadableFiles), or
+   * an oversize session.shutdown line in a log without per-call records (where that line was the
+   * only source of the session's figures) */
   partial: boolean;
   unrecognized: number;
   malformed: number;
@@ -339,6 +341,11 @@ export interface SessionSummary {
   /** with growth: mean prompt tokens of those last 5 calls ÷ the first 5; undefined when any
    * of them lacks input. Only this says the context grew (a costlier model also raises growth). */
   inputGrowth?: number;
+  /** with growth: what else the last 5 calls show against the first 5, each only when measured
+   * on all ten: "model", a late call used a model no early call used; "output", their output
+   * tokens grew (OUTPUT_GROWTH_FLAG); "cache", their cache-read share fell (CACHE_SHARE_DROP).
+   * Absent when none holds. */
+  growthCauses?: ("model" | "output" | "cache")[];
 }
 
 /** Prompts and the agent calls they triggered (v0.6, item 1.2). A prompt is a call with
@@ -564,7 +571,7 @@ export type RangeState = "none" | "under" | "in" | "over" | "unknown";
  * the starting level) and is the ranking key; `tokens` is input + output of the same calls. */
 export type Insight =
   | { id: "long-context"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; thresholdTokens: number; maxPromptTokens: number }
-  | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[]; inputGrew?: boolean; inputGrewSessions?: number; inputUnmeasuredSessions?: number }
+  | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[]; inputGrew?: boolean; inputGrewSessions?: number; inputUnmeasuredSessions?: number; flatCauses?: { model: number; output: number; cache: number; unclear: number } }
   | { id: "cache-reuse"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; share: number; meanPromptTokens: number };
 
 export interface InsightsView {

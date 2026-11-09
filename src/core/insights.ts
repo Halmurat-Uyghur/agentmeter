@@ -16,6 +16,13 @@ export function contextGrew(s: { inputGrowth?: number }): boolean {
   return s.inputGrowth !== undefined && s.inputGrowth >= INPUT_GROWTH_FLAG;
 }
 
+/** What each of SessionSummary.growthCauses names in the panel's copy. */
+export const GROWTH_CAUSE_TEXT: Record<"model" | "output" | "cache", string> = {
+  model: "a switch to another model",
+  output: "longer replies",
+  cache: "fewer cache reads",
+};
+
 const NANO_PER_USD = 1e11;
 /** Shared floors: the flagged AIU must reach $1.00 and 5 in 100 of the viewed month's AIU. */
 const FLOOR_NANO = 1 * NANO_PER_USD;
@@ -132,7 +139,18 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
     inputGrew: flagged.every(contextGrew),
     inputGrewSessions: flagged.filter(contextGrew).length,
     inputUnmeasuredSessions: flagged.filter((s) => s.inputGrowth === undefined).length,
+    // Where input was logged and did not grow: only the causes their own calls show.
+    flatCauses: flatCauses(flagged.filter((s) => s.inputGrowth !== undefined && !contextGrew(s))),
   };
+}
+
+function flatCauses(flat: SessionSummary[]): { model: number; output: number; cache: number; unclear: number } {
+  const out = { model: 0, output: 0, cache: 0, unclear: 0 };
+  for (const s of flat) {
+    if (s.growthCauses === undefined || s.growthCauses.length === 0) out.unclear++;
+    else for (const c of s.growthCauses) out[c]++;
+  }
+  return out;
 }
 
 /** I1: calls past a model's long-context price threshold; the costliest model wins. */

@@ -96,6 +96,8 @@ export function sourcesHealthBox(s: Snapshot): string {
     const head = `<h4 class="srch"><span class="srcchip src-${x}">${escapeHtml(SOURCE_LABEL[x])}</span> <span>${escapeHtml(sourceStatus(x, h))}</span></h4>`;
     if (h.state === "off" || (h.state === "no-dir" && h.discoveryFailed !== true)) return head;
     const facts = [
+      // A failed listing is its own fact, not an unreadable log (Codex review of PR #22).
+      h.discoveryFailed === true ? fact("Folder listings that failed", 1, true) : "",
       fact("Unreadable logs", h.unreadableFiles, true),
       fact("Lines in an unknown format", h.unrecognized, true),
       fact("Malformed lines", h.malformed, true),

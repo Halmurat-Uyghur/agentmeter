@@ -543,10 +543,43 @@ async function discoverCodexWalk(
   if (known !== undefined) {
     // Between walks of the old folders: the old files last found in the window are re-stat'ed
     // (one that fails is kept, to be tried again) and the last walk's unreadable folders carried.
+    // A cached path is only re-stat'ed while each of its year, month and day folders is still a
+    // real folder: one replaced by a symlink (which a full walk never descends into) would
+    // otherwise lead the lstat, and the reader, outside the root. Checks are shared within a walk.
     old.unreadable.push(...known.unreadable);
-    for (const p of known.paths) {
+    const dirChecks = new Map<string, Promise<"ok" | "gone" | string>>();
+    const realDir = (dir: string): Promise<"ok" | "gone" | string> => {
+      let c = dirChecks.get(dir);
+      if (c === undefined) {
+        c = fs.promises.lstat(dir).then(
+          (st) => (st.isDirectory() ? "ok" : "gone"),
+          (e: unknown) => {
+            const code = errCode(e);
+            return code === "ENOENT" || code === "ENOTDIR" ? "gone" : code;
+          },
+        );
+        dirChecks.set(dir, c);
+      }
+      return c;
+    };
+    paths: for (const p of known.paths) {
       const sessionId = sessionIdOf(path.basename(p));
-      if (sessionId !== undefined && (await consider(p, sessionId, unreadable)) !== "skipped") old.paths.push(p);
+      if (sessionId === undefined) continue;
+      const segs = path.relative(sessions, p).split(/[\\/]/);
+      if (segs.length !== 4) continue;
+      let dir = sessions;
+      for (const seg of segs.slice(0, 3)) {
+        dir = path.join(dir, seg);
+        const check = await realDir(dir);
+        if (check === "gone") continue paths;
+        if (check !== "ok") {
+          // Not verifiable now (e.g. EACCES): kept, to be tried again, and reported like a failed lstat.
+          unreadable.push({ folderId: sessionId, path: p, code: check });
+          old.paths.push(p);
+          continue paths;
+        }
+      }
+      if ((await consider(p, sessionId, unreadable)) !== "skipped") old.paths.push(p);
     }
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);

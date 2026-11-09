@@ -207,9 +207,12 @@ function markerText(st: TargetStatus): string {
   return rangeWord(st).toLowerCase();
 }
 
-function row(o: Omit<SidebarRow, "spoken" | "title"> & { title: string[]; said?: string }, cost: boolean): SidebarRow {
-  const { said: name, ...rest } = o;
-  const mark = o.marker && (o.marker.kind === "filtered" ? "filtered" : o.marker.text.endsWith("*") ? spoken(RANGE_LABEL[o.marker.kind] + "*") : RANGE_LABEL[o.marker.kind]);
+/** `markSaid`: a target marker's full label (rangeLabel), when it says more than its kind does
+ * (Copilot logs not read rather than an amount not logged). */
+function row(o: Omit<SidebarRow, "spoken" | "title"> & { title: string[]; said?: string; markSaid?: string }, cost: boolean): SidebarRow {
+  const { said: name, markSaid, ...rest } = o;
+  const label = o.marker && o.marker.kind !== "filtered" ? (markSaid ?? (o.marker.text.endsWith("*") ? RANGE_LABEL[o.marker.kind] + "*" : RANGE_LABEL[o.marker.kind])) : undefined;
+  const mark = o.marker && (o.marker.kind === "filtered" ? "filtered" : label!.endsWith("*") ? spoken(label!) : label);
   const value = cost && o.value !== DASH ? `${o.value} est.` : o.value;
   const said = [`${name ?? o.label}: ${spoken(value)}`, mark].filter(Boolean).join(", ");
   return { ...rest, title: [SIDEBAR_BANNER, ...o.title].join("\n"), spoken: said };
@@ -348,6 +351,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const month = thisMonthTotals(s);
   const status = statusParts(s, view);
   const marker = status.state === "none" ? undefined : { kind: status.state, text: markerText(status) };
+  const markSaid = status.state === "none" ? undefined : rangeLabel(status);
   // In tokens view the target (a USD range) is named by its state only, like the status bar.
   const target =
     status.state === "none"
@@ -359,10 +363,10 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const periodTarget = (c: Totals | undefined, range: ViewOptions["range"], what: string, period: string) => {
     const ts = targetStatus(c, range, s.health);
     const st = ts.state;
-    if (st === "none") return { marker: undefined, lines: [] as string[] };
+    if (st === "none") return { marker: undefined, markSaid: undefined, lines: [] as string[] };
     const marker = { kind: st, text: markerText(ts) };
     const lines = view.unit === "cost" ? [`${what} ${formatRange(range)}${mixedSources(c?.sources) ? " (Copilot only)" : ""}: ${rangeLabel(ts)}.`] : [`Estimated ${currencyCode()} ${period}${st === "unknown" ? ":" : " is"} ${rangeLabel(ts)}.`];
-    return { marker, lines };
+    return { marker, markSaid: rangeLabel(ts), lines };
   };
   const dayT = periodTarget(today, view.dayTarget, "Daily target", "today");
   const weekT = periodTarget(last7, view.weekTarget, "Weekly target", "over the last 7 days");
@@ -375,7 +379,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         id: "today",
         label: "Today",
         value: countsFigure(today, view, partial),
-        ...(dayT.marker && { marker: dayT.marker }),
+        ...(dayT.marker && { marker: dayT.marker, markSaid: dayT.markSaid }),
         title: ["Since local midnight on this computer.", ...dayT.lines, ...detailLines(today, view, h), "Opens Daily."],
         link: section("daily"),
       }),
@@ -383,7 +387,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         id: "week",
         label: "Last 7 days",
         value: countsFigure(last7, view, partial || short),
-        ...(weekT.marker && { marker: weekT.marker }),
+        ...(weekT.marker && { marker: weekT.marker, markSaid: weekT.markSaid }),
         title: [
           "Today and the 6 days before it.",
           ...weekT.lines,
@@ -398,7 +402,7 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
         id: "month",
         label: "This month",
         value: countsFigure(month, view, partial),
-        ...(marker && { marker }),
+        ...(marker && { marker, markSaid }),
         title: [`${monthName}, from the 1st. Never filtered.`, ...target, ...detailLines(month, view, h), "Opens Overview."],
         link: section("overview"),
       }),

@@ -748,13 +748,13 @@ describe("review findings J and N (side bar)", () => {
   });
 
   it("N: a folder that could not be listed is not counted as an unreadable log", () => {
-    const h = health({ partial: true, unreadableFiles: 1, sources: { copilot: { state: "ok", rootSource: "default", files: 0, sessions: 0, unreadableFiles: 1, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } } });
+    const h = health({ partial: true, unreadableFiles: 0, sources: { copilot: { state: "ok", rootSource: "default", files: 0, sessions: 0, unreadableFiles: 0, unrecognized: 0, malformed: 0, overlong: 0, overlongOther: 0, discoveryFailed: true } } });
     const model = buildSidebarModel(snap({ health: h }), TOKENS);
     expect(model.health?.text).toBe("Partial data · a log folder could not be listed; new sessions may be missing");
     expect(model.health?.title).toContain("a log folder could not be listed; new sessions may be missing");
     expect(model.health?.title).not.toContain("could not be read");
-    // a failed folder and two unreadable logs: both named, the logs counted without the folder
-    const both = buildSidebarModel(snap({ health: { ...h, unreadableFiles: 3 } }), TOKENS);
+    // a failed folder and two unreadable logs: both named (a failed listing is not in unreadableFiles)
+    const both = buildSidebarModel(snap({ health: { ...h, unreadableFiles: 2 } }), TOKENS);
     expect(both.health?.title).toContain("a log folder could not be listed; new sessions may be missing; 2 logs could not be read");
   });
 });

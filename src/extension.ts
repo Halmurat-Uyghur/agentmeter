@@ -218,17 +218,27 @@ export function activate(context: vscode.ExtensionContext): void {
   const saveGen = new Map<SettingKey, number>();
   /** keys with a write that has not settled yet */
   const saving = new Set<string>();
-  /** Every write issued for a key since its latest write began, that VS Code did not refuse: an
-   * older pick's save can land (and fire its change event) while a newer one is in flight, and
-   * that event is ours, not an outside edit. Cleared once the key's latest write settles. */
-  const issued = new Map<string, { value: unknown; target: vscode.ConfigurationTarget }[]>();
+  /** Our writes for a key whose change event may still arrive: an older pick's save can land (and
+   * fire its event) while a newer one is in flight, and that event is ours, not an outside edit.
+   * Each write accounts for at most one event: its entry is consumed by the first event that shows
+   * its value, dropped when VS Code refuses it, and dropped once a later write of ours lands at the
+   * same scope (VS Code fires no event for an unchanged value, so a landed entry may never be
+   * consumed). Cleared once the key's latest write settles. A stored value matching only a consumed
+   * or superseded write is an outside edit (review fix: latest choice wins). */
+  type Issued = { value: unknown; target: vscode.ConfigurationTarget; landed: boolean };
+  const issued = new Map<string, Issued[]>();
   const settled = (key: string) => {
     saving.delete(key);
     issued.delete(key);
   };
-  /** whether the stored value at a write's scope is one of our in-flight or just-landed writes */
-  const ours = (k: string, o: { value: unknown; target: vscode.ConfigurationTarget }) =>
-    atScope(k, o.target) === o.value || (issued.get(k) ?? []).some((w) => atScope(k, w.target) === w.value);
+  /** whether a change event for `k` is one of our writes; consumes that write's entry if so */
+  const claimOwn = (k: string) => {
+    const list = issued.get(k);
+    const i = list?.findIndex((w) => atScope(k, w.target) === w.value) ?? -1;
+    if (!list || i < 0) return false;
+    list.splice(i, 1);
+    return true;
+  };
   /** cancels a key's pending retry wait (a newer write for that key, or deactivate) */
   const retryWait = new Map<SettingKey, () => void>();
   let view = readView(rate, get);
@@ -264,12 +274,18 @@ export function activate(context: vscode.ExtensionContext): void {
     const latest = () => !disposed && saveGen.get(key) === gen;
     const c = vscode.workspace.getConfiguration(SECTION);
     for (let attempt = 0; ; attempt++) {
-      const w = { value, target };
+      const w: Issued = { value, target, landed: false };
       const mine = issued.get(key) ?? [];
       mine.push(w);
       issued.set(key, mine);
       try {
         await c.update(key, value, target);
+        // an earlier landed write at this scope can no longer be the source of an event
+        const list = issued.get(key);
+        if (list) {
+          for (let j = list.length - 1; j >= 0; j--) if (list[j]!.landed && list[j]!.target === target) list.splice(j, 1);
+          w.landed = true;
+        }
         if (!latest()) return true;
         settled(key);
         overrides.delete(key);
@@ -683,13 +699,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       // An outside edit of a setting whose save was refused replaces the unsaved choice (review fix 2).
-      // While a write is in flight or waiting to retry, the event of our own save leaves the written
-      // value at its scope (or, with overlapping picks, an older pick's value that just landed);
-      // anything else there is an outside edit: it wins, and the retry stands down (review fix A).
-      for (const [k, o] of [...overrides]) {
+      // While a write is in flight or waiting to retry, each of our saves accounts for one event that
+      // leaves its value at its scope (with overlapping picks, possibly an older pick's); anything
+      // else, including a value of ours already accounted for, is an outside edit: it wins, and the
+      // retry stands down (review fix A).
+      for (const k of [...overrides.keys()]) {
         if (!e.affectsConfiguration(`${SECTION}.${k}`)) continue;
         if (saving.has(k)) {
-          if (ours(k, o)) continue;
+          if (claimOwn(k)) continue;
           const key = k as SettingKey;
           saveGen.set(key, (saveGen.get(key) ?? 0) + 1);
           retryWait.get(key)?.();

@@ -340,6 +340,65 @@ describe("settings writes: overlapping saves of one setting", () => {
   });
 });
 
+describe("settings writes: each of our saves accounts for one change event", () => {
+  it("a hand edit back to an older landed pick during the retry wait wins over the retry", async () => {
+    const { fake, cmd, testState, saved, deactivate } = await load({ palette: "ember" });
+    fake.state.holdUpdates = true;
+    const a = cmd("selectPalette")("ocean");
+    await settle();
+    const b = cmd("selectPalette")("forest");
+    await settle();
+    const c = cmd("selectPalette")("rose");
+    await settle();
+    fake.state.holdUpdates = false;
+    expect(fake.state.held).toHaveLength(3);
+    // Ocean's and Forest's saves land (their events are ours); Rose's is refused and waits to retry
+    fake.state.held[0]!();
+    await settle();
+    fake.state.held[1]!();
+    await settle();
+    fake.state.updateReject = true;
+    fake.state.held[2]!();
+    await settle();
+    expect(testState().panelPalette).toBe("rose");
+    // the user sets Ocean by hand in settings.json during the wait
+    fake.state.updateReject = false;
+    fake.state.global[`${SECTION}.palette`] = "ocean";
+    fake.fireConfigChange(`${SECTION}.palette`);
+    expect(testState().panelPalette).toBe("ocean");
+    await vi.advanceTimersByTimeAsync(1500);
+    await Promise.all([a, b, c]);
+    expect(fake.state.updates.map((u) => u[1])).toEqual(["ocean", "forest"]);
+    expect(saved("palette")).toBe("ocean");
+    expect(testState().panelPalette).toBe("ocean");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+
+  it("an event showing the in-flight value counts as ours only once", async () => {
+    const { fake, cmd, testState, saved, errors, deactivate } = await load({ palette: "ember" });
+    fake.state.holdUpdates = true;
+    const p = cmd("selectPalette")("rose");
+    await settle();
+    fake.state.holdUpdates = false;
+    // the user writes Rose by hand twice while our save of Rose is still in flight
+    fake.state.global[`${SECTION}.palette`] = "rose";
+    fake.fireConfigChange(`${SECTION}.palette`); // taken for our save's event
+    fake.fireConfigChange(`${SECTION}.palette`); // not ours: an outside edit, the write stands down
+    // our save is then refused: no retry, and the hand-saved Rose is not marked unsaved
+    fake.state.updateReject = true;
+    fake.state.held[0]!();
+    await settle();
+    await vi.advanceTimersByTimeAsync(1500);
+    await p;
+    expect(errors()).toHaveLength(1);
+    expect(saved("palette")).toBe("rose");
+    expect(testState().panelPalette).toBe("rose");
+    expect(testState().prefs.unsaved).toEqual([]);
+    deactivate();
+  });
+});
+
 describe("settings writes: the target alert uses the effective setting (review fix B)", () => {
   it("a refused \"on\" is what the alert is checked with", async () => {
     const { fake, cmd, deactivate } = await load();

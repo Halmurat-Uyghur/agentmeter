@@ -20,7 +20,8 @@ interface Entry {
   file: string;
   folderId: string;
   /** later holders, file → folderId (or, when that file's copy named another session,
-   * its folderId and sessionId), in the order they arrived; undefined while there are none */
+   * its folderId and sessionId; an exact folder copy is filed under its own folder's session),
+   * in the order they arrived; undefined while there are none */
   more: Map<string, Holder> | undefined;
 }
 
@@ -30,6 +31,13 @@ type Holder = string | { folderId: string; sessionId: string };
 
 function folderOf(h: Holder): string {
   return typeof h === "string" ? h : h.folderId;
+}
+
+/** The session a holder in folder `folderId` files the call under once it owns it. An exact copy
+ * of a folder carries the owner folder's name as its session id; under its own folder it is that
+ * folder's session (the monitor finds a folder's current session by sessionId === folderId). */
+function copySession(sessionId: string, folderId: string, ownerFolderId: string): string {
+  return sessionId === ownerFolderId && folderId !== ownerFolderId ? folderId : sessionId;
 }
 
 function newEntry(record: UsageRecord, file: string, folderId: string): Entry {
@@ -275,10 +283,17 @@ export class UsageStore {
     }
     if (existing) {
       if (r.kind === "call" && this.promotedFrom.get(existing) === file) return this.restoreOwner(existing, r, file);
+      // The folder the call's session is named after arrives after a copy of it was read first:
+      // the original owns the call, as if it had been read first.
+      if (
+        r.kind === "call" && !hasFile(existing, file) && r.folderId !== existing.folderId &&
+        r.sessionId === existing.record.sessionId && r.folderId === r.sessionId
+      ) return this.restoreOwner(existing, r, file);
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
         if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
-        const holder: Holder = r.sessionId === existing.record.sessionId ? r.folderId : { folderId: this.intern(r.folderId), sessionId: this.intern(r.sessionId) };
+        const sessionId = copySession(r.sessionId, r.folderId, existing.folderId);
+        const holder: Holder = sessionId === existing.record.sessionId ? r.folderId : { folderId: this.intern(r.folderId), sessionId: this.intern(sessionId) };
         (existing.more ??= new Map()).set(file, holder);
       }
       return false;
@@ -309,7 +324,10 @@ export class UsageStore {
       bump(this.callsPerSession, idOf(old.source, sessionId), 1);
     }
     // Later holders are stored relative to the record's sessionId: restate them, the demoted owner first.
-    const rel = (f: string, s: string): Holder => (s === sessionId ? f : { folderId: f, sessionId: s });
+    const rel = (f: string, held: string): Holder => {
+      const s = copySession(held, f, folderId);
+      return s === sessionId ? f : { folderId: f, sessionId: s };
+    };
     const more = new Map<string, Holder>([[e.file, rel(e.folderId, old.sessionId)]]);
     if (e.more) for (const [f, h] of e.more) more.set(f, rel(folderOf(h), typeof h === "string" ? old.sessionId : h.sessionId));
     e.more = more;
@@ -363,7 +381,8 @@ export class UsageStore {
         // Remember the original owner (not a later promoted one), so its re-read restores it.
         if (promoted !== undefined && r.kind === "call" && !this.promotedFrom.has(entry)) this.promotedFrom.set(entry, file);
         // The surviving copy now owns the call: attribute it to that copy's folder (and session,
-        // when the copy named another one), so projects and the current session follow it.
+        // when the copy named another one; an exact copy names its own folder, see add), so
+        // projects and the current session follow it.
         // A session total stays put: totalKeys finds it by the folder it was set for.
         if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
           const sessionId = promoted.sessionId ?? r.sessionId;
@@ -541,6 +560,43 @@ export function byMonth(store: UsageStore, starts: number[], keep: (r: UsageReco
 }
 
 const GROWTH_SPAN = 5;
+/** A growing session's replies count as longer when its last 5 calls' output tokens are at
+ * least this many times its first 5's (SessionSummary.growthCauses). */
+export const OUTPUT_GROWTH_FLAG = 2;
+/** ... and its cache reuse as fallen when the cache-read share of its last 5 calls' prompt
+ * tokens is at least this much (out of 1) below its first 5's. */
+export const CACHE_SHARE_DROP = 0.25;
+
+/** What, besides input, changed from a growing session's first calls `head` to its last
+ * `tail`: only causes measured on every one of those calls, undefined when none holds. */
+function causesOf(head: UsageRecord[], tail: UsageRecord[], conventions: ReadonlyMap<string, PromptConvention>): SessionSummary["growthCauses"] {
+  const out: NonNullable<SessionSummary["growthCauses"]> = [];
+  const early = new Set(head.map((r) => r.model));
+  if (!early.has(undefined) && tail.some((r) => r.model !== undefined && !early.has(r.model))) out.push("model");
+  const outputs = (xs: UsageRecord[]) => xs.map((r) => r.tokens.output);
+  const ho = outputs(head);
+  const to = outputs(tail);
+  if (ho.every((x) => x !== undefined) && to.every((x) => x !== undefined)) {
+    const a = (ho as number[]).reduce((x, y) => x + y, 0);
+    const b = (to as number[]).reduce((x, y) => x + y, 0);
+    if (b > 0 && b >= OUTPUT_GROWTH_FLAG * a) out.push("output");
+  }
+  const share = (xs: UsageRecord[]): number | undefined => {
+    let prompt = 0;
+    let read = 0;
+    for (const r of xs) {
+      const p = pairedCache(r, conventions);
+      if (p === undefined) return undefined;
+      prompt += p.prompt;
+      read += p.read;
+    }
+    return prompt > 0 ? read / prompt : undefined;
+  };
+  const hs = share(head);
+  const ts = share(tail);
+  if (hs !== undefined && ts !== undefined && hs - ts >= CACHE_SHARE_DROP) out.push("cache");
+  return out.length > 0 ? out : undefined;
+}
 const ALL = () => true;
 
 export const NO_PROJECT = "(no project)";
@@ -769,6 +825,7 @@ export function sessionSummaries(
     let growth: number | undefined;
     let excessNanoAiu: number | undefined;
     let inputGrowth: number | undefined;
+    let growthCauses: SessionSummary["growthCauses"];
     if (priced.length >= 2 * GROWTH_SPAN) {
       const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
       const early = mean(priced.slice(0, GROWTH_SPAN));
@@ -776,8 +833,9 @@ export function sessionSummaries(
       if (early > 0) {
         growth = late / early;
         excessNanoAiu = priced.slice(GROWTH_SPAN).reduce((a, x) => a + Math.max(0, x - early), 0);
-        // The same calls' prompt tokens: only their growth says the context grew (a costlier
-        // model or longer replies also raise cost). Undefined when any of them lacks input.
+        // The same calls' prompt tokens: only their growth says the context grew (another
+        // model, longer replies or fewer cache reads also raise cost; growthCauses checks those).
+        // Undefined when any of them lacks input.
         const prompts = (xs: UsageRecord[]) => xs.map((r) => promptOf(r, conventions));
         const head = prompts(pricedRecs.slice(0, GROWTH_SPAN));
         const tail = prompts(pricedRecs.slice(-GROWTH_SPAN));
@@ -785,6 +843,7 @@ export function sessionSummaries(
           const earlyIn = mean(head as number[]);
           if (earlyIn > 0) inputGrowth = mean(tail as number[]) / earlyIn;
         }
+        growthCauses = causesOf(pricedRecs.slice(0, GROWTH_SPAN), pricedRecs.slice(-GROWTH_SPAN), conventions);
       }
     }
     const sessionTotal = recs.every((r) => r.kind === "sessionTotal");
@@ -801,6 +860,7 @@ export function sessionSummaries(
       nanoAiu,
       ...(growth !== undefined && { growth }),
       ...(inputGrowth !== undefined && { inputGrowth }),
+      ...(growthCauses !== undefined && { growthCauses }),
       ...(sessionTotal && { sessionTotal }),
       input,
       cacheRead,

@@ -173,12 +173,38 @@ export interface TargetStatus {
   state: RangeState;
   /** the spend is a lower bound and the state could still change ("under" or "in" only) */
   partial: boolean;
+  /** "unknown" because Copilot's logs could not be read (a locked folder, or lines in a
+   * format this version does not recognize) and no Copilot amount is known, not because the
+   * records in scope logged none */
+  unread?: true;
 }
 
 /** A source's read left records out: an unreadable log or folder, a listing that failed,
  * malformed or over-long lines, or files over the discovery cap. */
 function sourceIncomplete(x: SourceHealth | undefined): boolean {
   return x !== undefined && (x.unreadableFiles + x.malformed + x.overlong + (x.capped ?? 0) > 0 || x.discoveryFailed === true);
+}
+
+/**
+ * Whether Copilot's logs could not be read as they are now (Codex review of PR #22): its folder
+ * is locked ("permission": nothing in it was read, with no unreadable-file count to show it) or
+ * its lines are in a format this version does not recognize ("format-changed"). Whatever Copilot
+ * amount these logs hold was not read: a missing amount is unknown, not $0, and a known one is a
+ * lower bound. A missing folder ("no-dir") is Copilot not installed: $0 stays $0. Without a
+ * per-source split (older snapshots) the whole read is Copilot's.
+ */
+export function copilotUnread(h: Health | undefined): boolean {
+  if (!h) return false;
+  const st = h.sources ? h.sources.copilot?.state : h.state;
+  return st === "permission" || st === "format-changed";
+}
+
+/** Whether `t` holds any Copilot record with a usage figure (a cost or a missing one): the
+ * part a target compares, split out like targetSpend does. */
+function hasCopilotAmount(t: Parameters<typeof targetSpend>[0]): boolean {
+  if (!t) return false;
+  const m = t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+  return m !== undefined && m.reported + m.missing > 0;
 }
 
 /**
@@ -190,6 +216,7 @@ function sourceIncomplete(x: SourceHealth | undefined): boolean {
 export function copilotIncomplete(h: Health | undefined): boolean {
   if (!h) return false;
   const src = h.sources;
+  if (copilotUnread(h)) return true;
   if (!src) return h.partial;
   if (sourceIncomplete(src.copilot)) return true;
   // What health.partial holds beyond the sources' own counts (an unread session.shutdown line).
@@ -198,18 +225,25 @@ export function copilotIncomplete(h: Health | undefined): boolean {
 
 /** The state of `t` against `range`, keeping unknown cost apart from $0 (review finding #3).
  * `health`: the snapshot's read; when Copilot's logs were read incompletely the spend is a
- * lower bound too, so "under" and "in" are starred like a record without a logged cost. */
+ * lower bound too, so "under" and "in" are starred like a record without a logged cost.
+ * When Copilot's logs could not be read at all (copilotUnread) and no Copilot amount is in
+ * scope, nothing was read to compare: the state is "unknown" ("Not compared"), never a
+ * definite $0 "In range". A Copilot amount kept from an earlier good read is a lower bound. */
 export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOptions["range"], health?: Health): TargetStatus {
-  const spend = targetSpend(t);
+  let spend = targetSpend(t);
+  const unread = range !== undefined && typeof spend === "object" && copilotUnread(health) && !hasCopilotAmount(t);
+  if (unread) spend = "unknown";
   const state = rangeState(spend, range);
   // Spend already above the max is over whatever is missing; below it, it is a lower bound.
   // "In" a min-only range stays in whatever is missing, so only a max makes "in" uncertain.
   const open = state === "under" || (state === "in" && range?.max !== undefined);
-  return { state, partial: typeof spend === "object" && (spend.partial || copilotIncomplete(health)) && open };
+  const partial = typeof spend === "object" && (spend.partial || copilotIncomplete(health)) && open;
+  return unread ? { state, partial, unread: true } : { state, partial };
 }
 
 /** RANGE_LABEL with "*" when the spend is a lower bound ("in target range*"). */
 export function rangeLabel(st: TargetStatus): string {
+  if (st.unread === true) return UNREAD_LABEL;
   return st.partial ? RANGE_LABEL[st.state] + "*" : RANGE_LABEL[st.state];
 }
 
@@ -330,6 +364,9 @@ export const RANGE_LABEL: Record<RangeState, string> = {
   unknown: "amount not logged, target not compared",
 };
 
+/** rangeLabel of an "unknown" state whose Copilot logs could not be read (TargetStatus.unread). */
+export const UNREAD_LABEL = "Copilot logs not read, target not compared";
+
 const RANGE_ICON_ID: Record<RangeState, string> = {
   none: "pulse",
   under: "arrow-down",
@@ -365,12 +402,12 @@ export function rangeIconId(state: RangeState): string {
   return RANGE_ICON_ID[state];
 }
 
-/** What `h.unreadableFiles` stands for: source folders whose last listing failed
- * (SourceHealth.discoveryFailed; the monitor counts each as one unreadable file) and log
- * files that could not be read (review finding N). */
+/** What made a read incomplete beyond its lines: source folders whose last listing failed
+ * (SourceHealth.discoveryFailed, review finding N) and log files that could not be read
+ * (`h.unreadableFiles`; a failed listing is not counted there, Codex review of PR #22). */
 export function unreadableParts(h: Health): { logs: number; folders: number } {
   const folders = Object.values(h.sources ?? {}).filter((x) => x?.discoveryFailed === true).length;
-  return { folders, logs: Math.max(0, h.unreadableFiles - folders) };
+  return { folders, logs: h.unreadableFiles };
 }
 
 /** "a log folder could not be listed; new sessions may be missing" (2 or more: "2 log folders"). */
@@ -400,12 +437,16 @@ export interface StatusParts {
   state: RangeState;
   /** the month's spend is a lower bound, so `state` ("under" or "in") may still change */
   partial: boolean;
+  /** see TargetStatus.unread */
+  unread?: true;
 }
 
 export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): StatusParts {
   // The icon is chosen independently, so a format change that stops every
   // record from parsing (no `today`) still shows the warning.
-  const { state, partial } = currentTargetStatus(s, view);
+  const st = currentTargetStatus(s, view);
+  const { state, partial } = st;
+  const unread = st.unread === true ? { unread: true as const } : {};
   const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
   const mode = view.statusBar ?? "today";
   const monthAbbr = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
@@ -418,12 +459,12 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
     // The current month is unfiltered (D31): a project or tool filter never reaches the status bar.
     let n = c ? formatUsd(c.nanoAiu) : DASH;
     if (s.health.partial) n = star(n);
-    return { icon, place, figure: n, suffix, state, partial };
+    return { icon, place, figure: n, suffix, state, partial, ...unread };
   }
-  if (!c) return { icon, place, figure: DASH, suffix: "", state, partial };
+  if (!c) return { icon, place, figure: DASH, suffix: "", state, partial, ...unread };
   let n = formatCount(addMetrics(c.input, c.output));
   if (s.health.partial) n = star(n);
-  return { icon, place, figure: `${n} tok`, suffix: "", state, partial };
+  return { icon, place, figure: `${n} tok`, suffix: "", state, partial, ...unread };
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
@@ -498,7 +539,7 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
     const month = period === "this month" ? "" : "this month ";
     const range = spoken(formatRange(view.range));
     // "amount not logged, target up to 60.00 US dollars not compared": the range belongs to the target.
-    parts.push(p.state === "unknown" ? `${month}amount not logged, target ${range} not compared` : `${month}${spoken(rangeLabel(p))} ${range}`);
+    parts.push(p.state === "unknown" ? `${month}${p.unread === true ? "Copilot logs not read" : "amount not logged"}, target ${range} not compared` : `${month}${spoken(rangeLabel(p))} ${range}`);
   }
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
