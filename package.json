@@ -56,12 +56,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor.git"
+    "url": "https://github.com/Halmurat-Uyghur/agentmeter.git"
   },
   "bugs": {
-    "url": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor/issues"
+    "url": "https://github.com/Halmurat-Uyghur/agentmeter/issues"
   },
-  "homepage": "https://github.com/Halmurat-Uyghur/copilot-usage-monitor#readme",
+  "homepage": "https://github.com/Halmurat-Uyghur/agentmeter#readme",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
