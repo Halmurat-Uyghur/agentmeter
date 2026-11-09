@@ -243,14 +243,17 @@ export function computeInsights(o: {
   monthNanoAiu: number;
 }): InsightsView {
   const scan = scanCalls(o.allRecords);
-  const items = [longContext(o.monthRecords, scan.conventions), contextGrowth(o.sessions, o.monthNanoAiu), cacheReuse(o.monthRecords, scan, o.monthNanoAiu)]
+  // Copilot sessions only, like the other two rules: other sources log no cost (D46), so their
+  // estimated costs must neither fire the growth rule nor count in its coverage.
+  const sessions = o.sessions.filter((s) => (s.source ?? "copilot") === "copilot");
+  const items = [longContext(o.monthRecords, scan.conventions), contextGrowth(sessions, o.monthNanoAiu), cacheReuse(o.monthRecords, scan, o.monthNanoAiu)]
     .filter((x): x is Insight => x !== undefined)
     .sort((a, b) => b.nanoAiu - a.nanoAiu || a.id.localeCompare(b.id));
   return {
     items,
     coverage: {
-      callSessions: o.sessions.filter((s) => !s.sessionTotal).length,
-      totalsOnlySessions: o.sessions.filter((s) => s.sessionTotal).length,
+      callSessions: sessions.filter((s) => !s.sessionTotal).length,
+      totalsOnlySessions: sessions.filter((s) => s.sessionTotal).length,
     },
   };
 }

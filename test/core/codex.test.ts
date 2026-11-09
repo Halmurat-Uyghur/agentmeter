@@ -279,6 +279,36 @@ describe("parseCodexLine session_meta and token_count", () => {
   });
 });
 
+describe("Codex session total pricing (review #2)", () => {
+  const total = (state: CodexFileState, input: number) => {
+    const r = parse(codexTokenCount({ total: { input_tokens: input, cached_input_tokens: 0, output_tokens: 0 } }), state);
+    return r.kind === "total" ? r.record : undefined;
+  };
+  it("is priced at the base rate while the cumulative prompt is under the long-context threshold", () => {
+    const state = fresh();
+    parse(codexTurn({ model: "gpt-6.1-sol" }), state);
+    expect(total(state, 200_000)!.nanoAiu).toBe(Math.round(0.2 * 2 * 1e11));
+  });
+  it("is unknown past the threshold, never priced as one long prompt", () => {
+    const state = fresh();
+    parse(codexTurn({ model: "gpt-6.1-sol" }), state);
+    const r = total(state, 300_000)!;
+    expect(r.tokens.input).toBe(300_000);
+    expect(r.nanoAiu).toBeUndefined();
+  });
+  it("is unknown when the file used more than one model", () => {
+    const state = fresh();
+    parse(codexTurn({ turnId: "t1", model: "gpt-6.1-sol" }), state);
+    parse(codexTurn({ turnId: "t2", model: "gpt-6-astra" }), state);
+    expect(state.mixedModels).toBe(true);
+    expect(total(state, 1_000)!.nanoAiu).toBeUndefined();
+    const same = fresh();
+    parse(codexTurn({ turnId: "t1", model: "gpt-6.1-sol" }), same);
+    parse(codexTurn({ turnId: "t2", model: "gpt-6.1-sol" }), same);
+    expect(total(same, 1_000)!.nanoAiu).toBeDefined();
+  });
+});
+
 describe("CodexSourceReader", () => {
   let root: string;
   beforeEach(async () => {

@@ -472,11 +472,13 @@ export class UsageMonitor {
     const inWindow = new Map<string, { c: SourceCandidate; mtimeMs: number; size: number }>();
     for (const c of candidates.values()) for (const f of c.files) inWindow.set(f.path, { c, mtimeMs: f.mtimeMs, size: f.size });
     const keep = new Set([...inWindow.keys(), ...unreadable]);
+    const gone = new Set<string>();
     for (const [path, f] of [...this.files]) {
       if (f.source !== reader.source || keep.has(path)) continue;
       this.files.delete(path);
-      this.store.resetFile(path);
+      gone.add(path);
     }
+    this.store.resetFiles(gone);
     const refused = new Set<string>();
     const hotSinceMs = nowMs - RECENT_MS;
     for (const [path, { c, mtimeMs, size }] of inWindow) {
@@ -920,12 +922,13 @@ export class UsageMonitor {
     const sel = this.selectedMonth;
     const past = sel !== undefined && sel !== current && starts.includes(sel) ? sel : undefined;
     if (past === undefined) {
-      const totals = this.store.totals((r) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r));
+      const inCurrent = (r: UsageRecord) => r.timestampMs >= current && r.timestampMs <= nowDate.getTime() + DAY_SLACK_MS && keep(r);
+      const totals = this.store.totals(inCurrent);
       return {
         monthStartMs: current,
         isCurrent: true,
         days: daysOfMonth(this.store, current, nowDate.getDate(), true, keep),
-        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, totals?.nanoAiu.sum ?? 0),
+        ...this.sessionsAndInsights(current, Number.POSITIVE_INFINITY, keep, byProject, this.copilotNano(inCurrent)),
         projects: projectSummaries(this.store, current, Number.POSITIVE_INFINITY, projectOf, byTool),
         tools: toolSummaries(this.store, current, Number.POSITIVE_INFINITY, byProject),
         ...(totals !== undefined && { totals }),
@@ -934,16 +937,22 @@ export class UsageMonitor {
     const first = new Date(past);
     const end = new Date(first.getFullYear(), first.getMonth() + 1, 1).getTime();
     const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
-    const totals = this.store.totals((r) => r.timestampMs >= past && r.timestampMs < end && keep(r));
+    const inPast = (r: UsageRecord) => r.timestampMs >= past && r.timestampMs < end && keep(r);
+    const totals = this.store.totals(inPast);
     return {
       monthStartMs: past,
       isCurrent: false,
       days: daysOfMonth(this.store, past, lastDay, false, keep),
-      ...this.sessionsAndInsights(past, end, keep, byProject, totals?.nanoAiu.sum ?? 0),
+      ...this.sessionsAndInsights(past, end, keep, byProject, this.copilotNano(inPast)),
       projects: projectSummaries(this.store, past, end, projectOf, byTool),
       tools: toolSummaries(this.store, past, end, byProject),
       ...(totals !== undefined && { totals }),
     };
+  }
+
+  /** Copilot's logged cost of the records `pick` keeps: the Insights month-share floor (other sources log no cost, D46). */
+  private copilotNano(pick: (r: UsageRecord) => boolean): number {
+    return this.store.totals((r) => r.source === "copilot" && pick(r))?.nanoAiu.sum ?? 0;
   }
 
   /** Session rows (at most SESSION_ROWS), the session counts and the insights for [fromMs, toMs). */
@@ -1027,9 +1036,12 @@ export class UsageMonitor {
     }
     if (folderId === undefined) return {};
     const id = folderId;
-    const totals = this.store.totals((r) => r.sessionId === id);
+    // The folder's own records count too: a resumed or forked session's calls can name another
+    // session id than the folder they are written in (review #5).
+    const mine = (r: UsageRecord) => r.sessionId === id || r.folderId === id;
+    const totals = this.store.totals(mine);
     const live = folders.get(id)?.live === true;
-    const last = lastPrompt(this.store.records((r) => r.kind === "call" && r.sessionId === id));
+    const last = lastPrompt(this.store.records((r) => r.kind === "call" && mine(r)));
     // The candidate's source, else its files', else (a folder only records name) the records' own (fix wave F2).
     let source: Source | undefined = folders.get(id)?.source;
     if (source === undefined) for (const f of this.files.values()) if (f.folderId === id) source = f.source;

@@ -373,47 +373,64 @@ export class UsageStore {
   /** Forgets `file`; records no other file holds are deleted. A folder stops holding a
    * call key once none of its files does. */
   resetFile(file: string): void {
+    this.resetFiles(new Set([file]));
+  }
+
+  /** Forgets every file in `files` in one pass over the store (review #3: a file at a time
+   * visited every record once per file, which stalled the window on a month rollover). */
+  resetFiles(files: ReadonlySet<string>): void {
+    if (files.size === 0) return;
     for (const m of this.spaces.values()) {
       for (const [key, entry] of m) {
-        const { folderId, empty, promoted } = dropFile(entry, file);
-        if (folderId === undefined) continue;
-        let r = entry.record;
-        // Remember the original owner (not a later promoted one), so its re-read restores it.
-        if (promoted !== undefined && r.kind === "call" && !this.promotedFrom.has(entry)) this.promotedFrom.set(entry, file);
-        // The surviving copy now owns the call: attribute it to that copy's folder (and session,
-        // when the copy named another one; an exact copy names its own folder, see add), so
-        // projects and the current session follow it.
-        // A session total stays put: totalKeys finds it by the folder it was set for.
-        if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
-          const sessionId = promoted.sessionId ?? r.sessionId;
-          if (sessionId !== r.sessionId) {
-            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
-            bump(this.callsPerSession, idOf(r.source, sessionId), 1);
-            // Later holders are stored relative to the record's sessionId: restate them.
-            if (entry.more) {
-              for (const [f, h] of entry.more) {
-                const hs = typeof h === "string" ? r.sessionId : h.sessionId;
-                entry.more.set(f, hs === sessionId ? folderOf(h) : { folderId: folderOf(h), sessionId: hs });
-              }
-            }
-          }
-          r = entry.record = { ...r, folderId: entry.folderId, sessionId };
-        }
-        if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
-        if (empty) {
-          m.delete(key);
-          if (r.kind === "call") {
-            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
-          } else {
-            const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
-            if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
-            else this.totalKeys.delete(r.folderId);
-          }
-        }
+        let held: string[] | undefined;
+        if (files.has(entry.file)) held = [entry.file];
+        if (entry.more) for (const f of entry.more.keys()) if (files.has(f)) (held ??= []).push(f);
+        if (held === undefined) continue;
+        for (const f of held) if (this.dropHolder(m, key, entry, f)) break;
       }
     }
     // An empty store keeps no pooled strings (ids of files that are gone).
     if (this.pool.size > 0 && [...this.spaces.values()].every((m) => m.size === 0)) this.pool.clear();
+  }
+
+  /** Drops `file` from `entry` (key `key` in `m`); true when the entry was deleted. */
+  private dropHolder(m: Namespace, key: string, entry: Entry, file: string): boolean {
+    const { folderId, empty, promoted } = dropFile(entry, file);
+    if (folderId === undefined) return false;
+    let r = entry.record;
+    // Remember the original owner (not a later promoted one), so its re-read restores it.
+    if (promoted !== undefined && r.kind === "call" && !this.promotedFrom.has(entry)) this.promotedFrom.set(entry, file);
+    // The surviving copy now owns the call: attribute it to that copy's folder (and session,
+    // when the copy named another one; an exact copy names its own folder, see add), so
+    // projects and the current session follow it.
+    // A session total stays put: totalKeys finds it by the folder it was set for.
+    if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
+      const sessionId = promoted.sessionId ?? r.sessionId;
+      if (sessionId !== r.sessionId) {
+        bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+        bump(this.callsPerSession, idOf(r.source, sessionId), 1);
+        // Later holders are stored relative to the record's sessionId: restate them.
+        if (entry.more) {
+          for (const [f, h] of entry.more) {
+            const hs = typeof h === "string" ? r.sessionId : h.sessionId;
+            entry.more.set(f, hs === sessionId ? folderOf(h) : { folderId: folderOf(h), sessionId: hs });
+          }
+        }
+      }
+      r = entry.record = { ...r, folderId: entry.folderId, sessionId };
+    }
+    if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
+    if (empty) {
+      m.delete(key);
+      if (r.kind === "call") {
+        bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+      } else {
+        const kept = this.totalKeys.get(r.folderId)?.filter((x) => x !== r) ?? [];
+        if (kept.length > 0) this.totalKeys.set(r.folderId, kept);
+        else this.totalKeys.delete(r.folderId);
+      }
+    }
+    return empty;
   }
 
   /** A call record always counts; a session total only while neither its session nor its

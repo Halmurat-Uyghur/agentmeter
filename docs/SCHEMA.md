@@ -134,4 +134,4 @@ Verified 2026-11-08 by a shape-only probe of the development machine. Regenerate
 - Files with `token_count` lines and no `token_usage_record` (older Codex) were **not observed** on this machine; the session-total path is built from the documented shape and tested on synthetic logs only.
 - Whether `input_tokens` includes `cache_write_input_tokens`: 0 records had cache writes, so it could not be checked. Cache writes are kept apart and not added into input.
 - `archived_sessions/` plain `.jsonl` files (9 here) may hold usage that is not counted: a lower-bound gap and a possible follow-up. The `.jsonl.zst` files are compressed and not read.
-- A Codex session total uses the file's session id (the `token_count` line has no `session_id`) and the latest model seen in the file, which may not be every model the session used.
+- A Codex session total uses the file's session id (the `token_count` line has no `session_id`) and the latest model seen in the file, which may not be every model the session used. Its estimated cost is left unknown when the file named more than one model, or when the cumulative input is past the model's long-context threshold.

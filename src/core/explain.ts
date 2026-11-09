@@ -200,7 +200,7 @@ export function toolOverhead(calls: UsageRecord[], conventions: Conventions): To
 
 function rowOf(r: UsageRecord, conventions: Conventions): CallRow {
   const t = r.tokens;
-  const row: CallRow = { timestampMs: r.timestampMs };
+  const row: CallRow = { timestampMs: r.timestampMs, source: r.source };
   if (r.model !== undefined) row.model = r.model;
   if (r.initiator !== undefined) row.initiator = r.initiator;
   if (r.finishReason !== undefined) row.finishReason = r.finishReason;

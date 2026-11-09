@@ -142,7 +142,7 @@ describe("sessionDetail (1.1)", () => {
     const d = sessionDetail("s1", recs, NONE);
     expect(d.calls).toBe(2);
     expect(d.omitted).toBe(0);
-    expect(d.rows[0]).toEqual({ timestampMs: recs[0]!.timestampMs, model: "model-a", initiator: "user", finishReason: "tool_calls", uncached: 3_000, cacheRead: 6_000, cacheWrite: 1_000, output: 200, reasoning: 50, prompt: 10_000, toolTokens: 900, nanoAiu: 0.01 * USD });
+    expect(d.rows[0]).toEqual({ timestampMs: recs[0]!.timestampMs, source: "copilot", model: "model-a", initiator: "user", finishReason: "tool_calls", uncached: 3_000, cacheRead: 6_000, cacheWrite: 1_000, output: 200, reasoning: 50, prompt: 10_000, toolTokens: 900, nanoAiu: 0.01 * USD });
     expect(d.prompts).toMatchObject({ prompts: 1, agentCalls: 1 });
     expect(d.nanoAiu).toEqual({ sum: 0.02 * USD, reported: 2, missing: 0 });
     for (const row of d.rows) for (const v of Object.values(row)) expect(["number", "string"]).toContain(typeof v);

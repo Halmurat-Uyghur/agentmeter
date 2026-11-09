@@ -44,6 +44,8 @@ export interface CodexFileState {
   /** turn id → model, insertion order = age; at most CODEX_MAX_TURNS */
   models: Map<string, string>;
   latestModel?: string;
+  /** true once the file named a second model: a session total then has no one price (review #2) */
+  mixedModels?: boolean;
   /** project key from the first session_meta line (D44) */
   label?: string;
   sawTurn: boolean;
@@ -257,6 +259,7 @@ function parseTurn(buf: Buffer, start: number, end: number, state: CodexFileStat
   state.sawTurn = true;
   const model = stringAt(buf, res, "payload.model");
   if (!safeKey(model, MODEL_ID)) return { kind: "turn" };
+  if (state.latestModel !== undefined && state.latestModel !== model) state.mixedModels = true;
   state.latestModel = model;
   const turn = stringAt(buf, res, "payload.turn_id");
   if (safeKey(turn, TURN_ID)) {
@@ -309,13 +312,14 @@ function parseEvent(buf: Buffer, start: number, end: number, state: CodexFileSta
     tokens,
   };
   if (state.latestModel !== undefined) record.model = state.latestModel;
-  priced(record);
+  // Priced as many prompts at one model: unknown when the file used more than one (review #2).
+  if (!state.mixedModels) priced(record, true);
   return { kind: "total", record };
 }
 
 /** Codex logs no cost: the record's cost is estimated from its tokens at the model's list price (v0.10). */
-function priced(record: UsageRecord): void {
-  const cost = estimateNanoAiu(record);
+function priced(record: UsageRecord, cumulative = false): void {
+  const cost = estimateNanoAiu(record, { cumulative });
   if (cost !== undefined) record.nanoAiu = cost;
 }
 

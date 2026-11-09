@@ -70,6 +70,40 @@ describe("UsageStore dedupe", () => {
     expect(s.totals(all)!.records).toBe(1);
   });
 
+  it("resetFiles in one pass leaves the same store as resetFile one file at a time (review #3)", () => {
+    // A deterministic mix of owners, exact copies and copies that name another session.
+    let seed = 7;
+    const rnd = (n: number) => ((seed = (seed * 1103515245 + 12345) % 2 ** 31), seed % n);
+    const build = () => {
+      seed = 7;
+      const st = new UsageStore();
+      for (let i = 0; i < 400; i++) {
+        const key = `u${rnd(120)}`;
+        const file = `file${rnd(12)}`;
+        const folder = `f${rnd(4)}`;
+        st.add(rec(key, { folderId: folder, sessionId: rnd(3) === 0 ? `s${rnd(3)}` : folder, tokens: { input: 1 + rnd(50), output: 1 } }), file);
+        if (rnd(10) === 0) st.add(total(file, `model-${rnd(2)}`, { folderId: folder, sessionId: folder, key: `t${rnd(30)}` }), file);
+      }
+      return st;
+    };
+    const gone = ["file1", "file3", "file4", "file8", "file11"];
+    const one = build();
+    for (const f of gone) one.resetFile(f);
+    const batch = build();
+    batch.resetFiles(new Set(gone));
+    const view = (st: UsageStore) => ({
+      all: st.totals(all),
+      folders: ["f0", "f1", "f2", "f3"].map((f) => st.totals((r) => r.folderId === f)),
+      sessions: ["f0", "f1", "f2", "f3", "s0", "s1", "s2"].map((x) => st.totals((r) => r.sessionId === x)),
+      totalSessions: [...st.sessionTotalSessions()].sort(),
+    });
+    expect(view(batch)).toStrictEqual(view(one));
+    expect(view(batch).all!.records).toBeGreaterThan(0);
+    const empty = build();
+    empty.resetFiles(new Set(Array.from({ length: 12 }, (_, i) => `file${i}`)));
+    expect(empty.totals(all)).toBeUndefined();
+  });
+
   it("resetFile of an unknown file is a no-op", () => {
     const s = new UsageStore();
     s.add(rec("u1"), "f1");
