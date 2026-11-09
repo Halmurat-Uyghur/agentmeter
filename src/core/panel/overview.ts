@@ -2,7 +2,7 @@
 // cache-reuse ring), Month to date (with the target state), Last 7 days and the
 // current session, the last 30 days as bars, then the monthly trend.
 import { costLabel, formatCount, targetUsd, formatRange, formatUsd, mixedSources, multiSource, notLiveWord, partialNote, PRIOR_SHORT_NOTE, RANGE_LABEL, rangeState, SESSION_TOTAL_NOTE, spoken, usd, WEEK_SHORT_NOTE, weekChange, weekCoverage } from "../format";
-import type { MonthSummary, Snapshot, ViewOptions } from "../types";
+import { type MonthSummary, type Snapshot, SOURCE_LABEL, type ViewOptions } from "../types";
 import { dailyBars, heroCard, monthCard } from "./dashboard";
 import { icon, type IconName } from "./icons";
 import { commandHref } from "./links";
@@ -25,6 +25,7 @@ import {
   val,
   viewedName,
   withStar,
+  scopeSentence,
 } from "./shared";
 
 /** A small card laid out like Month to date (design #10): the title row, the figure,
@@ -40,7 +41,9 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const curVal = cur?.totals ? withStar(headline(cur.totals, view), partial) : DASH;
   const curSub = cur
     ? `${shortId(cur.folderId)} · ${cur.live ? "live" : notLiveWord(cur.source)}${cur.totals ? ` · ${callsPhrase(cur.totals.calls, cur.totals.callsMissing)}` : ""}`
-    : "no session yet";
+    : s.sourceScope
+      ? `no ${SOURCE_LABEL[s.sourceScope.source]} session yet`
+      : "no session yet";
 
   // When the history window starts inside the two weeks, the figure is starred and no change is shown.
   const w = s.last7;
@@ -49,7 +52,7 @@ function kpis(s: Snapshot, view: ViewOptions): string {
   const change = weekChange(headlineValue(w, view), headlineValue(s.prior7, view), !prior7Short);
   let wSub = change ? change.charAt(0).toUpperCase() + change.slice(1) : "Nothing logged";
   const wNotes = [
-    "Today and the 6 days before it, against the 7 days before that. Not filtered.",
+    `Today and the 6 days before it, against the 7 days before that. ${scopeSentence(s)}`,
     last7Short ? WEEK_SHORT_NOTE : prior7Short ? PRIOR_SHORT_NOTE : undefined,
   ];
   // The weekly target (v0.9): the last 7 days' estimated USD against weeklyTargetMax.

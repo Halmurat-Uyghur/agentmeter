@@ -27,6 +27,8 @@ import {
   val,
   viewedName,
   withStar,
+  scopeSentence,
+  scopeTag,
 } from "./shared";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -182,7 +184,7 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
         ? `Includes ${plural(y.sessionTotals, "session total")}.`
         : undefined;
 
-  // 7-day average per active day over today and the 6 days before (not filtered).
+  // 7-day average per active day over today and the 6 days before (unfiltered, or the source scope).
   const wStart = dayStart(s.dayStartMs, 6);
   const week: number[] = [];
   for (const d of byDay.values()) {
@@ -192,7 +194,7 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
   }
   const { last7Short } = weekCoverage(s);
   const avgText = week.length > 0 ? withStar(fmtNum(week.reduce((a, b) => a + b, 0) / week.length, view), partial || last7Short) : DASH;
-  const avgNote = `Average per active day over today and the 6 days before (${plural(week.length, "active day")}). Not filtered.`;
+  const avgNote = `Average per active day over today and the 6 days before (${plural(week.length, "active day")}). ${scopeSentence(s)}`;
 
   const ch = yRead ? changeVs(headlineValue(today, view), yVal) : undefined;
   const chNote = ch
@@ -205,7 +207,8 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
   const stats = nothingYesterday
     ? `${stat("Yesterday", `<span class="muted">Nothing logged yesterday</span>`, undefined, "span2")}${stat("7-day avg", val(avgText), avgNote)}`
     : `${stat("Yesterday", val(yText), yNote)}${stat("7-day avg", val(avgText), avgNote)}${stat("vs yesterday", ch ? `<span class="${ch.dir}">${sym(ch.text)}</span>` : val(DASH), chNote)}`;
-  const filtered = s.filter ? `<small>not filtered</small>` : "";
+  const tag = scopeTag(s);
+  const filtered = tag ? `<small>${escapeHtml(tag)}</small>` : "";
   return `<section class="card hero${heroCls}" aria-labelledby="today-title">
 <h3 id="today-title" class="ch">${icon("today")}<span>Today <span class="muted">(${escapeHtml(weekdayDate(s.dayStartMs))})</span></span>${filtered}</h3>
 <div class="hero-grid">
@@ -311,9 +314,9 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
   ].map(([r, l]) => `<text class="ax" x="0" y="${TOP + (r as number) * STEP + 10}">${l}</text>`);
   const peakText = peak ? `, busiest ${shortDate(peak.t)} (${fmtNum(peak.v, view)}${unitSuffix(view)})` : "";
   const since = first > from ? ` ${plural(activeAll, "active day")} since ${shortDate(from)}.` : "";
-  const label = `Daily activity from ${shortDate(days[0]!)} to ${shortDate(today)}: ${active} of ${plural(days.length, "day")} active${peakText}.${since} Stronger colour means more ${view.unit === "cost" ? estWord() : "tokens"}. Not filtered.`;
+  const label = `Daily activity from ${shortDate(days[0]!)} to ${shortDate(today)}: ${active} of ${plural(days.length, "day")} active${peakText}.${since} Stronger colour means more ${view.unit === "cost" ? estWord() : "tokens"}. ${scopeSentence(s)}`;
   const lblTitle = titleAttr(`Days with usage since ${shortDate(from)}, the start of the history window. The grid shows the last ${plural(cols, "week")}.`);
-  const table = dayTable(`Days with usage records from ${shortDate(days[0]!)} to ${shortDate(today)}, not filtered`, unitHead(view), rowsForTable, "Active days as a table");
+  const table = dayTable(`Days with usage records from ${shortDate(days[0]!)} to ${shortDate(today)}, ${scopeTag(s) ?? "not filtered"}`, unitHead(view), rowsForTable, "Active days as a table");
   return `<div class="hero-heat"><p class="lbl"${lblTitle}>Daily activity <b class="hot num">${plural(activeAll, "active day")}</b></p><svg class="heat" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">${months.join("")}${rows.join("")}<text class="hint" x="0" y="${readY}">Hover a square to see its date</text>${cells.join("")}</svg>${table}</div>`;
 }
 
@@ -411,14 +414,14 @@ export function monthCard(s: Snapshot, view: ViewOptions, extra: { cls: string; 
 
 const BAR_DAYS = 30;
 
-/** The last 30 days as bars (not filtered): a dashed average line, today in the
+/** The last 30 days as bars (unfiltered, or the source scope): a dashed average line, today in the
  * accent colour, a three-tick value scale, and Avg/day, Peak and Yesterday chips in the
  * card header; every day also as a table in a fold. */
 export function dailyBars(s: Snapshot, view: ViewOptions): string {
   const { from, byDay } = activityIndex(s);
   const partial = s.health.partial;
   const heading = view.unit === "cost" ? `Daily ${costLabel()}` : "Daily tokens";
-  const small = `last ${BAR_DAYS} days${s.filter ? " · not filtered" : ""}`;
+  const small = `last ${BAR_DAYS} days${scopeTag(s) ? ` · ${scopeTag(s)}` : ""}`;
   const h3 = `<h3 id="bars-title" class="ch">${icon("bars")}<span>${heading}</span><small>${escapeHtml(small)}</small></h3>`;
   if (from === undefined) {
     return `<section class="card bars" aria-labelledby="bars-title">${h3}<p class="muted">No days read yet.</p></section>`;
@@ -467,10 +470,10 @@ export function dailyBars(s: Snapshot, view: ViewOptions): string {
   const chips = `<div class="kchips">${chip("Avg/day", avgText, `Average per active day: ${known.length} of the last ${BAR_DAYS} days had usage. The dashed line.`)}${chip("Peak", peakText, "The largest day of the last 30.")}${chip("Yesterday", yText, yNote)}</div>`;
   const read = days.filter((t) => t >= from).length;
   const todayV = values[BAR_DAYS - 1];
-  const label = `${heading}, last ${BAR_DAYS} days: ${known.length} of ${plural(read, "day")} read had usage, average ${fmtNum(avg, view)} per active day, peak ${fmtNum(values[peakIdx]!, view)} on ${shortDate(peakT)}, today ${todayV !== undefined ? fmtNum(todayV, view) : byDay.has(s.dayStartMs) ? "not reported" : "nothing logged"}. Not filtered.`;
+  const label = `${heading}, last ${BAR_DAYS} days: ${known.length} of ${plural(read, "day")} read had usage, average ${fmtNum(avg, view)} per active day, peak ${fmtNum(values[peakIdx]!, view)} on ${shortDate(peakT)}, today ${todayV !== undefined ? fmtNum(todayV, view) : byDay.has(s.dayStartMs) ? "not reported" : "nothing logged"}. ${scopeSentence(s)}`;
   const axis = days.map((t, i) => `<span>${i % 7 === 1 || i === BAR_DAYS - 1 ? escapeHtml(i === BAR_DAYS - 1 ? "Today" : shortDate(t)) : ""}</span>`).join("");
   const ticks = `<div class="yaxis" aria-hidden="true"><span class="num">${escapeHtml(fmtNum(scale, view))}</span><span class="num">${escapeHtml(fmtNum(scale / 2, view))}</span><span class="num">${escapeHtml(fmtNum(0, view))}</span></div>`;
   const fine = days[0]! < from ? `<div class="fine"><p>${escapeHtml(`Days before ${shortDate(from)} are outside the history window and have no bar.`)}</p></div>` : "";
-  const table = dayTable(`${heading}, last ${BAR_DAYS} days, not filtered`, unitHead(view), tableRows);
+  const table = dayTable(`${heading}, last ${BAR_DAYS} days, ${scopeTag(s) ?? "not filtered"}`, unitHead(view), tableRows);
   return `<section class="card bars" aria-labelledby="bars-title"><div class="chrow">${h3}${chips}</div><div class="plotgrid"><div class="plotwrap"><svg class="barplot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(label)}">${bars.join("")}${avgLine}</svg><div class="hits" aria-hidden="true">${hits.join("")}</div></div>${ticks}<div class="xaxis" aria-hidden="true">${axis}</div></div><div class="scale"><span class="lg"><b class="avgsw"></b>Avg / active day</span><span class="lg"><b class="todaysw"></b>Today</span></div>${fine}${table}</section>`;
 }

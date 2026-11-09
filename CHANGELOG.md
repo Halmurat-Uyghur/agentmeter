@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## 0.11.1 - 2026-11-08
+
+### Changed
+
+- **The Source filter now narrows Today, Last 7 days, daily activity and the current session in the panel.** With **Source: Claude Code** (or Copilot, or Codex) picked, the Overview's Today card (with Yesterday, the 7-day average and the change against yesterday), the heatmap, the Last 7 days card, the 30-day bars, the Daily section's today and the current session show that source only, tagged "Claude Code only". The current session is the latest session of that source (a pinned session of another source is set aside while the filter is on), or "no Claude Code session yet". The status bar and the side bar still show every source, and the project and tool filters still leave those cards unfiltered. Daily and weekly targets keep comparing Copilot's logged cost.
+
 ## 0.11.0 - 2026-11-08
 
 The extension is now **AgentMeter (Local)**, since it reads Claude Code and Codex as well as Copilot.

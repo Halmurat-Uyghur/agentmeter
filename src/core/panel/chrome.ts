@@ -3,7 +3,7 @@
 // only links are allowlisted command URIs plus the skip link to #main.
 import { costLabel, costNotes, enabledSources, estWord, formatChangedSentence, homeSettings, LOADING_NOTE, PERMISSION_NOTE, LOCAL_BANNER, mixedSources, multiSource, notLiveWord, readingLine, STREAMING_NOTE } from "../format";
 import { PANEL_CSS } from "../panelCss";
-import { type Health, isSource, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type ViewOptions } from "../types";
+import { type Filter, type Health, isSource, type Snapshot, type Source, SOURCE_LABEL, SOURCES, type ViewOptions } from "../types";
 import { icon, logo } from "./icons";
 import { commandHref, filterHref, navToggleHref, sectionHref } from "./links";
 import { SECTION_DEFS, type SectionDef, type SectionId } from "./sections";
@@ -113,7 +113,7 @@ export function toolbar(s: Snapshot, view: ViewOptions): string {
   const chip = (kind: "project" | "tool" | "source", label: string, value: string) =>
     `<a class="fchip" href="${escapeHtml(filterHref(kind, ""))}" title="Clear this filter" aria-label="${escapeHtml(`Clear ${kind} filter: ${value}`)}">${escapeHtml(label)}: <b>${escapeHtml(value)}</b><span aria-hidden="true"> ✕</span></a>`;
   const filters = f
-    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">Today, the last 7 days, daily activity and the status bar are not filtered.</span></div>`
+    ? `<div class="filters"><span class="muted">Filtered month view, trend and tables:</span>${f.project !== undefined ? chip("project", "Project", projectLabel(s, f.project)) : ""}${f.tool !== undefined ? chip("tool", "Tool", f.tool) : ""}${isSource(f.source) ? chip("source", "Source", SOURCE_LABEL[f.source]) : ""}<span class="muted">${escapeHtml(scopeNote(f))}</span></div>`
     : "";
   return `<div class="toolbar" role="group" aria-label="Month, unit and filter">${filters}<div class="nav">
   <div class="months">${link("btn", "‹", prev, "Previous month", { on: "Previous month", off: "No earlier month" })}<b>${escapeHtml(monthTitle(viewed))}</b>${link("btn", "›", next, "Next month", { on: "Next month", off: "No later month" })}${back}${pick}</div>
@@ -202,4 +202,12 @@ ${body}
 
 export function skipLink(def: SectionDef): string {
   return `<a class="skip" href="#main">Skip to ${escapeHtml(def.label)}</a>`;
+}
+
+/** What a filter leaves alone (v0.11.1): the source filter also narrows the panel's Today,
+ * Last 7 days, daily activity and current session; project and tool filters do not. */
+function scopeNote(f: Filter): string {
+  if (!isSource(f.source)) return "Today, the last 7 days, daily activity and the status bar are not filtered.";
+  const rest = f.project !== undefined || f.tool !== undefined ? " (the project and tool filters do not apply to them)" : "";
+  return `Today, the last 7 days, daily activity and the current session show ${SOURCE_LABEL[f.source]} only${rest}. The status bar and the side bar are not filtered.`;
 }

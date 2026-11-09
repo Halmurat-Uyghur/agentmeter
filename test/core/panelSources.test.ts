@@ -5,6 +5,7 @@ import { COST_SOURCES_NOTE, INSIGHTS_SOURCES_NOTE, LOCAL_BANNER } from "../../sr
 import { filterHref } from "../../src/core/panel/links";
 import { renderSourcesCard, sourceChips, sourcesHealthBox } from "../../src/core/panel/sources";
 import { escapeHtml, renderPanelHtml } from "../../src/core/panelHtml";
+import { panelSnapshot } from "../../src/core/panel/shared";
 import type { Counts, Health, Metric, Snapshot, SourceHealth, Totals, ViewOptions } from "../../src/core/types";
 import { CANARY } from "../fixtures/build";
 
@@ -179,6 +180,67 @@ describe("source filter chip", () => {
     expect(html).toMatch(/Source: <b>Claude Code<\/b>/);
     expect(html).toContain(`href="${filterHref("source", "").replace(/"/g, "&quot;")}"`);
     expect(html).toContain('aria-label="Clear source filter: Claude Code"');
+  });
+});
+
+describe("source scope (v0.11.1): the panel's Today, Last 7 days, activity and session follow the source", () => {
+  const ccTotals = (): Totals => ({ ...CC, byModel: { "claude-opus-4-1": CC }, bySource: { "claude-code": CC } });
+  const ccDay = { dayStartMs: DAY0, tokens: m(1_000_000, 3), nanoAiu: none(), calls: 3, callsMissing: 0, sessionTotals: 0, sessions: 1 };
+  const allDay = { dayStartMs: DAY0, tokens: m(2_500_000, 5), nanoAiu: m(4e9, 2), calls: 5, callsMissing: 0, sessionTotals: 0, sessions: 2 };
+  const scoped = (source: "claude-code" | "codex", withSession = true): Snapshot =>
+    snap(mixedTotals(), {
+      filter: { source },
+      last7: mixedTotals(),
+      activity: { fromMs: MONTH0, days: [allDay] },
+      sourceScope: {
+        source,
+        ...(source === "claude-code" && { today: ccTotals(), last7: ccTotals() }),
+        activity: { fromMs: MONTH0, days: source === "claude-code" ? [ccDay] : [] },
+        ...(withSession && source === "claude-code" && { current: { folderId: SID, live: true, pinned: false, totals: ccTotals(), source: "claude-code" } }),
+      },
+    });
+
+  it("panelSnapshot swaps in the scope and leaves an unscoped snapshot as it is", () => {
+    const plain = snap(mixedTotals());
+    expect(panelSnapshot(plain)).toBe(plain);
+    const p = panelSnapshot(scoped("claude-code"));
+    expect(p.today?.records).toBe(3);
+    expect(p.last7?.records).toBe(3);
+    expect(p.activity?.days).toEqual([ccDay]);
+    expect(p.current?.live).toBe(true);
+    // A source with nothing today has no Today, Last 7 days or current session in the panel.
+    const x = panelSnapshot(scoped("codex"));
+    expect(x.today).toBeUndefined();
+    expect(x.last7).toBeUndefined();
+    expect(x.current).toBeUndefined();
+    expect(x.activity?.days).toEqual([]);
+  });
+
+  it("Overview shows the source's figures, tags them and names the source when it has no session", () => {
+    const all = renderPanelHtml(snap(mixedTotals(), { filter: { source: "claude-code" }, last7: mixedTotals() }), "csp", TOKENS, "overview");
+    const cc = renderPanelHtml(scoped("claude-code"), "csp", TOKENS, "overview");
+    expect(all).toContain("2.5M");
+    expect(cc).toContain("<small>Claude Code only</small>");
+    expect(cc).toContain("Claude Code only.");
+    expect(cc).not.toContain("<small>not filtered</small>");
+    expect(cc).not.toContain("Not filtered.");
+    expect(cc).toContain("Today, the last 7 days, daily activity and the current session show Claude Code only. The status bar and the side bar are not filtered.");
+    const hero = (h: string) => h.slice(h.indexOf('id="today-title"'), h.indexOf('id="today-title"') + 1500);
+    expect(hero(cc)).toContain("1.0M");
+    expect(hero(cc)).not.toContain("2.5M");
+    const cx = renderPanelHtml(scoped("codex"), "csp", TOKENS, "overview");
+    expect(cx).toContain("no Codex session yet");
+  });
+
+  it("with a project or tool filter too, the note says those filters do not apply", () => {
+    const html = renderPanelHtml({ ...scoped("claude-code"), filter: { source: "claude-code", project: "acme/web" } }, "csp", TOKENS, "overview");
+    expect(html).toContain("show Claude Code only (the project and tool filters do not apply to them).");
+  });
+
+  it("a project filter alone keeps the old not-filtered wording", () => {
+    const html = renderPanelHtml(snap(mixedTotals(), { filter: { project: "acme/web" } }), "csp", TOKENS, "overview");
+    expect(html).toContain("Today, the last 7 days, daily activity and the status bar are not filtered.");
+    expect(html).toContain("<small>not filtered</small>");
   });
 });
 

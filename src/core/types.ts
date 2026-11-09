@@ -219,7 +219,20 @@ export interface Snapshot {
   /** every project with a record today, never filtered, costliest first, titles applied (A1) */
   todayProjects?: GroupSummary[];
   /** every project with a record in last7's window, never filtered, costliest first, titles applied (A1) */
-  last7Projects?: GroupSummary[];
+  last7Projects?: GroupSummary[];  /** v0.11.1: with a source filter, the panel's Today, Last 7 days, daily activity and
+   * current session for that source only. The status bar and the side bar keep the
+   * unfiltered fields above; the project and tool filters never apply here. */
+  sourceScope?: SourceScope;
+}
+
+/** The per-source figures the details panel shows in place of the unfiltered ones (v0.11.1). */
+export interface SourceScope {
+  source: Source;
+  today?: Totals;
+  last7?: Totals;
+  prior7?: Totals;
+  activity: Activity;
+  current?: Snapshot["current"];
 }
 
 /** One local day's headline figures (A2). A session total counts on the day it ended. */
@@ -243,7 +256,8 @@ export interface Activity {
   days: DayStats[];
 }
 
-/** Narrows the month view, trend and tables (D26); Today and the status bar ignore it. */
+/** Narrows the month view, trend and tables (D26). The status bar and the side bar ignore it;
+ * the panel's Today, Last 7 days, daily activity and current session follow the source only (v0.11.1). */
 export interface Filter {
   project?: string;
   tool?: string;
