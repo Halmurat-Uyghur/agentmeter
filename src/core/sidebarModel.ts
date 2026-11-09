@@ -5,7 +5,8 @@
 // "*" means incomplete, and figures that include session totals say so in their
 // title tooltip. Every string is plain text; renderSidebarHtml escapes it.
 import {
-  targetUsd,
+  type TargetStatus,
+  targetStatus,
   CHAT_NOT_COVERED,
   CHAT_NOT_COVERED_SHORT,
   costLabel,
@@ -23,7 +24,7 @@ import {
   mixedSources,
   multiSource,
   PRIOR_SHORT_NOTE,
-  rangeState,
+  rangeLabel,
   readingLine,
   RANGE_LABEL,
   SESSION_TOTAL_SHORT,
@@ -198,9 +199,15 @@ function noDirNotice(h: Health): string[] {
   ];
 }
 
+/** A target marker's short text; "*" when the spend is a lower bound (review finding #3). */
+function markerText(st: TargetStatus): string {
+  const t = st.state === "over" ? "over" : st.state === "in" ? "in range" : st.state === "unknown" ? "not compared" : "under";
+  return st.partial ? t + "*" : t;
+}
+
 function row(o: Omit<SidebarRow, "spoken" | "title"> & { title: string[]; said?: string }, cost: boolean): SidebarRow {
   const { said: name, ...rest } = o;
-  const mark = o.marker && (o.marker.kind === "filtered" ? "filtered" : RANGE_LABEL[o.marker.kind]);
+  const mark = o.marker && (o.marker.kind === "filtered" ? "filtered" : o.marker.text.endsWith("*") ? spoken(RANGE_LABEL[o.marker.kind] + "*") : RANGE_LABEL[o.marker.kind]);
   const value = cost && o.value !== DASH ? `${o.value} est.` : o.value;
   const said = [`${name ?? o.label}: ${spoken(value)}`, mark].filter(Boolean).join(", ");
   return { ...rest, title: [SIDEBAR_BANNER, ...o.title].join("\n"), spoken: said };
@@ -336,20 +343,21 @@ export function buildSidebarModel(s: Snapshot | undefined, view: ViewOptions = D
   const change = weekChange(headlineValue(last7, view), headlineValue(s.prior7, view), !prior7Short);
   const month = thisMonthTotals(s);
   const status = statusParts(s, view);
-  const marker = status.state === "none" ? undefined : { kind: status.state, text: status.state === "over" ? "over" : status.state === "in" ? "in range" : "under" };
+  const marker = status.state === "none" ? undefined : { kind: status.state, text: markerText(status) };
   // In tokens view the target (a USD range) is named by its state only, like the status bar.
   const target =
     status.state === "none"
       ? []
       : view.unit === "cost"
-        ? [`Target ${formatRange(view.range)}${mixedSources(month?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[status.state]}.`]
-        : [`Estimated ${currencyCode()} this month is ${RANGE_LABEL[status.state]}.`];
+        ? [`Target ${formatRange(view.range)}${mixedSources(month?.sources) ? " (Copilot only)" : ""}: ${rangeLabel(status)}.`]
+        : [`Estimated ${currencyCode()} this month${status.state === "unknown" ? ":" : " is"} ${rangeLabel(status)}.`];
   // The daily and weekly targets (v0.9) mark Today and Last 7 days the way the month target marks This month.
   const periodTarget = (c: Totals | undefined, range: ViewOptions["range"], what: string, period: string) => {
-    const st = rangeState(targetUsd(c), range);
+    const ts = targetStatus(c, range);
+    const st = ts.state;
     if (st === "none") return { marker: undefined, lines: [] as string[] };
-    const marker = { kind: st, text: st === "over" ? "over" : st === "in" ? "in range" : "under" };
-    const lines = view.unit === "cost" ? [`${what} ${formatRange(range)}${mixedSources(c?.sources) ? " (Copilot only)" : ""}: ${RANGE_LABEL[st]}.`] : [`Estimated ${currencyCode()} ${period} is ${RANGE_LABEL[st]}.`];
+    const marker = { kind: st, text: markerText(ts) };
+    const lines = view.unit === "cost" ? [`${what} ${formatRange(range)}${mixedSources(c?.sources) ? " (Copilot only)" : ""}: ${rangeLabel(ts)}.`] : [`Estimated ${currencyCode()} ${period}${st === "unknown" ? ":" : " is"} ${rangeLabel(ts)}.`];
     return { marker, lines };
   };
   const dayT = periodTarget(today, view.dayTarget, "Daily target", "today");

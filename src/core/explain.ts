@@ -6,7 +6,9 @@
 // Token semantics (Phase 0 probe, 46 of 46 records): input = uncached + cache read +
 // cache write; reasoning is inside output; toolTokenCount is part of input. A model whose
 // records show cached > input is taken as reporting input apart from the cache (the
-// per-model inference of Insights), and its input is then the uncached part.
+// per-model inference of Insights), and its input is then the uncached part. That
+// inference is Copilot's only: Claude Code and Codex input is normalized at ingestion to
+// include the cache (D47), even when a Copilot model shares the id (review finding #8).
 import type { PromptConvention } from "./insights";
 import { BUILT_IN_TOOLS, promptOf, toolGroup } from "./store";
 import type { CacheStats, CallRow, LastPrompt, Metric, ModelCache, PromptStats, SessionDetail, ToolOverhead, ToolOverheadGroup, UsageRecord } from "./types";
@@ -32,7 +34,7 @@ function add(m: Metric, v: number | undefined): void {
 export function uncachedOf(r: UsageRecord, conventions: Conventions): number | undefined {
   const t = r.tokens;
   if (t.input === undefined) return undefined;
-  if (r.model !== undefined && conventions.get(r.model) === "separate") return t.input;
+  if (r.source === "copilot" && r.model !== undefined && conventions.get(r.model) === "separate") return t.input;
   if (t.cacheRead === undefined || t.cacheWrite === undefined) return undefined;
   return Math.max(0, t.input - t.cacheRead - t.cacheWrite);
 }

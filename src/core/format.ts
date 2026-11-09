@@ -158,6 +158,52 @@ export function targetUsd(t: (Counts & { bySource?: Partial<Record<Source, Count
   return c ? usd(c.nanoAiu) : undefined;
 }
 
+/**
+ * What a target compares (review finding #3): `usd` spent so far and whether it is
+ * `partial` (some records in scope logged no cost, so it is a lower bound), or "unknown"
+ * when records are in scope but none of them logged a cost. No record in scope is $0.
+ * Copilot's logged cost only, like targetUsd.
+ */
+export type TargetSpend = { usd: number; partial: boolean } | "unknown";
+
+export function targetSpend(t: (Counts & { bySource?: Partial<Record<Source, Counts>> }) | undefined): TargetSpend {
+  if (!t) return { usd: 0, partial: false };
+  // Without a per-source split, mixed sources cannot be separated: the Copilot part is unknown.
+  if (!t.bySource && mixedSources(t.sources)) return "unknown";
+  const m = t.bySource ? t.bySource.copilot?.nanoAiu : t.nanoAiu;
+  if (!m || (m.reported === 0 && m.missing === 0)) return { usd: 0, partial: false };
+  if (m.reported === 0) return "unknown";
+  return { usd: m.sum / 1e11, partial: m.missing > 0 };
+}
+
+/** A target's state and whether the spend it compared is a lower bound. */
+export interface TargetStatus {
+  state: RangeState;
+  /** the spend is a lower bound and the state could still change ("under" or "in" only) */
+  partial: boolean;
+}
+
+/** The state of `t` against `range`, keeping unknown cost apart from $0 (review finding #3). */
+export function targetStatus(t: Parameters<typeof targetSpend>[0], range: ViewOptions["range"]): TargetStatus {
+  const spend = targetSpend(t);
+  const state = rangeState(spend, range);
+  // Spend already above the max is over whatever is missing; below it, it is a lower bound.
+  return { state, partial: typeof spend === "object" && spend.partial && (state === "under" || state === "in") };
+}
+
+/** RANGE_LABEL with "*" when the spend is a lower bound ("in target range*"). */
+export function rangeLabel(st: TargetStatus): string {
+  return st.partial ? RANGE_LABEL[st.state] + "*" : RANGE_LABEL[st.state];
+}
+
+/** The short word for a target state in a figure's subtitle: "Under", "In range", "Over", "Not compared". */
+export function rangeWord(st: TargetStatus): string {
+  const w = RANGE_WORD[st.state];
+  return st.partial ? w + "*" : w;
+}
+
+const RANGE_WORD: Record<RangeState, string> = { none: "", under: "Under", in: "In range", over: "Over", unknown: "Not compared" };
+
 /** Display currency for every cost figure; undefined = USD. Set by the extension
  * (setDisplayCurrency) from the chosen currency and its daily rate. */
 let displayCurrency: Currency | undefined;
@@ -239,10 +285,12 @@ export function cleanRange(min: unknown, max: unknown): ViewOptions["range"] {
   return { ...(lo !== undefined && { min: lo }), ...(hi !== undefined && { max: hi }) };
 }
 
-/** Where spend so far sits against the range; no month data counts as $0. */
-export function rangeState(spent: number | undefined, range: ViewOptions["range"]): RangeState {
+/** Where spend so far sits against the range; no month data counts as $0, but a
+ * TargetSpend of "unknown" (records with no cost logged) is never compared (review finding #3). */
+export function rangeState(spent: number | undefined | TargetSpend, range: ViewOptions["range"]): RangeState {
   if (!range) return "none";
-  const v = spent ?? 0;
+  if (spent === "unknown") return "unknown";
+  const v = typeof spent === "object" ? spent.usd : (spent ?? 0);
   // Compared as shown: spend that displays as the bound is not past it.
   if (range.max !== undefined && v > range.max && money(v) !== money(range.max)) return "over";
   if (range.min !== undefined && v < range.min && money(v) !== money(range.min)) return "under";
@@ -261,6 +309,7 @@ export const RANGE_LABEL: Record<RangeState, string> = {
   under: "under target",
   in: "in target range",
   over: "over target",
+  unknown: "cost not reported, target not compared",
 };
 
 const RANGE_ICON_ID: Record<RangeState, string> = {
@@ -268,6 +317,7 @@ const RANGE_ICON_ID: Record<RangeState, string> = {
   under: "arrow-down",
   in: "pass",
   over: "flame",
+  unknown: "question",
 };
 
 const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -284,8 +334,12 @@ export function thisMonthTotals(s: Snapshot): Totals | undefined {
 
 /** Range state of the current month in `s` (unfiltered; never a selected past month). */
 export function currentRangeState(s: Snapshot, view: ViewOptions): RangeState {
-  const t = thisMonthTotals(s);
-  return rangeState(targetUsd(t), view.range);
+  return currentTargetStatus(s, view).state;
+}
+
+/** Target status of the current month in `s`, with whether its spend is a lower bound. */
+export function currentTargetStatus(s: Snapshot, view: ViewOptions): TargetStatus {
+  return targetStatus(thisMonthTotals(s), view.range);
 }
 
 /** Codicon id for a range state; the status bar and the side bar share it (D31). */
@@ -313,12 +367,14 @@ export interface StatusParts {
   /** " / $20.00–$60.00" in USD with a range set, else "" */
   suffix: string;
   state: RangeState;
+  /** the month's spend is a lower bound, so `state` ("under" or "in") may still change */
+  partial: boolean;
 }
 
 export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): StatusParts {
   // The icon is chosen independently, so a format change that stops every
   // record from parsing (no `today`) still shows the warning.
-  const state = currentRangeState(s, view);
+  const { state, partial } = currentTargetStatus(s, view);
   const icon = s.health.state === "format-changed" ? "warning" : RANGE_ICON_ID[state];
   const mode = view.statusBar ?? "today";
   const monthAbbr = MONTH_ABBR[new Date(s.dayStartMs).getMonth()]!;
@@ -331,12 +387,12 @@ export function statusParts(s: Snapshot, view: ViewOptions = DEFAULT_VIEW): Stat
     // The current month is unfiltered (D31): a project or tool filter never reaches the status bar.
     let n = c ? formatUsd(c.nanoAiu) : DASH;
     if (s.health.partial) n = star(n);
-    return { icon, place, figure: n, suffix, state };
+    return { icon, place, figure: n, suffix, state, partial };
   }
-  if (!c) return { icon, place, figure: DASH, suffix: "", state };
+  if (!c) return { icon, place, figure: DASH, suffix: "", state, partial };
   let n = formatCount(addMetrics(c.input, c.output));
   if (s.health.partial) n = star(n);
-  return { icon, place, figure: `${n} tok`, suffix: "", state };
+  return { icon, place, figure: `${n} tok`, suffix: "", state, partial };
 }
 
 export function statusText(s: Snapshot | undefined, view: ViewOptions = DEFAULT_VIEW): string {
@@ -380,7 +436,7 @@ export function spoken(text: string): string {
   return text
     .replace(/\$\(([a-z-]+)(~[a-z]+)?\)\s*/g, "")
     .replace(/—/g, "not reported")
-    .replace(/([\dMK])\*/g, "$1 (may be incomplete)")
+    .replace(/([\dMKa-z])\*/g, "$1 (may be incomplete)")
     .replace(currencyRe(), (_, sym: string, n: string) => `${n} ${sym === "$" ? "US dollars" : SYMBOL_CODE.get(sym)}`)
     .replace(/(\d(?:\.\d)?)M\b/g, "$1 million")
     .replace(/(\d(?:\.\d)?)K\b/g, "$1 thousand")
@@ -407,7 +463,7 @@ export function statusAccessibilityLabel(s: Snapshot | undefined, view: ViewOpti
   const place = view.unit === "cost" ? `${period}, estimated` : period;
   const parts = [multiSource(s.health) ? `Local usage, ${place}: ${spoken(p.figure)}` : `Copilot usage, local ${place}: ${spoken(p.figure)}`];
   // The target is monthly: name the month when the figure is today or the session (review fix 5).
-  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${RANGE_LABEL[p.state]} ${spoken(formatRange(view.range))}`);
+  if (p.state !== "none") parts.push(`${period === "this month" ? "" : "this month "}${spoken(rangeLabel(p))} ${spoken(formatRange(view.range))}`);
   if (s.health.state === "format-changed") parts.push("the log format may have changed");
   return parts.join(", ") + ". Opens details.";
 }
@@ -549,12 +605,12 @@ export function tooltipMarkdown(s: Snapshot | undefined, view: ViewOptions = DEF
     const lines = [`**This month (estimated)**: ${escapeMarkdown(spent)}`];
     const mixed = mixedSources(thisMonth?.sources);
     if (view.range) {
-      const state = currentRangeState(s, view);
-      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${RANGE_LABEL[state]}`);
+      const st = currentTargetStatus(s, view);
+      lines.push(`Target ${escapeMarkdown(formatRange(view.range))}${mixed ? " \\(Copilot only\\)" : ""}: ${escapeMarkdown(rangeLabel(st))}`);
     }
     // The daily and weekly targets (v0.9) follow today and the last 7 days, never filtered.
-    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.today), view.dayTarget)]}`);
-    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${RANGE_LABEL[rangeState(targetUsd(s.last7), view.weekTarget)]}`);
+    if (view.dayTarget) lines.push(`Daily target ${escapeMarkdown(formatRange(view.dayTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.today, view.dayTarget)))}`);
+    if (view.weekTarget) lines.push(`Weekly target ${escapeMarkdown(formatRange(view.weekTarget))}: ${escapeMarkdown(rangeLabel(targetStatus(s.last7, view.weekTarget)))}`);
     parts.push(lines.join("  \n"), ...costNotes(view, mixed).map(escapeMarkdown));
   }
 

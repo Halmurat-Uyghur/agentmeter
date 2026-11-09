@@ -3,7 +3,7 @@
 // inline SVG with a text alternative; no script, no URL. Unknown is "—", never 0.
 // Today, the heatmap and the bars read the unfiltered per-day activity; Month to
 // date and the ring follow the viewed month and its filter.
-import { type Change, changeAmount, costLabel, estWord, formatCount, formatRange, formatUsd, mixedSources, money, partialNote, RANGE_LABEL, rangeState, targetUsd, usd, weekCoverage } from "../format";
+import { type Change, changeAmount, costLabel, estWord, formatCount, formatRange, formatUsd, mixedSources, money, partialNote, rangeLabel, rangeWord, targetStatus, usd, weekCoverage } from "../format";
 import { heatLevel, localDaysBefore } from "../store";
 import type { DayStats, Metric, Snapshot, ViewOptions } from "../types";
 import { icon } from "./icons";
@@ -163,10 +163,10 @@ export function heroCard(s: Snapshot, view: ViewOptions): string {
   let heroCls = "";
   const heroNotes: (string | undefined)[] = [today ? partialNote(headlineMetric(today, view)) : undefined];
   if (view.dayTarget) {
-    const state = rangeState(targetUsd(today), view.dayTarget);
-    heroCls = ` st-${state}`;
-    parts.push(`Daily target ${formatRange(view.dayTarget)}${mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${state === "under" ? "Under" : state === "over" ? "Over" : "In range"}`);
-    heroNotes.unshift(RANGE_LABEL[state]);
+    const st = targetStatus(today, view.dayTarget);
+    heroCls = ` st-${st.state}`;
+    parts.push(`Daily target ${formatRange(view.dayTarget)}${mixedSources(today?.sources) ? " (Copilot only)" : ""}: ${rangeWord(st)}`);
+    heroNotes.unshift(rangeLabel(st));
   }
 
   // Yesterday: unknown before the history window; "Nothing logged yesterday" when it has no
@@ -322,22 +322,27 @@ export function heatmap(s: Snapshot, view: ViewOptions): string {
 
 // ------------------------------------------------------------------ cache ring
 
-/** Cache-read share of prompt tokens in the viewed month, as "N in 100" on a ring. */
+/** Cache-read share of prompt tokens in the viewed month, as "N in 100" on a ring. Prompt
+ * tokens and cache reads sum the same records (those that reported both, see
+ * SessionSummary.input); when some records lack either, the figure is starred and says how
+ * many records support it. */
 export function cacheRing(s: Snapshot): string {
   const c = s.month?.cache;
   const month = viewedName(s);
   const known = c !== undefined && c.prompt.reported > 0 && c.prompt.sum > 0 && c.cacheRead.reported > 0;
   const share = known ? Math.min(1, c.cacheRead.sum / c.prompt.sum) : 0;
   const n = Math.round(100 * share);
-  const shown = !known ? DASH : n === 0 && share > 0 ? "<1" : String(n);
+  const partial = known && (c.prompt.missing > 0 || c.cacheRead.missing > 0);
+  const shown = !known ? DASH : `${n === 0 && share > 0 ? "<1" : String(n)}${partial ? "*" : ""}`;
+  const cover = partial ? `from ${c.prompt.reported} of ${c.prompt.reported + c.prompt.missing} records` : "";
   const R = 40;
   const len = 2 * Math.PI * R;
   const arc = known && share > 0 ? `<circle class="ring-fg" cx="50" cy="50" r="${R}" stroke-dasharray="${(len * share).toFixed(2)} ${len.toFixed(2)}" transform="rotate(-90 50 50)"/>` : "";
   const label = known
-    ? `Cache reuse in ${month}: ${shown} in 100 prompt tokens were cache reads${s.filter ? " (filtered)" : ""}.`
+    ? `Cache reuse in ${month}: ${shown} in 100 prompt tokens were cache reads${s.filter ? " (filtered)" : ""}${partial ? `, ${cover} that reported both` : ""}.`
     : `Cache reuse in ${month}: not reported.`;
   const sub = known ? `<text class="ring-sub" x="50" y="68">in 100</text>` : "";
-  return `<div class="hero-ring"${titleAttr("Prompt tokens that were read from the cache, over the viewed month's sessions. Higher reuse usually means cheaper calls.")}><p class="lbl">Cache reuse</p><svg class="ring" viewBox="0 0 100 100" width="96" height="96" role="img" aria-label="${escapeHtml(label)}"><circle class="ring-bg" cx="50" cy="50" r="${R}"/>${arc}<text class="ring-num" x="50" y="${known ? 54 : 58}">${escapeHtml(shown)}</text>${sub}</svg><p class="muted small">${escapeHtml(`of prompt tokens · ${month}`)}</p></div>`;
+  return `<div class="hero-ring"${titleAttr("Prompt tokens that were read from the cache, over the viewed month's sessions. Higher reuse usually means cheaper calls.")}><p class="lbl">Cache reuse</p><svg class="ring" viewBox="0 0 100 100" width="96" height="96" role="img" aria-label="${escapeHtml(label)}"><circle class="ring-bg" cx="50" cy="50" r="${R}"/>${arc}<text class="ring-num" x="50" y="${known ? 54 : 58}">${escapeHtml(shown)}</text>${sub}</svg><p class="muted small">${escapeHtml(`of prompt tokens · ${month}${partial ? ` · ${cover}` : ""}`)}</p></div>`;
 }
 
 // ------------------------------------------------------------------ month to date

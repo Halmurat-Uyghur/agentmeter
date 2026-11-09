@@ -6,6 +6,14 @@ import type { Insight, InsightsView, SessionSummary, UsageRecord } from "./types
 
 /** Sessions whose late calls cost this many times their early ones are flagged (D24). */
 export const GROWTH_FLAG = 3;
+/** A flagged session's growth is put down to its context only when the prompt tokens of its
+ * last 5 calls are at least this many times those of its first 5 (SessionSummary.inputGrowth). */
+export const INPUT_GROWTH_FLAG = 2;
+
+/** Whether `s`'s later calls cost more because their prompts grew, not only their price. */
+export function contextGrew(s: { inputGrowth?: number }): boolean {
+  return s.inputGrowth !== undefined && s.inputGrowth >= INPUT_GROWTH_FLAG;
+}
 
 const NANO_PER_USD = 1e11;
 /** Shared floors: the flagged AIU must reach $1.00 and 5 in 100 of the viewed month's AIU. */
@@ -119,6 +127,7 @@ function contextGrowth(sessions: SessionSummary[], monthNano: number): Insight |
     calls: flagged.reduce((a, s) => a + s.calls, 0),
     sessions: flagged.length,
     top: flagged.slice(0, 3).map((s) => ({ sessionId: s.sessionId, ...(s.label !== undefined && { label: s.label }), growth: s.growth! })),
+    inputGrew: flagged.some(contextGrew),
   };
 }
 

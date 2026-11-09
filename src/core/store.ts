@@ -19,8 +19,17 @@ interface Entry {
   /** the first (owning) holder and its folderId; a call key counts as held by every folder of its holders (D29) */
   file: string;
   folderId: string;
-  /** later holders, file → folderId, in the order they arrived; undefined while there are none */
-  more: Map<string, string> | undefined;
+  /** later holders, file → folderId (or, when that file's copy named another session,
+   * its folderId and sessionId), in the order they arrived; undefined while there are none */
+  more: Map<string, Holder> | undefined;
+}
+
+/** A later holder: its folderId, or its folderId and sessionId when the sessionId differs
+ * from the record's (a copy rarely does, so the common case stores one string). */
+type Holder = string | { folderId: string; sessionId: string };
+
+function folderOf(h: Holder): string {
+  return typeof h === "string" ? h : h.folderId;
 }
 
 function newEntry(record: UsageRecord, file: string, folderId: string): Entry {
@@ -33,30 +42,31 @@ function hasFile(e: Entry, file: string): boolean {
 
 function holds(e: Entry, folderId: string): boolean {
   if (e.folderId === folderId) return true;
-  if (e.more) for (const f of e.more.values()) if (f === folderId) return true;
+  if (e.more) for (const h of e.more.values()) if (folderOf(h) === folderId) return true;
   return false;
 }
 
 /** Drops `file` from `e`'s holders. Returns the folderId it held the key for (undefined if it
- * did not hold it) and whether no holder is left. A removed first holder is replaced by the
- * earliest later one, as the first key of an insertion-ordered Map would be. */
-function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean } {
+ * did not hold it), whether no holder is left, and, when the owner was replaced by the earliest
+ * later holder (as the first key of an insertion-ordered Map would be), that holder's sessionId
+ * (undefined when it named the record's own session). */
+function dropFile(e: Entry, file: string): { folderId: string | undefined; empty: boolean; promoted?: { sessionId: string | undefined } } {
   if (e.file === file) {
     const folderId = e.folderId;
     const next = e.more?.entries().next();
     if (next === undefined || next.done) return { folderId, empty: true };
-    const [f, id] = next.value;
+    const [f, h] = next.value;
     e.more!.delete(f);
     e.file = f;
-    e.folderId = id;
+    e.folderId = folderOf(h);
     if (e.more!.size === 0) e.more = undefined;
-    return { folderId, empty: false };
+    return { folderId, empty: false, promoted: { sessionId: typeof h === "string" ? undefined : h.sessionId } };
   }
-  const folderId = e.more?.get(file);
-  if (folderId === undefined) return { folderId, empty: false };
+  const h = e.more?.get(file);
+  if (h === undefined) return { folderId: undefined, empty: false };
   e.more!.delete(file);
   if (e.more!.size === 0) e.more = undefined;
-  return { folderId, empty: false };
+  return { folderId: folderOf(h), empty: false };
 }
 
 /** Records keyed by kind and source, then by record key: call keys and session-total keys
@@ -263,7 +273,8 @@ export class UsageStore {
       if (!hasFile(existing, file)) {
         // A copied folder delivers the same key: that folder holds it too (D29).
         if (r.kind === "call" && !holds(existing, r.folderId)) bump(this.callsPerFolder, idOf(r.source, r.folderId), 1);
-        (existing.more ??= new Map()).set(file, r.folderId);
+        const holder: Holder = r.sessionId === existing.record.sessionId ? r.folderId : { folderId: this.intern(r.folderId), sessionId: this.intern(r.sessionId) };
+        (existing.more ??= new Map()).set(file, holder);
       }
       return false;
     }
@@ -314,9 +325,27 @@ export class UsageStore {
   resetFile(file: string): void {
     for (const m of this.spaces.values()) {
       for (const [key, entry] of m) {
-        const { folderId, empty } = dropFile(entry, file);
+        const { folderId, empty, promoted } = dropFile(entry, file);
         if (folderId === undefined) continue;
-        const r = entry.record;
+        let r = entry.record;
+        // The surviving copy now owns the call: attribute it to that copy's folder (and session,
+        // when the copy named another one), so projects and the current session follow it.
+        // A session total stays put: totalKeys finds it by the folder it was set for.
+        if (promoted !== undefined && r.kind === "call" && (r.folderId !== entry.folderId || (promoted.sessionId !== undefined && promoted.sessionId !== r.sessionId))) {
+          const sessionId = promoted.sessionId ?? r.sessionId;
+          if (sessionId !== r.sessionId) {
+            bump(this.callsPerSession, idOf(r.source, r.sessionId), -1);
+            bump(this.callsPerSession, idOf(r.source, sessionId), 1);
+            // Later holders are stored relative to the record's sessionId: restate them.
+            if (entry.more) {
+              for (const [f, h] of entry.more) {
+                const hs = typeof h === "string" ? r.sessionId : h.sessionId;
+                entry.more.set(f, hs === sessionId ? folderOf(h) : { folderId: folderOf(h), sessionId: hs });
+              }
+            }
+          }
+          r = entry.record = { ...r, folderId: entry.folderId, sessionId };
+        }
         if (r.kind === "call" && (empty || !holds(entry, folderId))) bump(this.callsPerFolder, idOf(r.source, folderId), -1);
         if (empty) {
           m.delete(key);
@@ -482,9 +511,18 @@ const ALL = () => true;
 
 export const NO_PROJECT = "(no project)";
 
-/** Input + output of one record, or undefined when neither was reported. */
-function recordTokens(r: UsageRecord): number | undefined {
-  return r.tokens.input === undefined && r.tokens.output === undefined ? undefined : (r.tokens.input ?? 0) + (r.tokens.output ?? 0);
+/** Counts input + output of `r` into `m` as the headline does (addMetrics of input and
+ * output): a record that reported one side adds it and counts as reported, and a record
+ * missing either side counts as missing too, so its row keeps the "*" the headline shows. */
+function countTokens(m: Metric, r: UsageRecord): void {
+  const { input, output } = r.tokens;
+  if (input === undefined && output === undefined) {
+    m.missing += 1;
+    return;
+  }
+  m.sum += (input ?? 0) + (output ?? 0);
+  m.reported += 1;
+  if (input === undefined || output === undefined) m.missing += 1;
 }
 
 function byCost<T extends { name: string; nanoAiu: Metric; tokens: Metric }>(a: T, b: T): number {
@@ -514,7 +552,7 @@ export function projectSummaries(
     g.ids.add(r.sessionId);
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
-    count(g.s.tokens, recordTokens(r));
+    countTokens(g.s.tokens, r);
     if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
     bumpSource(g.s.sources!, r.source);
   }
@@ -535,7 +573,7 @@ export function recentProjects(
   type Acc = { s: GroupSummary; ids: Set<string> };
   const week = new Map<string, Acc>();
   const day = new Map<string, Acc>();
-  const add = (into: Map<string, Acc>, name: string, r: UsageRecord, tok: number | undefined) => {
+  const add = (into: Map<string, Acc>, name: string, r: UsageRecord) => {
     let g = into.get(name);
     if (!g) {
       g = { s: emptyGroup(name), ids: new Set() };
@@ -545,16 +583,15 @@ export function recentProjects(
     g.s.calls += callsOf(r);
     if (callsMissingOf(r) > 0) g.s.callsMissing = (g.s.callsMissing ?? 0) + 1;
     if (r.kind === "sessionTotal") g.s.sessionTotals = (g.s.sessionTotals ?? 0) + 1;
-    count(g.s.tokens, tok);
+    countTokens(g.s.tokens, r);
     if (pricedSource(r)) count(g.s.nanoAiu, r.nanoAiu);
     bumpSource(g.s.sources!, r.source);
   };
   store.each((r) => {
     if (r.timestampMs < last7StartMs) return;
     const name = projectOf(r);
-    const tok = recordTokens(r);
-    add(week, name, r, tok);
-    if (r.timestampMs >= todayStartMs) add(day, name, r, tok);
+    add(week, name, r);
+    if (r.timestampMs >= todayStartMs) add(day, name, r);
   });
   const done = (m: Map<string, Acc>) => [...m.values()].map(({ s, ids }) => ({ ...s, sessions: ids.size })).sort(byCost);
   return { today: done(day), last7: done(week) };
@@ -606,7 +643,7 @@ export function toolSummaries(
       if (BUILT_IN_TOOLS[r.source].has(name)) t.builtIn = true;
       t.uses += uses;
       t.calls++;
-      count(t.tokens, recordTokens(r));
+      countTokens(t.tokens, r);
       if (pricedSource(r)) count(t.nanoAiu, r.nanoAiu);
       bumpSource(t.sources!, r.source);
     }
@@ -653,10 +690,14 @@ export function sessionSummaries(
     let callsMissing = 0;
     let firstMs = Number.POSITIVE_INFINITY;
     for (const r of recs) {
-      count(tokens, recordTokens(r));
+      countTokens(tokens, r);
       if (pricedSource(r)) count(nanoAiu, r.nanoAiu);
-      count(input, promptOf(r, conventions));
-      count(cacheRead, r.tokens.cacheRead);
+      // The cache share pairs like with like: prompt tokens and cache reads of the records that
+      // reported both; a record missing either counts as missing on both, never half-summed.
+      const prompt = promptOf(r, conventions);
+      const read = r.tokens.cacheRead;
+      count(input, prompt === undefined || read === undefined ? undefined : prompt);
+      count(cacheRead, prompt === undefined || read === undefined ? undefined : read);
       calls += callsOf(r);
       callsMissing += callsMissingOf(r);
       // A session total's start is the sessionStartTime Copilot logged with it (N9).
@@ -673,9 +714,11 @@ export function sessionSummaries(
       }
     }
     // Growth compares calls; a session total is one figure, not a call.
-    const priced = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined).map((r) => r.nanoAiu!);
+    const pricedRecs = recs.filter((r) => r.kind === "call" && pricedSource(r) && r.nanoAiu !== undefined);
+    const priced = pricedRecs.map((r) => r.nanoAiu!);
     let growth: number | undefined;
     let excessNanoAiu: number | undefined;
+    let inputGrowth: number | undefined;
     if (priced.length >= 2 * GROWTH_SPAN) {
       const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
       const early = mean(priced.slice(0, GROWTH_SPAN));
@@ -683,6 +726,15 @@ export function sessionSummaries(
       if (early > 0) {
         growth = late / early;
         excessNanoAiu = priced.slice(GROWTH_SPAN).reduce((a, x) => a + Math.max(0, x - early), 0);
+        // The same calls' prompt tokens: only their growth says the context grew (a costlier
+        // model or longer replies also raise cost). Undefined when any of them lacks input.
+        const prompts = (xs: UsageRecord[]) => xs.map((r) => promptOf(r, conventions));
+        const head = prompts(pricedRecs.slice(0, GROWTH_SPAN));
+        const tail = prompts(pricedRecs.slice(-GROWTH_SPAN));
+        if (head.every((x) => x !== undefined) && tail.every((x) => x !== undefined)) {
+          const earlyIn = mean(head as number[]);
+          if (earlyIn > 0) inputGrowth = mean(tail as number[]) / earlyIn;
+        }
       }
     }
     const sessionTotal = recs.every((r) => r.kind === "sessionTotal");
@@ -698,6 +750,7 @@ export function sessionSummaries(
       tokens,
       nanoAiu,
       ...(growth !== undefined && { growth }),
+      ...(inputGrowth !== undefined && { inputGrowth }),
       ...(sessionTotal && { sessionTotal }),
       input,
       cacheRead,

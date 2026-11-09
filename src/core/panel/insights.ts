@@ -31,7 +31,10 @@ function card(i: Insight, view: ViewOptions): string {
     const names = i.top.map((t) => (t.label !== undefined ? `${t.label} (${shortId(t.sessionId)})` : shortId(t.sessionId)));
     const n = i.sessions;
     body = `${plural(n, "session")} got more expensive as ${n === 1 ? "it" : "they"} went on: ${n === 1 ? "its" : "their"} later calls cost ${list(i.top.map((t) => `${t.growth.toFixed(1)}×`))} the first ones${n > i.top.length ? " (largest shown)" : ""}. The cost above each session's starting level came to about ${usd} (est.). ${i.top.length === 1 ? "Session" : "Sessions"}: ${list(names)}.`;
-    action = "For a new task, a fresh session usually costs less. For one that must continue, /compact shrinks what each call resends.";
+    // Put it down to the context only when the prompts grew too (a costlier model also raises cost).
+    action = i.inputGrew
+      ? "Their input grew too, so the context grew. For a new task, a fresh session usually costs less. For one that must continue, /compact shrinks what each call resends."
+      : "Their input did not grow as much, so a costlier model or longer replies are the likelier cause. List a session's calls to see which.";
   } else if (i.id === "long-context") {
     const k = kTokens(i.thresholdTokens);
     title = `Long prompts on ${i.model}`;

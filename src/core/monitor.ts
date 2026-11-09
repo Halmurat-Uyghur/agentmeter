@@ -102,6 +102,9 @@ interface ReaderState {
   lastDirCheckAt: number;
   lastDirMtimeMs: number | undefined;
   error: "no-dir" | "permission" | undefined;
+  /** the last discovery failed for another reason (EIO, EMFILE...): the last good candidates are
+   * kept, but new sessions may be missing, so the source counts one unreadable root (partial) */
+  discoverFailed?: boolean;
   /** sessionId → candidate from the last successful discover */
   candidates: Map<string, SourceCandidate>;
   /** paths whose lstat failed (not ENOENT) in the last discover: kept, partial */
@@ -345,7 +348,11 @@ export class UsageMonitor {
 
   /** What a discovery found, as one string: error, candidate files, unreadable and refused paths, extras. */
   private fingerprint(rs: ReaderState): string {
-    if (rs.error !== undefined) return rs.error;
+    const fp = rs.error ?? this.goodFingerprint(rs);
+    return rs.discoverFailed === true ? `OTHER\0${fp}` : fp;
+  }
+
+  private goodFingerprint(rs: ReaderState): string {
     const files: string[] = [];
     for (const c of rs.candidates.values()) for (const f of c.files) files.push(`${f.path}\0${c.sessionId}\0${f.mtimeMs}\0${f.size}\0${c.live ? 1 : 0}`);
     files.sort();
@@ -375,9 +382,15 @@ export class UsageMonitor {
     if (!result.ok) {
       rs.lastDirMtimeMs = undefined;
       if (result.error === "OTHER") {
-        this.log.error("discover", "OTHER");
-        return; // keep the last known candidates and state
+        // Keep the last known candidates and state (their figures stay), but mark the source
+        // partial until a discovery succeeds: sessions started since may be missing. Logged once
+        // per episode; the fingerprint changes only on entering it, so a failure that repeats
+        // every tick does not rebuild the snapshot.
+        if (rs.discoverFailed !== true) this.log.error("discover", "OTHER");
+        rs.discoverFailed = true;
+        return;
       }
+      delete rs.discoverFailed;
       // A new or different error (permission → no-dir and back) re-reads the files once.
       const entering = rs.error !== result.error;
       rs.error = result.error;
@@ -394,6 +407,7 @@ export class UsageMonitor {
     // A root that recovers re-reads its files once, so errors of the locked period clear.
     if (rs.error !== undefined) for (const f of this.files.values()) if (f.source === reader.source) f.changed = true;
     rs.error = undefined;
+    delete rs.discoverFailed;
     rs.lastDirMtimeMs = result.dirMtimeMs;
     if (result.capped !== undefined) rs.capped = result.capped;
     else delete rs.capped;
@@ -598,14 +612,16 @@ export class UsageMonitor {
         // Candidates of the last discovery, including ones whose files were all refused or
         // dropped on ENOENT since (until the next discovery).
         sessions: rs.candidates.size,
-        // An unreadable directory (a listing that failed) counts as one file here.
-        unreadableFiles: rs.unreadable.size + rs.refused.size,
+        // An unreadable directory (a listing that failed) counts as one file here; so does a
+        // root whose last discovery failed (not ENOENT or a permission error).
+        unreadableFiles: rs.unreadable.size + rs.refused.size + (rs.discoverFailed === true ? 1 : 0),
         unrecognized: 0,
         malformed: 0,
         overlong: 0,
         overlongOther: 0,
         ...(rs.capped !== undefined && { capped: rs.capped }),
         ...(rs.archived !== undefined && { archived: rs.archived }),
+        ...(rs.discoverFailed === true && { discoveryFailed: true as const }),
       };
       /** per session: the files' activity and usage summed (a Claude session has several files) */
       const sessions = new Map<string, { activity: number; usage: number; candidates: number; hasTotals: boolean; windowActivity: number; windowUsage: number }>();

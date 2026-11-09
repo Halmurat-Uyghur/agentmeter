@@ -63,6 +63,7 @@ function sourceStatus(x: Source, h: SourceHealth): string {
   if (h.state === "no-dir") return `Folder not found (${SOURCE_HOME_SETTING[x]})`;
   if (h.state === "permission") return `Unreadable (${SOURCE_HOME_SETTING[x]})`;
   const read = `${plural(h.files, "file")}, ${plural(h.sessions, "session")} read`;
+  if (h.discoveryFailed === true) return `${read} · the folder could not be listed; new sessions may be missing`;
   return h.state === "format-changed" ? `${read} · the log format may have changed` : read;
 }
 

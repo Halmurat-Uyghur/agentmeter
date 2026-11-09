@@ -412,42 +412,112 @@ async function archivedCount(root: string): Promise<number> {
 }
 
 /**
- * Walks <root>/sessions/YYYY/MM/DD (digit folders on or after the local day of windowStartMs)
- * for regular rollout-*.jsonl files modified in the window; one candidate per file.
+ * How often CodexSourceReader walks the date folders older than the window. A resumed session
+ * appends to its rollout file in the folder of the day it started, so those folders can hold
+ * usage in the window; between walks only the old files last found in the window are re-stat'ed.
  */
-export async function discoverCodex(root: string, windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
+export const CODEX_OLD_SCAN_MS = 5 * 60_000;
+
+/** What a discovery found in the date folders older than the window. */
+export interface CodexOldFolders {
+  /** rollout files there modified in the window */
+  paths: string[];
+  /** unreadable year, month or day folders there */
+  unreadable: SourceUnreadable[];
+}
+
+/** The window's first day less one day of slack, as YYYYMMDD. */
+function firstDayOf(windowStartMs: number): number {
+  // Date folders are assumed to be named by the local calendar day the session started. One
+  // day of slack keeps a session begun the evening before the window's first day (or a folder
+  // named by the UTC day) in the cheap walk.
+  const w = new Date(windowStartMs);
+  const slack = new Date(w.getFullYear(), w.getMonth(), w.getDate() - 1);
+  return slack.getFullYear() * 10_000 + (slack.getMonth() + 1) * 100 + slack.getDate();
+}
+
+/**
+ * Walks <root>/sessions/YYYY/MM/DD for regular rollout-*.jsonl files modified in the window;
+ * one candidate per file. A folder's name is the day its session started, not the day it was
+ * last written (a resumed session appends to the old file), so folders older than the window
+ * are walked too, unless `old` is given: then only its paths are re-stat'ed there and its
+ * unreadable folders reported again. Records dated before the window are filtered later.
+ */
+export async function discoverCodex(
+  root: string,
+  windowStartMs: number,
+  dayStartMs: number,
+  nowMs: number,
+  old?: CodexOldFolders,
+): Promise<SourceDiscoverResult> {
+  return (await discoverCodexWalk(root, windowStartMs, dayStartMs, nowMs, old)).result;
+}
+
+async function discoverCodexWalk(
+  root: string,
+  windowStartMs: number,
+  dayStartMs: number,
+  nowMs: number,
+  known: CodexOldFolders | undefined,
+): Promise<{ result: SourceDiscoverResult; old?: CodexOldFolders }> {
   const sessions = path.join(root, SESSIONS);
   let dirMtimeMs: number;
   let years: string[];
   try {
     const st = await fs.promises.stat(sessions);
-    if (!st.isDirectory()) return { ok: false, error: "no-dir" };
+    if (!st.isDirectory()) return { result: { ok: false, error: "no-dir" } };
     dirMtimeMs = st.mtimeMs;
     const entries = await fs.promises.readdir(sessions, { withFileTypes: true });
     years = entries.filter((e) => e.isDirectory() && YEAR.test(e.name)).map((e) => e.name).sort();
   } catch (e) {
     const code = errCode(e);
-    if (code === "ENOENT" || code === "ENOTDIR") return { ok: false, error: "no-dir" };
-    if (code === "EACCES" || code === "EPERM") return { ok: false, error: "permission" };
-    return { ok: false, error: "OTHER" };
+    if (code === "ENOENT" || code === "ENOTDIR") return { result: { ok: false, error: "no-dir" } };
+    if (code === "EACCES" || code === "EPERM") return { result: { ok: false, error: "permission" } };
+    return { result: { ok: false, error: "OTHER" } };
   }
-  // Date folders are assumed to be named by the local calendar day the session started. One
-  // day of slack keeps a session begun the evening before the window's first day (or a folder
-  // named by the UTC day) in reach; records dated before the window are harmless to the buckets.
-  const w = new Date(windowStartMs);
-  const slack = new Date(w.getFullYear(), w.getMonth(), w.getDate() - 1);
-  const first = slack.getFullYear() * 10_000 + (slack.getMonth() + 1) * 100 + slack.getDate();
+  const first = firstDayOf(windowStartMs);
   const liveFrom = Math.max(dayStartMs, nowMs - RECENT_MS);
   const candidates: SourceCandidate[] = [];
   const unreadable: SourceUnreadable[] = [];
+  // Found in folders older than the window (wholly so, for a year or month folder).
+  const old: CodexOldFolders = { paths: [], unreadable: [] };
+  const walkOld = known === undefined;
+
+  /** Adds the rollout file `p` when it is a regular file modified in the window; an lstat error other than ENOENT/ENOTDIR is reported. */
+  const consider = async (p: string, sessionId: string, errors: SourceUnreadable[]): Promise<"added" | "skipped" | "error"> => {
+    let st: fs.Stats;
+    try {
+      st = await fs.promises.lstat(p);
+    } catch (e) {
+      const code = errCode(e);
+      if (code === "ENOENT" || code === "ENOTDIR") return "skipped";
+      errors.push({ folderId: sessionId, path: p, code });
+      return "error";
+    }
+    if (!st.isFile() || st.mtimeMs < windowStartMs) return "skipped";
+    candidates.push({
+      source: "codex",
+      sessionId,
+      folderId: sessionId,
+      files: [{ path: p, mtimeMs: st.mtimeMs, size: st.size }],
+      mtimeMs: st.mtimeMs,
+      live: st.mtimeMs >= liveFrom,
+    });
+    return "added";
+  };
+
   for (const y of years) {
     const yn = Number(y) * 10_000;
-    if (yn + 1231 < first) continue;
-    for (const m of await subdirs(path.join(sessions, y), TWO_DIGITS, y, unreadable)) {
+    const oldYear = yn + 1231 < first;
+    if (oldYear && !walkOld) continue;
+    for (const m of await subdirs(path.join(sessions, y), TWO_DIGITS, y, oldYear ? old.unreadable : unreadable)) {
       const mn = yn + Number(m) * 100;
-      if (mn + 31 < first) continue;
-      for (const d of await subdirs(path.join(sessions, y, m), TWO_DIGITS, `${y}/${m}`, unreadable)) {
-        if (mn + Number(d) < first) continue;
+      const oldMonth = mn + 31 < first;
+      if (oldMonth && !walkOld) continue;
+      for (const d of await subdirs(path.join(sessions, y, m), TWO_DIGITS, `${y}/${m}`, oldMonth ? old.unreadable : unreadable)) {
+        const oldDay = mn + Number(d) < first;
+        if (oldDay && !walkOld) continue;
+        const errors = oldDay ? old.unreadable : unreadable;
         const dir = path.join(sessions, y, m, d);
         let names: string[];
         try {
@@ -455,36 +525,32 @@ export async function discoverCodex(root: string, windowStartMs: number, dayStar
           names = entries.filter((e) => e.isFile() && ROLLOUT.test(e.name)).map((e) => e.name);
         } catch (e) {
           const code = errCode(e);
-          if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push({ folderId: `${y}/${m}/${d}`, path: dir, code });
+          if (code !== "ENOENT" && code !== "ENOTDIR") errors.push({ folderId: `${y}/${m}/${d}`, path: dir, code });
           continue;
         }
         for (const name of names) {
           const sessionId = sessionIdOf(name);
           if (sessionId === undefined) continue;
           const p = path.join(dir, name);
-          let st: fs.Stats;
-          try {
-            st = await fs.promises.lstat(p);
-          } catch (e) {
-            const code = errCode(e);
-            if (code !== "ENOENT" && code !== "ENOTDIR") unreadable.push({ folderId: sessionId, path: p, code });
-            continue;
-          }
-          if (!st.isFile() || st.mtimeMs < windowStartMs) continue;
-          candidates.push({
-            source: "codex",
-            sessionId,
-            folderId: sessionId,
-            files: [{ path: p, mtimeMs: st.mtimeMs, size: st.size }],
-            mtimeMs: st.mtimeMs,
-            live: st.mtimeMs >= liveFrom,
-          });
+          if ((await consider(p, sessionId, errors)) === "added" && oldDay) old.paths.push(p);
         }
       }
     }
   }
+  if (known !== undefined) {
+    // Between walks of the old folders: the old files last found in the window are re-stat'ed
+    // (one that fails is kept, to be tried again) and the last walk's unreadable folders carried.
+    old.unreadable.push(...known.unreadable);
+    for (const p of known.paths) {
+      const sessionId = sessionIdOf(path.basename(p));
+      if (sessionId !== undefined && (await consider(p, sessionId, unreadable)) !== "skipped") old.paths.push(p);
+    }
+  }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return { ok: true, candidates, unreadable, dirMtimeMs, archived: await archivedCount(root) };
+  return {
+    result: { ok: true, candidates, unreadable: [...old.unreadable, ...unreadable], dirMtimeMs, archived: await archivedCount(root) },
+    old,
+  };
 }
 
 // ---- reading ----------------------------------------------------------------
@@ -631,6 +697,11 @@ export class CodexSourceReader implements SourceReader {
   readonly rootSource: "setting" | "env" | "default";
   private readonly readProjects: boolean;
   private readonly readTotals: boolean;
+  /** what the last discovery found in date folders older than the window; undefined forces a walk of them */
+  private old: CodexOldFolders | undefined;
+  /** when, and for which window, the old folders were last walked */
+  private oldScanAt = 0;
+  private oldWindowStartMs = Number.NaN;
 
   constructor(o: { root: string; rootSource: "setting" | "env" | "default"; readProjects: boolean; readTotals: boolean }) {
     this.root = o.root;
@@ -662,8 +733,25 @@ export class CodexSourceReader implements SourceReader {
     return max;
   }
 
-  discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
-    return discoverCodex(this.root, windowStartMs, dayStartMs, nowMs);
+  /**
+   * Walks the date folders older than the window on the first discovery, when the window
+   * changes, and every CODEX_OLD_SCAN_MS; in between it re-stats only the old files the last
+   * walk found in the window, so a long history is not stat'ed file by file every minute.
+   */
+  async discover(windowStartMs: number, dayStartMs: number, nowMs: number): Promise<SourceDiscoverResult> {
+    const due =
+      this.old === undefined || this.oldWindowStartMs !== windowStartMs || Math.abs(nowMs - this.oldScanAt) >= CODEX_OLD_SCAN_MS;
+    const { result, old } = await discoverCodexWalk(this.root, windowStartMs, dayStartMs, nowMs, due ? undefined : this.old);
+    if (!result.ok || old === undefined) {
+      this.old = undefined;
+      return result;
+    }
+    if (due) {
+      this.oldScanAt = nowMs;
+      this.oldWindowStartMs = windowStartMs;
+    }
+    this.old = old;
+    return result;
   }
 
   /** Pure path check: <root>/sessions/<4 digits>/<2 digits>/<2 digits>/rollout-*.jsonl. */

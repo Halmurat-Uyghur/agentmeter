@@ -316,7 +316,9 @@ describe("panel: navigation, trend, target, sessions", () => {
     expect(html).toContain(">3f2a91c0<");
     expect(html).toContain(`6.2× ▲`);
     expect(GROWTH_FLAG).toBe(3);
-    expect(html).toContain("a fresh session may be cheaper");
+    // Review #7: no input growth logged, so cost growth is not put down to the context.
+    expect(html).toContain("later calls became more expensive");
+    expect(html).not.toContain("the context grew");
     expect(html).not.toContain("<img");
     expect(html).toContain(escapeHtml(evil.slice(0, 8)));
   });
@@ -417,12 +419,13 @@ describe("monitor: history window and month selection", () => {
 // ---------------------------------------------------------------- v0.4 (D32)
 
 describe("sessionSummaries: v0.4 fields", () => {
-  it("sums input and cache read for the cache-read share, and keeps the folder", () => {
+  it("sums input and cache read for the cache-read share over records that reported both, and keeps the folder", () => {
     const st = new UsageStore();
     st.add(rec("a", 1, { sessionId: "s", folderId: "fold", tokens: { input: 1000, output: 10, cacheRead: 600 } }), "f");
     st.add(rec("b", 2, { sessionId: "s", folderId: "fold", tokens: { input: 1000, output: 10 } }), "f");
     const [s] = sessionSummaries(st, 0, Infinity);
-    expect(s!.input).toEqual(m(2000, 2));
+    // Review #4: "b" reported no cache read, so its input is left out of the share too.
+    expect(s!.input).toEqual(m(1000, 1, 1));
     expect(s!.cacheRead).toEqual(m(600, 1, 1));
     expect(s!.folderId).toBe("fold");
   });

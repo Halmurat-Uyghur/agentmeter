@@ -161,6 +161,9 @@ export interface SourceHealth {
   capped?: number;
   /** archived files seen (Codex) */
   archived?: number;
+  /** the last discovery of this source's folder failed (not missing, not a permission error):
+   * the last good figures are kept, but sessions started since may be missing */
+  discoveryFailed?: true;
 }
 
 export interface Health {
@@ -326,11 +329,16 @@ export interface SessionSummary {
   sessionTotal?: boolean;
   /** summed prompt tokens and cache reads, for the cache-read share (O1). Prompt tokens are
    * `input`, plus cache reads and writes for a model whose log reports them apart from
-   * input (the same per-model inference as Insights, `promptConventions`). */
+   * input (the same per-model inference as Insights, `promptConventions`). Both sum only the
+   * records that reported both, so the share pairs like with like; a record missing either
+   * counts as missing on both (`reported` of `reported + missing` records support it). */
   input?: Metric;
   cacheRead?: Metric;
   /** with growth: Σ over priced calls after the first 5 of max(0, AIU − mean of the first 5) (O2 I2) */
   excessNanoAiu?: number;
+  /** with growth: mean prompt tokens of those last 5 calls ÷ the first 5; undefined when any
+   * of them lacks input. Only this says the context grew (a costlier model also raises growth). */
+  inputGrowth?: number;
 }
 
 /** Prompts and the agent calls they triggered (v0.6, item 1.2). A prompt is a call with
@@ -549,13 +557,14 @@ export const DEFAULT_PREFS: Prefs = {
   unsaved: [],
 };
 
-export type RangeState = "none" | "under" | "in" | "over";
+/** "unknown": usage in scope but no cost reported for it, so the target is not compared (review finding #3). */
+export type RangeState = "none" | "under" | "in" | "over" | "unknown";
 
 /** One fired insight rule (O2). `nanoAiu` is the logged AIU it points at (I2: growth above
  * the starting level) and is the ranking key; `tokens` is input + output of the same calls. */
 export type Insight =
   | { id: "long-context"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; thresholdTokens: number; maxPromptTokens: number }
-  | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[] }
+  | { id: "context-growth"; nanoAiu: number; tokens: number; calls: number; sessions: number; top: { sessionId: string; label?: string; growth: number }[]; inputGrew?: boolean }
   | { id: "cache-reuse"; nanoAiu: number; tokens: number; calls: number; sessions: number; model: string; share: number; meanPromptTokens: number };
 
 export interface InsightsView {
